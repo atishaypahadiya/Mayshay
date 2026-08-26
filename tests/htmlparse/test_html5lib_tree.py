@@ -227,8 +227,14 @@ def test_tree_construction(case):
                 "max_depth": builder.metrics["max_depth"],
                 "text_nodes": builder.metrics["text_nodes"],
                 "tree_parse_errors": builder.metrics["parse_errors"],
-                "tokenizer_parse_errors": builder.metrics[
-                    "tokenizer_parse_errors"
+                # Read from the tokenizer, not from builder.metrics: build()
+                # copies the count across as its last act, so on this path --
+                # where build() raised -- the copy never happened and the
+                # Counter would hand back a default 0 indistinguishable from a
+                # real one. The tree count above is safe because _error
+                # increments it as errors happen.
+                "tokenizer_parse_errors": builder.tokenizer.metrics[
+                    "parse_errors"
                 ],
                 "parse_time_ms": round(
                     (time.perf_counter() - started) * 1000, 3

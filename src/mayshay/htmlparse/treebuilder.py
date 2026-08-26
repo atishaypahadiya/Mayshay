@@ -185,12 +185,6 @@ class TreeBuilder:
         # offset points AT the token that caused the error, which is the
         # token's own `pos`.
         self.errors: list[tuple[int, str]] = []
-        # Set by _mode_after_head to the token whose fall-through synthesised
-        # the <body>. That token is one the spec would have handled in "after
-        # head", so in-body parse-error rules the spec does not apply there
-        # must not fire for it. Today only <frameset> is affected: it is
-        # legitimate in "after head" and a parse error in "in body".
-        self._after_head_fallthrough: object | None = None
         self.metrics: Counter[str] = Counter()
 
     # -- parse errors ------------------------------------------------------
@@ -415,15 +409,26 @@ class TreeBuilder:
         self.metrics["tokenizer_parse_errors"] = self.tokenizer.metrics["parse_errors"]
         return self.document
 
-    def dispatch(self, token) -> None:
-        getattr(self, f"_mode_{self.mode}")(token)
+    def dispatch(self, token, from_mode: str | None = None) -> None:
+        """Run `token` through the current insertion mode.
+
+        `from_mode` names the mode that handed the token on, and is None for a
+        token arriving straight from the tokenizer. Five modes reprocess a
+        token they could not handle by switching mode and dispatching again,
+        and the spec's rules for the token in its *original* mode are not
+        always the rules of the mode it lands in -- see _in_body_start's
+        <frameset> case. Provenance is a parameter rather than parser state
+        deliberately: it has no lifetime to manage and cannot survive an
+        exception raised mid-reprocess.
+        """
+        getattr(self, f"_mode_{self.mode}")(token, from_mode)
 
     def _is_space(self, token) -> bool:
         return isinstance(token, CharacterToken) and not token.data.strip()
 
     # -- insertion modes ---------------------------------------------------
 
-    def _mode_initial(self, token) -> None:
+    def _mode_initial(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, DoctypeToken):
             self.document.append_child(DocumentType(token.name or "html"))
             # The quirks-mode *decision* lives here, not in the tokenizer.
@@ -453,9 +458,9 @@ class TreeBuilder:
                 self._error("expected-doctype-but-got-end-tag", token.pos)
             self.document.quirks_mode = True
             self.mode = "before_html"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="initial")
 
-    def _mode_before_html(self, token) -> None:
+    def _mode_before_html(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, DoctypeToken):
             self._error("unexpected-doctype", token.pos)
             return
@@ -469,9 +474,9 @@ class TreeBuilder:
         else:
             self.insert_element(StartTagToken("html"))
             self.mode = "before_head"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="before_html")
 
-    def _mode_before_head(self, token) -> None:
+    def _mode_before_head(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, DoctypeToken):
             self._error("unexpected-doctype", token.pos)
             return
@@ -485,9 +490,9 @@ class TreeBuilder:
         else:
             self.head = self.insert_element(StartTagToken("head"))
             self.mode = "in_head"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="before_head")
 
-    def _mode_in_head(self, token) -> None:
+    def _mode_in_head(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, DoctypeToken):
             self._error("unexpected-doctype", token.pos)
             return
@@ -508,9 +513,9 @@ class TreeBuilder:
         else:
             self.pop_until("head")
             self.mode = "after_head"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="in_head")
 
-    def _mode_after_head(self, token) -> None:
+    def _mode_after_head(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, DoctypeToken):
             self._error("unexpected-doctype", token.pos)
             return
@@ -522,13 +527,11 @@ class TreeBuilder:
             self.insert_element(token)
             self.mode = "in_body"
         else:
-            self._after_head_fallthrough = token
             self.insert_element(StartTagToken("body"))
             self.mode = "in_body"
-            self.dispatch(token)
-            self._after_head_fallthrough = None
+            self.dispatch(token, from_mode="after_head")
 
-    def _mode_in_body(self, token) -> None:
+    def _mode_in_body(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, DoctypeToken):
             self._error("unexpected-doctype", token.pos)
             return
@@ -538,7 +541,7 @@ class TreeBuilder:
         elif isinstance(token, CommentToken):
             self._insertion_point().append_child(Comment(token.data))
         elif isinstance(token, StartTagToken):
-            self._in_body_start(token)
+            self._in_body_start(token, from_mode)
         elif isinstance(token, EndTagToken):
             self._in_body_end(token)
         elif isinstance(token, EOFToken):
@@ -548,7 +551,9 @@ class TreeBuilder:
                     break
             self.mode = "after_body"
 
-    def _in_body_start(self, token: StartTagToken) -> None:
+    def _in_body_start(
+        self, token: StartTagToken, from_mode: str | None = None
+    ) -> None:
         """Auto-closing rules first, then one insertion for every path.
 
         The raw-text elements used to be dispatched ahead of all of this, which
@@ -570,7 +575,9 @@ class TreeBuilder:
         # us via _mode_after_head's fall-through) and "in frameset" (a nested
         # <frameset>, recognisable by one already being on the stack).
         # Reporting those would invent errors html5lib does not report.
-        if name == "body" or (name == "frameset" and self._frameset_in_body(token)):
+        if name == "body" or (
+            name == "frameset" and self._frameset_in_body(from_mode)
+        ):
             self._error("unexpected-start-tag", token.pos)
         reconstruct = name not in NO_RECONSTRUCT_START
         if name == "li":
@@ -614,9 +621,9 @@ class TreeBuilder:
         else:
             self.insert_element_maybe_raw_text(token)
 
-    def _frameset_in_body(self, token: StartTagToken) -> bool:
+    def _frameset_in_body(self, from_mode: str | None) -> bool:
         """True when a <frameset> start tag really is an in-body parse error."""
-        if token is self._after_head_fallthrough:
+        if from_mode == "after_head":
             return False  # the spec's "after head" frameset case
         return not any(el.tag_name == "frameset" for el in self.open_elements)
 
@@ -634,7 +641,7 @@ class TreeBuilder:
             self.mode = "after_body"
         elif name == "html":
             self.mode = "after_body"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="in_body")
         elif name == "li":
             # List-item scope, not the default barriers: inside a nested <ul>
             # a stray </li> must NOT reach out and close the enclosing <li>.
@@ -745,7 +752,7 @@ class TreeBuilder:
                 self._error("unexpected-end-tag", token.pos)
                 return  # parse error; ignore the token
 
-    def _mode_text(self, token) -> None:
+    def _mode_text(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, CharacterToken):
             self.insert_text(token.data)
         elif isinstance(token, EndTagToken):
@@ -755,9 +762,9 @@ class TreeBuilder:
             self._error("expected-closing-tag-but-got-eof", token.pos)
             self.open_elements.pop()
             self.mode = self.original_mode
-            self.dispatch(token)
+            self.dispatch(token, from_mode="text")
 
-    def _mode_after_body(self, token) -> None:
+    def _mode_after_body(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, DoctypeToken):
             self._error("unexpected-doctype", token.pos)
             return
@@ -776,7 +783,7 @@ class TreeBuilder:
             pass
         else:
             self.mode = "in_body"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="after_body")
 
 
 def parse(source: str) -> Document:
