@@ -76,3 +76,20 @@ def test_not_decoded_in_comment():
         if isinstance(t, CommentToken)
     )
     assert c.data == " &amp; "
+
+
+@pytest.mark.parametrize(
+    "src,expected_count",
+    [
+        ("&amp;", 1),      # successful decode to "&" -- must still count
+        ("&nbsp;", 1),     # successful decode to a non-"&" replacement
+        ("&", 0),          # no match at all: literal "&", position unmoved
+        ("&notit;", 1),    # partial match: decodes "&not", "it;" left as text
+        ("&#38;", 1),      # numeric decode to "&" -- the numeric-path version
+                           # of the same trap as the "&amp;" case above
+    ],
+)
+def test_character_reference_metric_counts_successful_decodes(src, expected_count):
+    tk = Tokenizer(src)
+    list(tk.tokenize())
+    assert tk.metrics["character_references"] == expected_count

@@ -166,11 +166,17 @@ class Tokenizer:
 
     def _consume_character_reference(self, in_attribute: bool) -> str:
         """Called with self.pos just past the '&'."""
-        text, new_pos, error = decode_reference(self.source, self.pos, in_attribute)
+        start = self.pos
+        text, new_pos, error = decode_reference(self.source, start, in_attribute)
         self.pos = new_pos
         if error:
             self._error(error)
-        if text != "&":
+        # A reference was actually consumed iff decode_reference advanced the
+        # position. Checking `text != "&"` instead is wrong: a *successful*
+        # decode of "&amp;" also returns "&", which would undercount it as a
+        # miss, and it's indistinguishable here from the no-match case, which
+        # returns ("&", start, None) with the position left unmoved.
+        if new_pos > start:
             self.metrics["character_references"] += 1
         return text
 
