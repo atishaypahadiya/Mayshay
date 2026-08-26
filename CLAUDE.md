@@ -15,3 +15,6 @@ Package root is `src/mayshay/`. Imports look like:
 - Every stage emits timing + size metrics to data/metrics/.
 - Tests in tests/ mirror src/mayshay/. pytest.
 - Follow the WHATWG HTML spec tokenizer state machine where practical.
+- The `tests/html5lib-tests` submodule is pinned to `9329e64` on purpose.
+  Upstream removed `tree-construction/` in `224991e`; that pin is the last
+  commit that still has the fixtures. Never `git submodule update --remote`.

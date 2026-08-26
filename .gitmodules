@@ -1,3 +1,8 @@
+# PINNED DELIBERATELY to 9329e64 -- do not run `git submodule update --remote`.
+# Upstream deleted tree-construction/ at 224991e ("Tree construction tests have
+# moved to WPT"); 9329e64 is its parent and the last commit that still has the
+# 60 .dat files our conformance suite scores against. Advancing this pin empties
+# the corpus and silently turns tests/htmlparse/test_html5lib_tree.py into skips.
 [submodule "tests/html5lib-tests"]
 	path = tests/html5lib-tests
 	url = https://github.com/html5lib/html5lib-tests.git
