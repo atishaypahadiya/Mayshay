@@ -13,35 +13,29 @@ Deliberate deviations from the spec, documented so they don't surprise us later:
    in the data state, the RCDATA state, and the three attribute-value states
    -- see htmlparse/entities.py. RAWTEXT, script data and comments leave
    references untouched, per spec.
-3. DOCTYPE parsing is simplified: we capture the name and discard public and
-   system identifiers. The only thing downstream wants them for is quirks-mode
-   detection, so quirks detection is name-based only -- the spec's long list of
-   quirky public identifiers ("-//W3C//DTD HTML 4.01 Frameset//", "about:legacy-compat"
-   as a *non*-quirky system id, and so on) cannot be evaluated here. See the
-   force-quirks note on _state_doctype.
-4. The double-escaped script data states (script data double escape start /
+3. The double-escaped script data states (script data double escape start /
    double escaped / double escaped dash / dash dash / less-than sign / double
    escape end) are NOT implemented. `<script><!--<script>...</script>-->` is
    therefore tokenized as if the inner `</script>` closed the outer element.
    Real-world usage is rare and the eight-state cycle earns its own task;
    pinned by an xfail in tests/htmlparse/test_rawtext.py.
-5. Reaching EOF in the rcdata / rawtext / script data states records a parse
+4. Reaching EOF in the rcdata / rawtext / script data states records a parse
    error. The spec calls for no error there -- it just emits the EOF token.
    We keep the error because an unterminated <script>/<style>/<textarea> is a
    truncation signal worth counting in the metrics.
-6. U+0000 NULL is never replaced with U+FFFD, anywhere. The spec replaces NUL
+5. U+0000 NULL is never replaced with U+FFFD, anywhere. The spec replaces NUL
    in the data, RCDATA, RAWTEXT, script-data, tag-name, attribute-name and
    attribute-value states (and the tree builder drops NUL character tokens in
    "in body"). We pass it through untouched: a NUL inside a tag name lands in
    Element.tag_name literally, and a NUL in text lands in a Text node.
    ~46 tree-construction corpus cases.
-7. The PLAINTEXT state is NOT implemented, and neither is the <plaintext>
+6. The PLAINTEXT state is NOT implemented, and neither is the <plaintext>
    start tag that switches into it. Everything after `<plaintext>` is therefore
    tokenized as ordinary data: `<plaintext>a<b>c` parses <b> as a real tag.
    Note that treebuilder.CLOSES_P and treebuilder.SPECIAL_ELEMENTS *do* list
    `plaintext`, because those sets are kept spec-correct -- the tree-builder
    half of the feature exists, the tokenizer half does not. ~52 corpus cases.
-8. The comment states are collapsed into a single `_state_comment`: there is no
+7. The comment states are collapsed into a single `_state_comment`: there is no
    comment-start, comment-start-dash, comment-less-than-sign, comment-end-dash,
    comment-end or comment-end-bang state. We scan for the first `-->` and take
    everything before it as the data. So `<!-- <!--` gives " <!--" where the spec
@@ -67,6 +61,15 @@ def _is_ascii_alpha(ch: str | None) -> bool:
     return ch is not None and ch.isascii() and ch.isalpha()
 
 
+def _ascii_lower(ch: str) -> str:
+    """The spec lowercases ASCII upper alpha only.
+
+    str.lower() would also fold 'É' to 'é' and 'İ' to 'i̇' (two code points),
+    neither of which the spec asks for in a DOCTYPE name.
+    """
+    return chr(ord(ch) + 0x20) if "A" <= ch <= "Z" else ch
+
+
 # --------------------------------------------------------------------------
 # Tokens
 # --------------------------------------------------------------------------
@@ -74,6 +77,12 @@ def _is_ascii_alpha(ch: str | None) -> bool:
 @dataclass
 class DoctypeToken:
     name: str | None = None
+    # None means "missing", which is not the same as the empty string: the
+    # spec's quirks table distinguishes `<!DOCTYPE html PUBLIC "">` (present,
+    # empty) from a DOCTYPE with no PUBLIC clause at all, and so does the
+    # html5lib-tests serialization (`<!DOCTYPE potato "" "taco">`).
+    public_id: str | None = None
+    system_id: str | None = None
     force_quirks: bool = False
     pos: int = -1
 
@@ -170,6 +179,14 @@ class Tokenizer:
         # Characters consumed while trying to match an "appropriate end tag"
         # inside raw text. Replayed as text when the match fails.
         self._temp_buffer: list[str] = []
+
+        # DOCTYPE scratch. None means the field is *missing*, which the
+        # quirks table distinguishes from present-but-empty; a list means
+        # present. Reset on entry to the DOCTYPE state family.
+        self._doctype_name: list[str] | None = None
+        self._doctype_public: list[str] | None = None
+        self._doctype_system: list[str] | None = None
+        self._doctype_force_quirks = False
 
         self._token_start = 0    # offset where the in-progress token began
         self._buffer_start = 0    # offset where the pending text run began
@@ -827,6 +844,15 @@ class Tokenizer:
         elif self._peek(7).upper() == "DOCTYPE":
             self.pos += 7
             self._buffer = []
+            # self.pos is now just past "<!DOCTYPE" (9 chars), so the token's
+            # own start -- the convention every other token uses -- is nine
+            # characters back. Recorded here rather than in _state_doctype
+            # because that state now runs once per character.
+            self._token_start = self.pos - 9
+            self._doctype_name = None
+            self._doctype_public = None
+            self._doctype_system = None
+            self._doctype_force_quirks = False
             self.state = "doctype"
         else:
             # Nothing was consumed here (_peek, not _next), so self.pos
@@ -866,50 +892,279 @@ class Tokenizer:
         else:
             self._buffer.append(ch)
 
-    def _state_doctype(self) -> Iterator[Token]:
-        """Simplified: consume to '>', keep the first word as the name.
+    # -- DOCTYPE states ----------------------------------------------------
+    #
+    # The spec's sixteen DOCTYPE states, "DOCTYPE state" through "bogus DOCTYPE
+    # state". Phase 1 collapsed them into one scan-to-'>' that kept the first
+    # word and threw the identifiers away; the quirks-mode table in
+    # treebuilder.classify_document_mode needs the identifiers, so they are
+    # real states now.
+    #
+    # `force_quirks` is still the *spec's* force-quirks flag, and nothing else:
+    # a tokenizer error flag set by eof-in-doctype, a missing name, a missing
+    # or unquoted identifier, and an abruptly closed one. It is NOT the quirks
+    # *mode* decision. That belongs to the "initial" insertion mode, which also
+    # reads the name and both identifiers -- see TreeBuilder._mode_initial and
+    # treebuilder.classify_document_mode.
 
-        `force_quirks` is the *spec's* force-quirks flag, which is a tokenizer
-        error flag and nothing else: it is set by eof-in-doctype, by a missing
-        name, and by malformed public/system identifiers. It is NOT the quirks
-        *mode* decision -- deciding that is the tree builder's "initial"
-        insertion mode's job, and it also takes the name and the identifiers
-        into account. See TreeBuilder._mode_initial.
-
-        Because we discard public and system identifiers (deviation #3), the
-        identifier-driven half of both the flag and the decision is a known
-        gap: `<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0//EN">` should end up
-        in quirks mode here and does not.
-        """
-        # self.pos is just past "<!DOCTYPE" (9 chars) on entry, so the
-        # token's own start -- the convention every other tag token uses --
-        # is nine characters back.
-        start = self.pos - 9
-        chars: list[str] = []
-        force_quirks = False
-        close_pos = -1
-        while True:
-            ch = self._next()
-            if ch is EOF:
-                self._error("eof in doctype")
-                force_quirks = True   # spec: eof-in-doctype sets force-quirks
-                self.state = "eof"
-                break
-            if ch == ">":
-                close_pos = self.pos - 1
-                self.state = "data"
-                break
-            chars.append(ch)
-        raw = "".join(chars).strip()
-        name = raw.split()[0].lower() if raw else None
-        if name is None and not force_quirks:
-            # `<!DOCTYPE>` / `<!DOCTYPE >`. At EOF the spec reports only
-            # eof-in-doctype, so don't double-report; force-quirks is already
-            # set on that path.
-            self._error("missing doctype name", close_pos)
-            force_quirks = True
+    def _emit_doctype(self) -> Token:
         self.metrics["doctypes"] += 1
-        yield DoctypeToken(name=name, force_quirks=force_quirks, pos=start)
+        return DoctypeToken(
+            name=None if self._doctype_name is None else "".join(self._doctype_name),
+            public_id=(
+                None if self._doctype_public is None
+                else "".join(self._doctype_public)
+            ),
+            system_id=(
+                None if self._doctype_system is None
+                else "".join(self._doctype_system)
+            ),
+            force_quirks=self._doctype_force_quirks,
+            pos=self._token_start,
+        )
+
+    def _doctype_eof(self) -> Iterator[Token]:
+        """All fifteen non-bogus DOCTYPE states handle EOF identically."""
+        self._error("eof in doctype")
+        self._doctype_force_quirks = True
+        self.state = "eof"
+        yield self._emit_doctype()
+
+    def _state_doctype(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            yield from self._doctype_eof()
+            return
+        if ch not in WHITESPACE:
+            if ch != ">":
+                self._error("missing whitespace before doctype name", self.pos - 1)
+            self.pos -= 1   # reconsume; '>' is diagnosed by the next state
+        self.state = "before_doctype_name"
+
+    def _state_before_doctype_name(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            yield from self._doctype_eof()
+        elif ch in WHITESPACE:
+            pass
+        elif ch == ">":
+            # `<!DOCTYPE>` / `<!DOCTYPE >`. The name stays missing, which is
+            # what the html5lib serialization renders as `<!DOCTYPE >`.
+            self._error("missing doctype name", self.pos - 1)
+            self._doctype_force_quirks = True
+            self.state = "data"
+            yield self._emit_doctype()
+        else:
+            self._doctype_name = [_ascii_lower(ch)]
+            self.state = "doctype_name"
+
+    def _state_doctype_name(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            yield from self._doctype_eof()
+        elif ch in WHITESPACE:
+            self.state = "after_doctype_name"
+        elif ch == ">":
+            self.state = "data"
+            yield self._emit_doctype()
+        else:
+            self._doctype_name.append(_ascii_lower(ch))
+
+    def _state_after_doctype_name(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            yield from self._doctype_eof()
+        elif ch in WHITESPACE:
+            pass
+        elif ch == ">":
+            self.state = "data"
+            yield self._emit_doctype()
+        else:
+            self.pos -= 1
+            peeked = self._peek(6).upper()
+            if peeked == "PUBLIC":
+                self.pos += 6
+                self.state = "after_doctype_public_keyword"
+            elif peeked == "SYSTEM":
+                self.pos += 6
+                self.state = "after_doctype_system_keyword"
+            else:
+                self._error("invalid character sequence after doctype name", self.pos)
+                self._doctype_force_quirks = True
+                self.state = "bogus_doctype"
+
+    # The four "before / after keyword" states differ only in which identifier
+    # they are about and whether whitespace has already been seen, so they
+    # share a body. Spelling them out four times would be forty near-identical
+    # lines with three characters of difference each.
+
+    def _after_doctype_keyword(self, kind: str) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            yield from self._doctype_eof()
+        elif ch in WHITESPACE:
+            self.state = f"before_doctype_{kind}_identifier"
+        elif ch in "\"'":
+            self._error(
+                f"missing whitespace after doctype {kind} keyword", self.pos - 1
+            )
+            yield from self._open_identifier(kind, ch)
+        elif ch == ">":
+            self._error(f"missing doctype {kind} identifier", self.pos - 1)
+            self._doctype_force_quirks = True
+            self.state = "data"
+            yield self._emit_doctype()
+        else:
+            self._error(
+                f"missing quote before doctype {kind} identifier", self.pos - 1
+            )
+            self._doctype_force_quirks = True
+            self.pos -= 1
+            self.state = "bogus_doctype"
+
+    def _before_doctype_identifier(self, kind: str) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            yield from self._doctype_eof()
+        elif ch in WHITESPACE:
+            pass
+        elif ch in "\"'":
+            yield from self._open_identifier(kind, ch)
+        elif ch == ">":
+            self._error(f"missing doctype {kind} identifier", self.pos - 1)
+            self._doctype_force_quirks = True
+            self.state = "data"
+            yield self._emit_doctype()
+        else:
+            self._error(
+                f"missing quote before doctype {kind} identifier", self.pos - 1
+            )
+            self._doctype_force_quirks = True
+            self.pos -= 1
+            self.state = "bogus_doctype"
+
+    def _open_identifier(self, kind: str, quote: str) -> Iterator[Token]:
+        """Start an identifier: set it to the empty string, not to missing."""
+        if kind == "public":
+            self._doctype_public = []
+        else:
+            self._doctype_system = []
+        which = "double" if quote == '"' else "single"
+        self.state = f"doctype_{kind}_identifier_{which}_quoted"
+        return
+        yield
+
+    def _read_identifier(self, kind: str, quote: str) -> Iterator[Token]:
+        buf = self._doctype_public if kind == "public" else self._doctype_system
+        ch = self._next()
+        if ch is EOF:
+            yield from self._doctype_eof()
+        elif ch == quote:
+            self.state = f"after_doctype_{kind}_identifier"
+        elif ch == ">":
+            self._error(f"abrupt doctype {kind} identifier", self.pos - 1)
+            self._doctype_force_quirks = True
+            self.state = "data"
+            yield self._emit_doctype()
+        else:
+            buf.append(ch)
+
+    def _state_after_doctype_public_keyword(self) -> Iterator[Token]:
+        yield from self._after_doctype_keyword("public")
+
+    def _state_after_doctype_system_keyword(self) -> Iterator[Token]:
+        yield from self._after_doctype_keyword("system")
+
+    def _state_before_doctype_public_identifier(self) -> Iterator[Token]:
+        yield from self._before_doctype_identifier("public")
+
+    def _state_before_doctype_system_identifier(self) -> Iterator[Token]:
+        yield from self._before_doctype_identifier("system")
+
+    def _state_doctype_public_identifier_double_quoted(self) -> Iterator[Token]:
+        yield from self._read_identifier("public", '"')
+
+    def _state_doctype_public_identifier_single_quoted(self) -> Iterator[Token]:
+        yield from self._read_identifier("public", "'")
+
+    def _state_doctype_system_identifier_double_quoted(self) -> Iterator[Token]:
+        yield from self._read_identifier("system", '"')
+
+    def _state_doctype_system_identifier_single_quoted(self) -> Iterator[Token]:
+        yield from self._read_identifier("system", "'")
+
+    def _state_after_doctype_public_identifier(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            yield from self._doctype_eof()
+        elif ch in WHITESPACE:
+            self.state = "between_doctype_public_and_system_identifiers"
+        elif ch == ">":
+            self.state = "data"
+            yield self._emit_doctype()
+        elif ch in "\"'":
+            self._error(
+                "missing whitespace between doctype public and system identifiers",
+                self.pos - 1,
+            )
+            yield from self._open_identifier("system", ch)
+        else:
+            self._error(
+                "missing quote before doctype system identifier", self.pos - 1
+            )
+            self._doctype_force_quirks = True
+            self.pos -= 1
+            self.state = "bogus_doctype"
+
+    def _state_between_doctype_public_and_system_identifiers(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            yield from self._doctype_eof()
+        elif ch in WHITESPACE:
+            pass
+        elif ch == ">":
+            self.state = "data"
+            yield self._emit_doctype()
+        elif ch in "\"'":
+            yield from self._open_identifier("system", ch)
+        else:
+            self._error(
+                "missing quote before doctype system identifier", self.pos - 1
+            )
+            self._doctype_force_quirks = True
+            self.pos -= 1
+            self.state = "bogus_doctype"
+
+    def _state_after_doctype_system_identifier(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            yield from self._doctype_eof()
+        elif ch in WHITESPACE:
+            pass
+        elif ch == ">":
+            self.state = "data"
+            yield self._emit_doctype()
+        else:
+            # The one "reconsume in bogus DOCTYPE" path that does NOT set
+            # force-quirks: both identifiers parsed cleanly, so the DOCTYPE is
+            # still usable for the quirks table -- only the trailing junk is
+            # wrong. Do not "tidy" this into the branches above.
+            self._error(
+                "unexpected character after doctype system identifier", self.pos - 1
+            )
+            self.pos -= 1
+            self.state = "bogus_doctype"
+
+    def _state_bogus_doctype(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            # No error: whatever went wrong was reported by the state that
+            # routed us here.
+            self.state = "eof"
+            yield self._emit_doctype()
+        elif ch == ">":
+            self.state = "data"
+            yield self._emit_doctype()
 
 
 # --------------------------------------------------------------------------

@@ -66,7 +66,7 @@ CLOSES_P = frozenset({
     "pre", "search", "section", "summary", "table", "ul",
     # `plaintext` is listed because this set is kept spec-correct, but be aware
     # it cannot fire end to end: the tokenizer has no PLAINTEXT state and no
-    # <plaintext> start tag switches into one (tokenizer deviation #7), so the
+    # <plaintext> start tag switches into one (tokenizer deviation #6), so the
     # rest of the document after <plaintext> is still tokenized as data. The
     # p-closing half works; the feature does not. Same caveat in
     # SPECIAL_ELEMENTS below.
@@ -89,7 +89,7 @@ SPECIAL_ELEMENTS = frozenset({
     "html", "iframe", "img", "input", "keygen", "li", "link", "listing",
     "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
     # `plaintext` here has the same caveat as in CLOSES_P: spec-correct set,
-    # no tokenizer support behind it (tokenizer deviation #7).
+    # no tokenizer support behind it (tokenizer deviation #6).
     "noscript", "object", "ol", "p", "param", "plaintext", "pre", "script",
     "search", "section", "select", "source", "style", "summary", "table",
     "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "title",
@@ -166,6 +166,153 @@ TREE_ERROR_CODES = frozenset({
     "expected-one-end-tag-but-got-another",
     "end-tag-too-early",
 })
+
+
+# ---------------------------------------------------------------------------
+# The spec's quirks-mode table, from "The 'initial' insertion mode".
+#
+# Matching is case-insensitive, so identifiers are lowercased before
+# comparison and every entry here is already lowercase. EXACT matches by
+# equality, the PREFIXES tuples by startswith.
+#
+# The full list is here -- all 55 quirks prefixes -- rather than a
+# representative sample, because an incomplete table misclassifies silently:
+# nothing crashes, a page just lays out in the wrong mode. Verified entry by
+# entry against the spec; the count is asserted in tests/htmlparse/test_doctype.py
+# so a future edit that drops one is caught.
+#
+# The document *mode* is recorded, not acted on. Unitless lengths and the
+# alternate box model are layout concerns and belong to Phase 3.
+# ---------------------------------------------------------------------------
+# "ASCII case-insensitive", which str.lower() is not: it also folds 'É' to
+# 'é' and expands 'İ' to two code points, which would change a prefix's length
+# and silently break startswith. Same table html5lib uses.
+_ASCII_LOWER = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"
+)
+
+
+def _ascii_lower(text: str) -> str:
+    return text.translate(_ASCII_LOWER)
+
+
+QUIRKS_EXACT = frozenset({
+    "-//w3o//dtd w3 html strict 3.0//en//",
+    "-/w3c/dtd html 4.0 transitional/en",
+    "html",
+})
+QUIRKS_SYSTEM_ID = "http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd"
+QUIRKS_PREFIXES = (
+    "+//silmaril//dtd html pro v0r11 19970101//",
+    "-//as//dtd html 3.0 aswedit + extensions//",
+    "-//advasoft ltd//dtd html 3.0 aswedit + extensions//",
+    "-//ietf//dtd html 2.0 level 1//",
+    "-//ietf//dtd html 2.0 level 2//",
+    "-//ietf//dtd html 2.0 strict level 1//",
+    "-//ietf//dtd html 2.0 strict level 2//",
+    "-//ietf//dtd html 2.0 strict//",
+    "-//ietf//dtd html 2.0//",
+    "-//ietf//dtd html 2.1e//",
+    "-//ietf//dtd html 3.0//",
+    "-//ietf//dtd html 3.2 final//",
+    "-//ietf//dtd html 3.2//",
+    "-//ietf//dtd html 3//",
+    "-//ietf//dtd html level 0//",
+    "-//ietf//dtd html level 1//",
+    "-//ietf//dtd html level 2//",
+    "-//ietf//dtd html level 3//",
+    "-//ietf//dtd html strict level 0//",
+    "-//ietf//dtd html strict level 1//",
+    "-//ietf//dtd html strict level 2//",
+    "-//ietf//dtd html strict level 3//",
+    "-//ietf//dtd html strict//",
+    "-//ietf//dtd html//",
+    "-//metrius//dtd metrius presentational//",
+    "-//microsoft//dtd internet explorer 2.0 html strict//",
+    "-//microsoft//dtd internet explorer 2.0 html//",
+    "-//microsoft//dtd internet explorer 2.0 tables//",
+    "-//microsoft//dtd internet explorer 3.0 html strict//",
+    "-//microsoft//dtd internet explorer 3.0 html//",
+    "-//microsoft//dtd internet explorer 3.0 tables//",
+    "-//netscape comm. corp.//dtd html//",
+    "-//netscape comm. corp.//dtd strict html//",
+    "-//o'reilly and associates//dtd html 2.0//",
+    "-//o'reilly and associates//dtd html extended 1.0//",
+    "-//o'reilly and associates//dtd html extended relaxed 1.0//",
+    "-//sq//dtd html 2.0 hotmetal + extensions//",
+    "-//softquad software//dtd hotmetal pro 6.0::19990601::extensions to html 4.0//",
+    "-//softquad//dtd hotmetal pro 4.0::19971010::extensions to html 4.0//",
+    "-//spyglass//dtd html 2.0 extended//",
+    "-//sun microsystems corp.//dtd hotjava html//",
+    "-//sun microsystems corp.//dtd hotjava strict html//",
+    "-//w3c//dtd html 3 1995-03-24//",
+    "-//w3c//dtd html 3.2 draft//",
+    "-//w3c//dtd html 3.2 final//",
+    "-//w3c//dtd html 3.2//",
+    "-//w3c//dtd html 3.2s draft//",
+    "-//w3c//dtd html 4.0 frameset//",
+    "-//w3c//dtd html 4.0 transitional//",
+    "-//w3c//dtd html experimental 19960712//",
+    "-//w3c//dtd html experimental 970421//",
+    "-//w3c//dtd w3 html//",
+    "-//w3o//dtd w3 html 3.0//",
+    "-//webtechs//dtd mozilla html 2.0//",
+    "-//webtechs//dtd mozilla html//",
+)
+# Limited-quirks whatever the system identifier says.
+LIMITED_QUIRKS_PREFIXES = (
+    "-//w3c//dtd xhtml 1.0 frameset//",
+    "-//w3c//dtd xhtml 1.0 transitional//",
+)
+# The hinge of the whole table: HTML 4.01 (not 4.0) Frameset and Transitional
+# are quirks when the system identifier is missing OR THE EMPTY STRING, and
+# limited-quirks when it is a non-empty string. They are deliberately absent
+# from QUIRKS_PREFIXES above -- the spec lists them in a separate clause, and
+# folding them in would make every `<!DOCTYPE ... 4.01 Transitional ...
+# "...dtd">` in the wild quirks instead of limited-quirks.
+#
+# The empty-string half is a real divergence from html5lib, which tests
+# `systemId is None` here and so classifies `PUBLIC "-//W3C//DTD HTML 4.01
+# Transitional//EN" ""` as limited-quirks. The spec's wording is explicit
+# ("missing or the empty string" / "neither missing nor the empty string") and
+# wins. The trailing note in the spec -- "a system identifier whose value is
+# the empty string is not considered missing" -- governs the *parse error*
+# condition at the top of the DOCTYPE rules, not these two clauses.
+QUIRKS_UNLESS_SYSTEM_ID = (
+    "-//w3c//dtd html 4.01 frameset//",
+    "-//w3c//dtd html 4.01 transitional//",
+)
+
+
+def classify_document_mode(token: DoctypeToken | None) -> str:
+    """Return "no-quirks", "limited-quirks" or "quirks" for a DOCTYPE token.
+
+    `token is None` means the document had no DOCTYPE at all, which is quirks.
+
+    Clause order is load-bearing and follows the spec's: the quirks conditions
+    are exhausted before either limited-quirks condition is considered.
+    """
+    if token is None:
+        return "quirks"
+    if token.force_quirks or _ascii_lower(token.name or "") != "html":
+        return "quirks"
+
+    public = _ascii_lower(token.public_id or "")
+    system = _ascii_lower(token.system_id or "")
+
+    if public in QUIRKS_EXACT:
+        return "quirks"
+    if system == QUIRKS_SYSTEM_ID:
+        return "quirks"
+    if public.startswith(QUIRKS_PREFIXES):
+        return "quirks"
+    if public.startswith(QUIRKS_UNLESS_SYSTEM_ID):
+        # `if system`, not `is not None`: an empty system identifier counts as
+        # missing for this clause. See the note on QUIRKS_UNLESS_SYSTEM_ID.
+        return "limited-quirks" if system else "quirks"
+    if public.startswith(LIMITED_QUIRKS_PREFIXES):
+        return "limited-quirks"
+    return "no-quirks"
 
 
 class TreeBuilder:
@@ -430,16 +577,19 @@ class TreeBuilder:
 
     def _mode_initial(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, DoctypeToken):
-            self.document.append_child(DocumentType(token.name or "html"))
+            # `or ""`, not `or "html"`: a DOCTYPE with no name at all
+            # (`<!DOCTYPE>`) keeps an empty name, which is what html5lib
+            # serializes as `<!DOCTYPE >`. Substituting "html" would both
+            # misrender it and make it classify as no-quirks.
+            self.document.append_child(
+                DocumentType(token.name or "", token.public_id, token.system_id)
+            )
             # The quirks-mode *decision* lives here, not in the tokenizer.
             # DoctypeToken.force_quirks is only the spec's force-quirks error
-            # flag (eof-in-doctype, missing name); the "initial" insertion mode
-            # additionally puts the document in quirks mode when the name is
-            # anything but "html", or when the public/system identifier matches
-            # one of the spec's quirky lists. That last clause is unimplemented:
-            # the tokenizer discards the identifiers (tokenizer deviation #3),
-            # so identifier-driven quirks is a documented gap, not an oversight.
-            self.document.quirks_mode = token.force_quirks or token.name != "html"
+            # flag (eof-in-doctype, missing name, malformed identifier); the
+            # "initial" insertion mode additionally reads the name and both
+            # identifiers. See classify_document_mode.
+            self.document.mode = classify_document_mode(token)
             self.mode = "before_html"
         elif isinstance(token, CommentToken):
             self.document.append_child(Comment(token.data))
@@ -456,7 +606,9 @@ class TreeBuilder:
                 # Doctype, comment, whitespace, start tag, characters and EOF
                 # are all handled above, so this is an end tag and nothing else.
                 self._error("expected-doctype-but-got-end-tag", token.pos)
-            self.document.quirks_mode = True
+            # No DOCTYPE at all: quirks. Document.quirks_mode is derived from
+            # this now, so it cannot be assigned directly.
+            self.document.mode = "quirks"
             self.mode = "before_html"
             self.dispatch(token, from_mode="initial")
 

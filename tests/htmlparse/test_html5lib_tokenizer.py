@@ -41,7 +41,7 @@ STATE_NAMES = {
 }
 # "PLAINTEXT state" is deliberately absent, which silently drops the corpus's
 # PLAINTEXT cases (~52) rather than xfailing them. There is no tokenizer state
-# to map it to -- see tokenizer deviation #7 -- so there is nothing to pin.
+# to map it to -- see tokenizer deviation #6 -- so there is nothing to pin.
 # When PLAINTEXT lands, add it here and the cases start being enforced.
 
 # Cases known to fail, each with the reason it is deferred. Keyed by
@@ -51,7 +51,7 @@ STATE_NAMES = {
 # listed here fails, the suite goes red. That is the point -- the set is a
 # ledger of deferred work, not a mute button.
 KNOWN_MISSES = {
-    # -- double-escaped script data: deviation #4 ------------------------
+    # -- double-escaped script data: deviation #3 ------------------------
     ("</script> in script HTML comment - double escaped", "Script data state"): (
         "script data double-escaped states not implemented; same gap as the "
         "xfail in test_rawtext.py::test_double_escaped_script"
@@ -95,9 +95,17 @@ def _to_corpus_shape(token) -> list | None:
     if isinstance(token, CommentToken):
         return ["Comment", token.data]
     if isinstance(token, DoctypeToken):
-        # We don't parse public/system identifiers (deviation #3). The
-        # corpus's fifth field is "correctness", the inverse of force-quirks.
-        return ["DOCTYPE", token.name, None, None, not token.force_quirks]
+        # The corpus's fifth field is "correctness", the inverse of
+        # force-quirks. Fields three and four were hardcoded to None while the
+        # tokenizer discarded the identifiers; Task C captures them, so they
+        # are reported for real.
+        return [
+            "DOCTYPE",
+            token.name,
+            token.public_id,
+            token.system_id,
+            not token.force_quirks,
+        ]
     # EOFToken: the corpus has no descriptor for it.
     return None
 

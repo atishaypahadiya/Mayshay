@@ -42,7 +42,22 @@ class Node:
 class Document(Node):
     def __init__(self) -> None:
         super().__init__()
-        self.quirks_mode = False
+        # "no-quirks" | "limited-quirks" | "quirks", set by the tree builder's
+        # "initial" insertion mode. Recorded now, acted on in Phase 3 --
+        # unitless lengths and the alternate box model are layout concerns,
+        # not cascade concerns.
+        self.mode = "no-quirks"
+
+    @property
+    def quirks_mode(self) -> bool:
+        """Derived, and deliberately read-only.
+
+        It used to be a plain attribute the tree builder assigned. It is a
+        property now so the two cannot drift: `mode` is the single source of
+        truth and `limited-quirks` is not `quirks`. An assignment here is a
+        bug, and raising AttributeError is how it gets found.
+        """
+        return self.mode == "quirks"
 
     @property
     def document_element(self) -> Element | None:
@@ -53,9 +68,20 @@ class Document(Node):
 
 
 class DocumentType(Node):
-    def __init__(self, name: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        public_id: str | None = None,
+        system_id: str | None = None,
+    ) -> None:
         super().__init__()
         self.name = name
+        # None means "missing", not "empty". html5lib-tests renders a DOCTYPE
+        # with either identifier present as `<!DOCTYPE name "pub" "sys">`, so
+        # `<!DOCTYPE potato SYSTEM "taco">` must serialize with an empty
+        # public id rather than dropping the pair.
+        self.public_id = public_id
+        self.system_id = system_id
 
 
 class Element(Node):
@@ -94,7 +120,12 @@ def _render(node: Node, depth: int, out: list[str]) -> None:
     elif isinstance(node, Comment):
         out.append(f"{pad}<!-- {node.data} -->")
     elif isinstance(node, DocumentType):
-        out.append(f"{pad}<!DOCTYPE {node.name}>")
+        if node.public_id is None and node.system_id is None:
+            out.append(f"{pad}<!DOCTYPE {node.name}>")
+        else:
+            public = node.public_id or ""
+            system = node.system_id or ""
+            out.append(f'{pad}<!DOCTYPE {node.name} "{public}" "{system}">')
 
 
 def serialize(document: Document) -> str:
