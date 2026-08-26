@@ -14,6 +14,16 @@ Deliberate deviations from the spec, documented so they don't surprise us later:
    as a TODO; text passes through raw for now.
 3. DOCTYPE parsing is simplified: we capture the name and ignore public/system
    identifiers, since nothing downstream uses them except quirks-mode detection.
+4. The double-escaped script data states (script data double escape start /
+   double escaped / double escaped dash / dash dash / less-than sign / double
+   escape end) are NOT implemented. `<script><!--<script>...</script>-->` is
+   therefore tokenized as if the inner `</script>` closed the outer element.
+   Real-world usage is rare and the eight-state cycle earns its own task;
+   pinned by an xfail in tests/htmlparse/test_rawtext.py.
+5. Reaching EOF in the rcdata / rawtext / script data states records a parse
+   error. The spec calls for no error there -- it just emits the EOF token.
+   We keep the error because an unterminated <script>/<style>/<textarea> is a
+   truncation signal worth counting in the metrics.
 """
 
 from __future__ import annotations
@@ -276,6 +286,10 @@ class Tokenizer:
             self._temp_buffer = []
             self.state = f"{name}_end_tag_open"
         elif name == "script_data" and ch == "!":
+            # "<!" starts a new text run when the buffer is empty. pos is just
+            # past the '!', so the run began two characters back.
+            if not self._buffer:
+                self._buffer_start = self.pos - 2
             self._buffer.append("<!")
             self.state = "script_data_escape_start"
         else:

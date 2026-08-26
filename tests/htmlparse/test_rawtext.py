@@ -152,6 +152,20 @@ def test_unmatched_lt_run_in_rawtext_carries_source_offset():
     assert run.pos == 14
 
 
+def test_script_comment_run_carries_source_offset():
+    """The "<!" pushed back by _raw_less_than_sign_state starts a fresh run.
+
+    `<!--` right after `<script>` is common input, and the '<!' branch is the
+    fourth replay path into _buffer -- it needs the same `if not self._buffer`
+    guard as the other three or the run inherits the previous run's offset.
+    """
+    src = "PREFIX<script><!-- x --></script>"
+    assert src.index("<!--") == 14
+    texts = [t for t in Tokenizer(src).tokenize() if isinstance(t, CharacterToken)]
+    run = next(t for t in texts if t.data == "<!-- x -->")
+    assert run.pos == 14
+
+
 def test_non_alpha_after_end_tag_open_carries_source_offset():
     """`</` followed by a non-letter is literal text starting at the '<'."""
     src = "PREFIX<script></1</script>"
