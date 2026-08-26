@@ -83,3 +83,63 @@ def test_default_path_is_under_data_metrics():
     """The fallback still has to be sane when it IS used."""
     assert metrics.STAGES_CSV.parent.name == "metrics"
     assert metrics.STAGES_CSV.parent.parent.name == "data"
+
+
+def test_row_matches_expected_dict_exactly(tmp_path):
+    """Every column must round-trip.
+
+    `csv.DictWriter` silently fills a missing key with `""`, so asserting on
+    individual fields (as the tests above do) would still pass even if a
+    column -- `source` in particular -- were dropped or wired to the wrong
+    value. Assert the whole row instead. This also covers `timestamp`, which
+    nothing else here checks is even present.
+    """
+    target = tmp_path / "stages.csv"
+    metrics.emit(
+        "tokenize", Counter({"start_tags": 3}),
+        source="a.html", run_id="r1", path=target,
+    )
+    rows = metrics.read(target)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["timestamp"]  # present and non-empty; exact value is wall-clock
+    without_timestamp = {k: v for k, v in row.items() if k != "timestamp"}
+    assert without_timestamp == {
+        "run_id": "r1",
+        "stage": "tokenize",
+        "source": "a.html",
+        "key": "start_tags",
+        "value": "3",
+    }
+
+
+def test_header_written_for_preexisting_empty_file(tmp_path):
+    """A zero-byte file that already exists still needs a header.
+
+    This is a real case, not just the file-absent case: a placeholder file
+    (`Path.touch()`, a truncated previous run, ...) can exist with no
+    content before the first `emit` call ever runs against it.
+    """
+    target = tmp_path / "stages.csv"
+    target.touch()
+    metrics.emit("s", Counter({"a": 1}), source="x", run_id="r1", path=target)
+    assert target.read_text().count("run_id,timestamp") == 1
+    rows = metrics.read(target)
+    assert len(rows) == 1
+    assert rows[0]["key"] == "a"
+
+
+def test_read_discards_a_stray_duplicate_header_row(tmp_path):
+    """Defends the analysis side against the narrow race `emit` documents.
+
+    If two concurrent first-writers against the same pre-existing empty file
+    ever both won the header write, the second header would land in the file
+    as an ordinary-looking row. `read` must not hand that back as data.
+    """
+    target = tmp_path / "stages.csv"
+    metrics.emit("s", Counter({"a": 1}), source="x", run_id="r1", path=target)
+    with target.open("a", encoding="utf-8", newline="") as handle:
+        handle.write("run_id,timestamp,stage,source,key,value\n")
+    rows = metrics.read(target)
+    assert len(rows) == 1
+    assert rows[0]["key"] == "a"

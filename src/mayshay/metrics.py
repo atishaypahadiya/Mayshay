@@ -75,16 +75,13 @@ def emit(
     if not counters:
         return 0
 
-    is_new = not target.exists() or target.stat().st_size == 0
     stamp = f"{time.time():.6f}"
 
-    # Build the whole payload, then write once. Many small writes from
+    # Build the whole row payload, then write once. Many small writes from
     # concurrent processes can interleave mid-row; a single append-mode write
     # of a small buffer will not in practice.
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=FIELDNAMES, lineterminator="\n")
-    if is_new:
-        writer.writeheader()
     rows = 0
     for key in sorted(counters):
         writer.writerow({
@@ -96,16 +93,49 @@ def emit(
             "value": counters[key],
         })
         rows += 1
+    row_payload = buffer.getvalue()
+    header_line = ",".join(FIELDNAMES) + "\n"
 
+    # Whether a header is needed used to be decided by checking
+    # `target.exists()` and then appending in a later, separate step -- a
+    # classic time-of-check/time-of-use race. Two genuinely concurrent
+    # first-writers can both observe "file absent" and each append its own
+    # header; `csv.DictReader` reads the second one back as an ordinary data
+    # row with `run_id == "run_id"`, silently corrupting the file. Close that
+    # race for the common case -- file absent -- with an exclusive create:
+    # `open("x")` raises for every caller but the one that actually creates
+    # the file, so at most one process can ever win the header write.
+    try:
+        with target.open("x", encoding="utf-8", newline="") as handle:
+            handle.write(header_line + row_payload)
+        return rows
+    except FileExistsError:
+        pass
+
+    # The file already existed -- created moments ago by us, by another
+    # process, or as a pre-existing zero-byte placeholder. That last case can
+    # still legitimately need a header, but deciding it from `stat()` here is
+    # the same race as before, just narrower: it only matters if two writers
+    # hit the *same already-existing empty file* at the same instant, which
+    # this does not engineer away. `read()` defends the analysis side instead,
+    # by discarding any row that is itself a stray duplicate header.
+    is_new = target.stat().st_size == 0
+    payload = (header_line if is_new else "") + row_payload
     with target.open("a", encoding="utf-8", newline="") as handle:
-        handle.write(buffer.getvalue())
+        handle.write(payload)
     return rows
 
 
 def read(path: Path | None = None) -> list[dict[str, str]]:
-    """Read rows back. Used by tests and by the analysis half of the project."""
+    """Read rows back. Used by tests and by the analysis half of the project.
+
+    Discards any row that is itself a stray duplicate header -- the residue
+    of the narrow pre-existing-empty-file race documented in `emit` -- so a
+    corrupt file cannot silently poison downstream analysis with a fake
+    `run_id == "run_id"` row.
+    """
     target = path or STAGES_CSV
     if not target.exists():
         return []
     with target.open(encoding="utf-8", newline="") as handle:
-        return list(csv.DictReader(handle))
+        return [row for row in csv.DictReader(handle) if row.get("run_id") != "run_id"]

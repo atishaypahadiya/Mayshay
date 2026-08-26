@@ -294,7 +294,7 @@ def read(path: Path | None = None) -> list[dict[str, str]]:
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `.venv/bin/pytest tests/test_metrics.py -v`
-Expected: 8 passed.
+Expected: 9 passed.
 
 - [ ] **Step 5: Record the two-stage decision in CLAUDE.md**
 
