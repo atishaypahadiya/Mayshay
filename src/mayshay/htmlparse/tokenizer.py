@@ -234,6 +234,8 @@ class Tokenizer:
                     != f"/{self._rawtext_tag}>"[:2 + len(self._rawtext_tag)]:
                 if not self._peek(1 + len(self._rawtext_tag)).lower().startswith(
                         f"/{self._rawtext_tag}"):
+                    if not self._buffer:
+                        self._buffer_start = self.pos - 1
                     self._buffer.append(ch)
                     return
             yield from self._flush_text()

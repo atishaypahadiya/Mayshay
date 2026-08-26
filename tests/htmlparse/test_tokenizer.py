@@ -54,3 +54,12 @@ def test_switch_to_is_public():
     tk.switch_to("rcdata", last_start_tag="title")
     assert tk.state == "rcdata"
     assert tk._last_start_tag == "title"
+
+
+def test_rawtext_literal_lt_text_run_has_correct_offset():
+    """A text run inside rawtext that starts with an unmatched '<' must not
+    inherit a stale _buffer_start from an earlier flushed run."""
+    result = toks("PREFIX<script><x>foo</script>")
+    texts = [t for t in result if isinstance(t, CharacterToken)]
+    rawtext_run = next(t for t in texts if t.data == "<x>foo")
+    assert rawtext_run.pos == 14
