@@ -9,3 +9,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# Every xfail on this project is a ledger entry with a named cause, not a mute
+# button: when the cause is fixed the test must XPASS *loudly* so the entry gets
+# retired. Strict by default so no bare @pytest.mark.xfail can opt out silently.
+xfail_strict = true
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "tests/html5lib-tests"]
