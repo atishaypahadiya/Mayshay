@@ -11,6 +11,10 @@ Package root is `src/mayshay/`. Imports look like:
 
 ## Rules
 - No lxml, no html.parser, no browser libs for core parsing. Hand-rolled only.
+  EXCEPTION: `html.entities.html5` is used as the named character reference
+  data table (2231 entries). It is data -- the WHATWG named reference list --
+  not a parser. All matching logic (longest match, the legacy semicolon rule,
+  numeric remapping) is hand-rolled in `htmlparse/entities.py`.
 - BeautifulSoup allowed ONLY in scripts/ for corpus collection, never in src/mayshay/.
 - Every stage emits timing + size metrics to data/metrics/.
 - Tests in tests/ mirror src/mayshay/. pytest.

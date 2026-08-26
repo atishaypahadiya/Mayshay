@@ -1,4 +1,5 @@
-"""The html5lib-tests tokenizer corpus, restricted to the raw-text states.
+"""The html5lib-tests tokenizer corpus, restricted to the raw-text states and
+(as of Task 4) the named/numeric character-reference corpus.
 
 Task 3 replaced a lookahead hack with the spec's RCDATA / RAWTEXT / ScriptData
 state families -- roughly 26 states. Hand-written tests under-constrain that:
@@ -6,9 +7,13 @@ most of them pass against the old hack too, because the hack was crude rather
 than wrong on simple input. This module pins the rewrite against the corpus
 instead, so the states are held to the behaviour the spec actually specifies.
 
-Scope is deliberately narrow: only cases whose `initialStates` name a state
-this task owns. Data-state coverage of the whole corpus needs entity decoding
-(Task 4) and belongs in its own module.
+The raw-text section's scope is deliberately narrow: only cases whose
+`initialStates` name a state Task 3 owns. Task 4 adds a second section below
+covering `entities.test` and `namedEntities.test` -- both pure Data-state
+corpora -- for the same reason: hand-written entity tests under-constrain a
+decoder that replaces "pass text through raw" with real decoding, since a
+no-op decoder would still pass most hand-written cases that don't involve an
+actual ampersand.
 """
 
 from __future__ import annotations
@@ -42,16 +47,6 @@ STATE_NAMES = {
 # listed here fails, the suite goes red. That is the point -- the set is a
 # ledger of deferred work, not a mute button.
 KNOWN_MISSES = {
-    # -- entity decoding in RCDATA: deviation #2, Task 4 ------------------
-    ("RCDATA w/ an entity", "RCDATA state"): (
-        "named character references are not decoded yet (Task 4)"
-    ),
-    ("Non BMP-charref in RCDATA", "RCDATA state"): (
-        "named character references are not decoded yet (Task 4)"
-    ),
-    ("Commented entities in RCDATA", "RCDATA state"): (
-        "named character references are not decoded yet (Task 4)"
-    ),
     # -- double-escaped script data: deviation #4 ------------------------
     ("</script> in script HTML comment - double escaped", "Script data state"): (
         "script data double-escaped states not implemented; same gap as the "
@@ -160,4 +155,61 @@ def test_raw_text_corpus_is_not_empty():
     assert len(cases) == 226, (
         f"expected 226 raw-text cases from the pinned corpus, got {len(cases)}; "
         "if the submodule moved, re-check KNOWN_MISSES before updating this"
+    )
+
+
+# --------------------------------------------------------------------------
+# Character reference corpus: entities.test + namedEntities.test (Task 4)
+# --------------------------------------------------------------------------
+#
+# Both files consist entirely of "Data state" cases -- no initialStates/
+# lastStartTag plumbing needed, unlike the raw-text section above. Coverage
+# includes the named-reference table end to end (namedEntities.test) plus the
+# legacy-attribute-rule and numeric-reference edge cases (entities.test).
+
+ENTITY_FILES = ("entities.test", "namedEntities.test")
+
+# Keyed by (filename, description, input) rather than just (filename,
+# description): entities.test alone has three descriptions reused across
+# several inputs (e.g. "Windows-1252 REPLACEMENT CHAR numeric entity." covers
+# five different code points), so description isn't unique within a file.
+ENTITY_KNOWN_MISSES: dict[tuple[str, str, str], str] = {}
+
+
+def _tokenize_data(source: str) -> list[list]:
+    shaped = [_to_corpus_shape(t) for t in Tokenizer(source).tokenize()]
+    return _coalesce([t for t in shaped if t is not None])
+
+
+def _entity_cases():
+    """(id, source, expected) for every entities.test / namedEntities.test case."""
+    for filename in ENTITY_FILES:
+        for test in load_tokenizer_tests(filename):
+            key = (filename, test.description, test.input)
+            marks = []
+            if key in ENTITY_KNOWN_MISSES:
+                marks.append(
+                    pytest.mark.xfail(strict=True, reason=ENTITY_KNOWN_MISSES[key])
+                )
+            yield pytest.param(
+                test.input,
+                test.output,
+                marks=marks,
+                id=f"{filename}: {test.description}",
+            )
+
+
+@requires_corpus
+@pytest.mark.parametrize("source,expected", list(_entity_cases()))
+def test_html5lib_entity_case(source, expected):
+    assert _tokenize_data(source) == _coalesce(expected)
+
+
+@requires_corpus
+def test_entity_corpus_is_not_empty():
+    """A loader regression that silently yields nothing must not read green."""
+    cases = list(_entity_cases())
+    assert len(cases) == 4290, (
+        f"expected 4290 entity cases from the pinned corpus, got {len(cases)}; "
+        "if the submodule moved, re-check ENTITY_KNOWN_MISSES before updating this"
     )

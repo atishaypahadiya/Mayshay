@@ -9,9 +9,10 @@ Deliberate deviations from the spec, documented so they don't surprise us later:
 1. The spec emits one character token per character. We coalesce runs of text
    into a single Character token. This is what real engines do too, and it cuts
    token count by ~50x on text-heavy pages.
-2. Named character references (&amp;, &nbsp;) are NOT decoded yet. That needs
-   the 2200-entry named reference table plus the longest-match rules. Tracked
-   as a TODO; text passes through raw for now.
+2. Named and numeric character references (&amp;, &nbsp;, &#65;) are decoded
+   in the data state, the RCDATA state, and the three attribute-value states
+   -- see htmlparse/entities.py. RAWTEXT, script data and comments leave
+   references untouched, per spec.
 3. DOCTYPE parsing is simplified: we capture the name and ignore public/system
    identifiers, since nothing downstream uses them except quirks-mode detection.
 4. The double-escaped script data states (script data double escape start /
@@ -31,6 +32,8 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterator
+
+from mayshay.htmlparse.entities import decode_reference
 
 # Characters the spec treats as whitespace during tokenization.
 WHITESPACE = "\t\n\f\r "
@@ -161,6 +164,16 @@ class Tokenizer:
         self.errors.append((self.pos, message))
         self.metrics["parse_errors"] += 1
 
+    def _consume_character_reference(self, in_attribute: bool) -> str:
+        """Called with self.pos just past the '&'."""
+        text, new_pos, error = decode_reference(self.source, self.pos, in_attribute)
+        self.pos = new_pos
+        if error:
+            self._error(error)
+        if text != "&":
+            self.metrics["character_references"] += 1
+        return text
+
     # -- token construction ------------------------------------------------
 
     def _flush_text(self) -> Iterator[Token]:
@@ -242,6 +255,10 @@ class Tokenizer:
         elif ch == "<":
             yield from self._flush_text()
             self.state = "tag_open"
+        elif ch == "&":
+            if not self._buffer:
+                self._buffer_start = self.pos - 1
+            self._buffer.append(self._consume_character_reference(False))
         else:
             if not self._buffer:
                 self._buffer_start = self.pos - 1
@@ -269,6 +286,10 @@ class Tokenizer:
         elif ch == "<":
             self._temp_buffer = []
             self.state = f"{name}_less_than_sign"
+        elif ch == "&" and name == "rcdata":
+            if not self._buffer:
+                self._buffer_start = self.pos - 1
+            self._buffer.append(self._consume_character_reference(False))
         else:
             # No special case for '-' here. A dash in script data is ordinary
             # text; the escaped family is entered via '<!' in
@@ -618,6 +639,8 @@ class Tokenizer:
             self.state = "eof"
         elif ch == '"':
             self.state = "after_attribute_value_quoted"
+        elif ch == "&":
+            self._attr_value.append(self._consume_character_reference(True))
         else:
             self._attr_value.append(ch)
         return
@@ -630,6 +653,8 @@ class Tokenizer:
             self.state = "eof"
         elif ch == "'":
             self.state = "after_attribute_value_quoted"
+        elif ch == "&":
+            self._attr_value.append(self._consume_character_reference(True))
         else:
             self._attr_value.append(ch)
         return
@@ -647,6 +672,8 @@ class Tokenizer:
             self.state = "data"
             token = self._emit_tag()   # may override state to rcdata/rawtext/script_data
             yield token
+        elif ch == "&":
+            self._attr_value.append(self._consume_character_reference(True))
         else:
             self._attr_value.append(ch)
 
