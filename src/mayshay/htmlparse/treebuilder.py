@@ -64,6 +64,10 @@ CLOSES_P = frozenset({
     "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header",
     "hgroup", "hr", "listing", "main", "menu", "nav", "ol", "p", "plaintext",
     "pre", "section", "summary", "table", "ul",
+    # xmp belongs here even though it is a raw-text element: the spec's in-body
+    # xmp rule closes an open p *before* the generic raw text algorithm runs.
+    # textarea, iframe and noembed deliberately do NOT close a p.
+    "xmp",
 })
 
 # The spec's "special" category. Its only job here is the "any other end tag"
@@ -177,6 +181,17 @@ class TreeBuilder:
             point.append_child(Text(data))
             self.metrics["text_nodes"] += 1
 
+    @staticmethod
+    def raw_text_state(name: str) -> str | None:
+        """The tokenizer state `name` demands, or None if it is not raw text."""
+        if name in RCDATA_ELEMENTS:
+            return "rcdata"
+        if name in RAWTEXT_ELEMENTS:
+            return "rawtext"
+        if name in SCRIPT_ELEMENTS:
+            return "script_data"
+        return None
+
     def insert_raw_text_element(self, token: StartTagToken, state: str) -> None:
         """Generic RAWTEXT/RCDATA element parsing: the tree builder drives
         the tokenizer, which is why Tokenizer.switch_to exists."""
@@ -184,6 +199,20 @@ class TreeBuilder:
         self.tokenizer.switch_to(state, last_start_tag=token.name)
         self.original_mode = self.mode
         self.mode = "text"
+
+    def insert_element_maybe_raw_text(self, token: StartTagToken) -> None:
+        """Insert `token`, then apply raw-text tokenization if it needs it.
+
+        Needing RCDATA/RAWTEXT/ScriptData tokenization is a *consequence* of
+        inserting an element, never a precondition that lets it skip the
+        insertion mode's own rules. Dispatching on it first is what used to
+        promote <textarea> into <head> and stop <xmp> closing an open <p>.
+        """
+        state = self.raw_text_state(token.name)
+        if state is None:
+            self.insert_element(token)
+        else:
+            self.insert_raw_text_element(token, state)
 
     # -- driver ------------------------------------------------------------
 
@@ -193,8 +222,11 @@ class TreeBuilder:
             self.dispatch(token)
             if isinstance(token, EOFToken):
                 break
-        self.metrics["parse_time_ms"] = int(
-            (time.perf_counter() - started) * 1000
+        # Not int(): almost every parse we do finishes in well under a
+        # millisecond, and a timing metric that always reads 0 is not a
+        # timing metric. Microsecond resolution, still expressed in ms.
+        self.metrics["parse_time_ms"] = round(
+            (time.perf_counter() - started) * 1000, 3
         )
         self.metrics["parse_errors"] = self.tokenizer.metrics["parse_errors"]
         return self.document
@@ -252,14 +284,13 @@ class TreeBuilder:
             self.insert_text(token.data)
         elif isinstance(token, CommentToken):
             self._insertion_point().append_child(Comment(token.data))
-        elif isinstance(token, StartTagToken) and token.name in RCDATA_ELEMENTS:
-            self.insert_raw_text_element(token, "rcdata")
-        elif isinstance(token, StartTagToken) and token.name in RAWTEXT_ELEMENTS:
-            self.insert_raw_text_element(token, "rawtext")
-        elif isinstance(token, StartTagToken) and token.name in SCRIPT_ELEMENTS:
-            self.insert_raw_text_element(token, "script_data")
         elif isinstance(token, StartTagToken) and token.name in HEAD_ELEMENTS:
-            self.insert_element(token)
+            # title/style/script/noframes get raw-text tokenization *because*
+            # they are head elements, not instead of being checked against the
+            # head element list. textarea, xmp, iframe and noembed are raw text
+            # but are NOT head elements, so they fall through to the else branch
+            # below, close <head>, and are handled in body where they belong.
+            self.insert_element_maybe_raw_text(token)
         elif isinstance(token, EndTagToken) and token.name == "head":
             self.pop_until("head")
             self.mode = "after_head"
@@ -294,20 +325,20 @@ class TreeBuilder:
             self.mode = "after_body"
 
     def _in_body_start(self, token: StartTagToken) -> None:
+        """Auto-closing rules first, then one insertion for every path.
+
+        The raw-text elements used to be dispatched ahead of all of this, which
+        meant <xmp> never closed an open <p>. Raw-text tokenization is applied
+        by insert_element_maybe_raw_text at the end, after the mode has had its
+        say -- which is the order the spec uses.
+        """
         name = token.name
-        if name in RCDATA_ELEMENTS:
-            self.insert_raw_text_element(token, "rcdata")
-        elif name in RAWTEXT_ELEMENTS:
-            self.insert_raw_text_element(token, "rawtext")
-        elif name in SCRIPT_ELEMENTS:
-            self.insert_raw_text_element(token, "script_data")
-        elif name == "li":
+        if name == "li":
             if self.has_element_in_scope("li", LIST_ITEM_SCOPE):
                 self.generate_implied_end_tags(excluding="li")
                 self.pop_until("li")
             if self.has_element_in_scope("p", BUTTON_SCOPE):
                 self.close_p_element()
-            self.insert_element(token)
         elif name in ("dd", "dt"):
             for tag in ("dd", "dt"):
                 if self.has_element_in_scope(tag):
@@ -316,13 +347,10 @@ class TreeBuilder:
                     break
             if self.has_element_in_scope("p", BUTTON_SCOPE):
                 self.close_p_element()
-            self.insert_element(token)
         elif name in CLOSES_P:
             if self.has_element_in_scope("p", BUTTON_SCOPE):
                 self.close_p_element()
-            self.insert_element(token)
-        else:
-            self.insert_element(token)
+        self.insert_element_maybe_raw_text(token)
 
     def _in_body_end(self, token: EndTagToken) -> None:
         name = token.name

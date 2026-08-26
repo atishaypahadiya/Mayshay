@@ -103,14 +103,14 @@ KNOWN_MISSES.update({
         "MODE in_body: a <body> start tag is a parse error to be ignored "
         "(attributes merged); we insert a nested <body> element"
     ),
-    "tests1.dat:88": (
-        "MODE in_head: branch order tests RCDATA_ELEMENTS before "
-        "HEAD_ELEMENTS, so <textarea> is wrongly parsed inside <head>"
-    ),
     "tests1.dat:89": "MODE in_body: an <image> start tag must be renamed to img",
     "tests1.dat:33": (
         "MODE after_body: a comment must be inserted as the last child of the "
-        "<html> element, not appended to the Document"
+        "<html> element, not appended to the Document. TRAP: do NOT fix this "
+        "by simply retargeting after_body's comment insertion point -- that "
+        "breaks webkit01.dat:21, which passes today and needs the comment on "
+        "the Document. The two cases differ by insertion mode, so Task 7 must "
+        "split out a real 'after after body' mode rather than move the target."
     ),
     "tests1.dat:109": (
         "MODE in_body: a </br> end tag must be treated as a <br> start tag"
@@ -158,6 +158,19 @@ _ROWS: list[dict] = []
 def _conformance_metrics():
     yield
     if not _ROWS:
+        return
+    # A partial run (-k, a single-case selection, -x) must not overwrite the
+    # artifact with a truncated file that still looks complete. Leaving the
+    # previous full-corpus file in place is strictly better than replacing it
+    # with a quietly partial one.
+    recorded = {row["case_id"] for row in _ROWS}
+    expected = {case.id for case in CASES}
+    if recorded != expected:
+        print(
+            f"[conformance] partial run ({len(recorded)}/{len(expected)} cases); "
+            f"leaving {CONFORMANCE_CSV.name} untouched",
+            file=sys.stderr,
+        )
         return
     METRICS_DIR.mkdir(parents=True, exist_ok=True)
     fields = [

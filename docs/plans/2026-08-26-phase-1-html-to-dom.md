@@ -1780,7 +1780,17 @@ METRICS_PATH = (
     Path(__file__).resolve().parents[2] / "data" / "metrics" / "conformance.csv"
 )
 
-# (case_id, outcome, input_bytes, expected_lines, elapsed_ms)
+# Schema as actually emitted by Task 6 (revised from the original
+# input_bytes/expected_lines/elapsed_ms sketch):
+#   case_id, outcome, input_chars, expected_lines, actual_lines,
+#   elements, max_depth, text_nodes, parse_errors, parse_time_ms
+# input_bytes -> input_chars because the tokenizer consumes a str, not bytes,
+# and elapsed_ms -> parse_time_ms to match the TreeBuilder.metrics key. The
+# five added columns are TreeBuilder.metrics counters, carried per case so the
+# phase-2 analysis gets tree size and depth distributions rather than only a
+# pass/fail ledger. Note text_nodes counts DOM *nodes* (adjacent runs are
+# merged into one Text node), while Tokenizer.metrics["character_tokens"]
+# counts emitted *tokens*; the two are deliberately not comparable.
 _results: list[tuple[str, str, int, int, float]] = []
 
 

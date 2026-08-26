@@ -88,6 +88,55 @@ def test_stray_end_p_inserts_an_empty_p():
     assert [c.tag_name for c in body.children] == ["p"]
 
 
+def test_raw_text_element_that_is_not_a_head_element_goes_in_body():
+    """<textarea> is RCDATA but is not a head element.
+
+    Regression: in_head used to dispatch on RCDATA_ELEMENTS before checking
+    HEAD_ELEMENTS, which silently promoted textarea, xmp, iframe and noembed
+    into <head>.
+    """
+    assert tree("<textarea>x</textarea>") == (
+        "| <html>\n"
+        "|   <head>\n"
+        "|   <body>\n"
+        "|     <textarea>\n"
+        '|       "x"'
+    )
+
+
+def test_raw_text_start_tag_still_closes_an_open_p():
+    """<xmp> closes an open <p> before the generic raw text algorithm runs.
+
+    Regression: in_body used to dispatch on RAWTEXT_ELEMENTS before the
+    CLOSES_P check, so the xmp nested inside the p instead of closing it.
+    tests1.dat never reaches this, so the corpus cannot catch it.
+    """
+    result = parse("<p>a<xmp>b")
+    body = result.document_element.children[1]
+    assert [c.tag_name for c in body.children] == ["p", "xmp"]
+    assert body.children[1].children[0].data == "b"
+
+
+def test_raw_text_element_that_does_not_close_p_still_does_not():
+    """The mirror of the above: iframe is raw text but has no p-closing rule,
+    so a fix that closed <p> for every raw-text element would be wrong too."""
+    result = parse("<p>a<iframe>b")
+    body = result.document_element.children[1]
+    assert [c.tag_name for c in body.children] == ["p"]
+    assert [c.tag_name for c in body.children[0].children if hasattr(c, "tag_name")] == [
+        "iframe"
+    ]
+
+
+def test_parse_time_metric_has_sub_millisecond_resolution():
+    """int() truncation made this read 0.0 for essentially every parse."""
+    from mayshay.htmlparse.treebuilder import TreeBuilder
+
+    tb = TreeBuilder("<div><p>hi</p></div>" * 200)
+    tb.build()
+    assert tb.metrics["parse_time_ms"] > 0.0
+
+
 def test_metrics_are_emitted():
     from mayshay.htmlparse.treebuilder import TreeBuilder
 
