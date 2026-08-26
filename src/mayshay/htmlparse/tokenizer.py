@@ -305,7 +305,10 @@ class Tokenizer:
         while True:
             if self.state == "eof":
                 yield from self._flush_text()
-                yield EOFToken()
+                # The EOF token's position is the end of input. It is -1 by
+                # default, and the tree builder now records EOF parse errors
+                # against it, so it has to be a real offset.
+                yield EOFToken(pos=self.pos)
                 return
             yield from getattr(self, f"_state_{self.state}")()
 
@@ -878,6 +881,10 @@ class Tokenizer:
         gap: `<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0//EN">` should end up
         in quirks mode here and does not.
         """
+        # self.pos is just past "<!DOCTYPE" (9 chars) on entry, so the
+        # token's own start -- the convention every other tag token uses --
+        # is nine characters back.
+        start = self.pos - 9
         chars: list[str] = []
         force_quirks = False
         close_pos = -1
@@ -902,7 +909,7 @@ class Tokenizer:
             self._error("missing doctype name", close_pos)
             force_quirks = True
         self.metrics["doctypes"] += 1
-        yield DoctypeToken(name=name, force_quirks=force_quirks)
+        yield DoctypeToken(name=name, force_quirks=force_quirks, pos=start)
 
 
 # --------------------------------------------------------------------------

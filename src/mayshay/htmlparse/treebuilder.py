@@ -96,6 +96,16 @@ SPECIAL_ELEMENTS = frozenset({
     "tr", "track", "ul", "wbr", "xmp",
 })
 
+# The spec's "in body" EOF rule is not "anything still open is an error": it
+# names the elements that may legitimately still be open at EOF and reports a
+# parse error only for anything else. An unclosed <p> or <li> is normal; an
+# unclosed <div> is not. Getting this wrong made <p>One<p>Two report an error
+# html5lib does not.
+EOF_OK_OPEN = frozenset({
+    "dd", "dt", "li", "optgroup", "option", "p", "rb", "rp", "rt", "rtc",
+    "tbody", "td", "tfoot", "th", "thead", "tr", "body", "html",
+})
+
 HEADINGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 
 # The spec's formatting elements. These are the ones tracked on the list of
@@ -136,6 +146,27 @@ CLOSES_IN_SCOPE = frozenset({
     "summary", "ul",
 })
 
+# The html5lib `#errors` vocabulary, restricted to what the eight implemented
+# insertion modes can actually produce. The corpus carries 469 distinct codes;
+# most concern tables, foreign content and select, which are not implemented.
+# A code recorded outside this set means the mapping has drifted.
+TREE_ERROR_CODES = frozenset({
+    "expected-doctype-but-got-start-tag",
+    "expected-doctype-but-got-chars",
+    "expected-doctype-but-got-eof",
+    # Not "...-but-got-comment": a comment in "initial" is inserted, not an
+    # error, and that code does not occur anywhere in the corpus. The only
+    # token that reaches the fall-through is an end tag.
+    "expected-doctype-but-got-end-tag",
+    "unexpected-doctype",
+    "unexpected-start-tag",
+    "unexpected-end-tag",
+    "unexpected-end-tag-before-html",
+    "expected-closing-tag-but-got-eof",
+    "expected-one-end-tag-but-got-another",
+    "end-tag-too-early",
+})
+
 
 class TreeBuilder:
     def __init__(self, source: str) -> None:
@@ -150,7 +181,17 @@ class TreeBuilder:
         # and, once they exist, the table modes). Reconstruction never
         # crosses one.
         self.active_formatting: list[Element | None] = []
+        # Mirrors Tokenizer.errors. Positions follow the same convention: the
+        # offset points AT the token that caused the error, which is the
+        # token's own `pos`.
+        self.errors: list[tuple[int, str]] = []
         self.metrics: Counter[str] = Counter()
+
+    # -- parse errors ------------------------------------------------------
+
+    def _error(self, code: str, pos: int) -> None:
+        self.errors.append((pos, code))
+        self.metrics["parse_errors"] += 1
 
     # -- stack helpers -----------------------------------------------------
 
@@ -186,8 +227,16 @@ class TreeBuilder:
         ):
             self.open_elements.pop()
 
-    def close_p_element(self) -> None:
+    def close_p_element(self, pos: int) -> None:
+        """The spec's "close a p element" algorithm.
+
+        The parse error lives *in the algorithm*, not at the </p> rule, which
+        is why an implied close -- <p><b><div> -- reports it too. `pos` is the
+        offset of the token that triggered the close.
+        """
         self.generate_implied_end_tags(excluding="p")
+        if self.current is None or self.current.tag_name != "p":
+            self._error("unexpected-end-tag", pos)
         while self.open_elements:
             if self.open_elements.pop().tag_name == "p":
                 break
@@ -355,7 +404,9 @@ class TreeBuilder:
         self.metrics["parse_time_ms"] = round(
             (time.perf_counter() - started) * 1000, 3
         )
-        self.metrics["parse_errors"] = self.tokenizer.metrics["parse_errors"]
+        # The tokenizer's count, kept distinct from our own. Before this was
+        # split, a page with only tree-construction errors reported zero.
+        self.metrics["tokenizer_parse_errors"] = self.tokenizer.metrics["parse_errors"]
         return self.document
 
     def dispatch(self, token) -> None:
@@ -384,11 +435,24 @@ class TreeBuilder:
         elif self._is_space(token):
             pass
         else:
+            if isinstance(token, StartTagToken):
+                self._error("expected-doctype-but-got-start-tag", token.pos)
+            elif isinstance(token, CharacterToken):
+                self._error("expected-doctype-but-got-chars", token.pos)
+            elif isinstance(token, EOFToken):
+                self._error("expected-doctype-but-got-eof", token.pos)
+            else:
+                # Doctype, comment, whitespace, start tag, characters and EOF
+                # are all handled above, so this is an end tag and nothing else.
+                self._error("expected-doctype-but-got-end-tag", token.pos)
             self.document.quirks_mode = True
             self.mode = "before_html"
             self.dispatch(token)
 
     def _mode_before_html(self, token) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if isinstance(token, CommentToken):
             self.document.append_child(Comment(token.data))
         elif self._is_space(token):
@@ -402,6 +466,9 @@ class TreeBuilder:
             self.dispatch(token)
 
     def _mode_before_head(self, token) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if isinstance(token, CommentToken):
             self._insertion_point().append_child(Comment(token.data))
         elif self._is_space(token):
@@ -415,6 +482,9 @@ class TreeBuilder:
             self.dispatch(token)
 
     def _mode_in_head(self, token) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if self._is_space(token):
             self.insert_text(token.data)
         elif isinstance(token, CommentToken):
@@ -435,6 +505,9 @@ class TreeBuilder:
             self.dispatch(token)
 
     def _mode_after_head(self, token) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if self._is_space(token):
             self.insert_text(token.data)
         elif isinstance(token, CommentToken):
@@ -458,6 +531,10 @@ class TreeBuilder:
         elif isinstance(token, EndTagToken):
             self._in_body_end(token)
         elif isinstance(token, EOFToken):
+            for element in self.open_elements:
+                if element.tag_name not in EOF_OK_OPEN:
+                    self._error("expected-closing-tag-but-got-eof", token.pos)
+                    break
             self.mode = "after_body"
 
     def _in_body_start(self, token: StartTagToken) -> None:
@@ -469,13 +546,19 @@ class TreeBuilder:
         say -- which is the order the spec uses.
         """
         name = token.name
+        # Spec: a <body> start tag in "in body" is a parse error (the spec then
+        # merges its attributes onto the open body). Only the error is recorded
+        # here; the merge, and the other in-body start-tag parse errors --
+        # html, head, frameset -- wait on rules this parser does not implement.
+        if name == "body":
+            self._error("unexpected-start-tag", token.pos)
         reconstruct = name not in NO_RECONSTRUCT_START
         if name == "li":
             if self.has_element_in_scope("li", LIST_ITEM_SCOPE):
                 self.generate_implied_end_tags(excluding="li")
                 self.pop_until("li")
             if self.has_element_in_scope("p", BUTTON_SCOPE):
-                self.close_p_element()
+                self.close_p_element(token.pos)
             reconstruct = False
         elif name in ("dd", "dt"):
             for tag in ("dd", "dt"):
@@ -484,11 +567,18 @@ class TreeBuilder:
                     self.pop_until(tag)
                     break
             if self.has_element_in_scope("p", BUTTON_SCOPE):
-                self.close_p_element()
+                self.close_p_element(token.pos)
             reconstruct = False
         elif name in CLOSES_P:
             if self.has_element_in_scope("p", BUTTON_SCOPE):
-                self.close_p_element()
+                self.close_p_element(token.pos)
+            # Spec: a heading start tag while a heading is the current node is
+            # a parse error (and the spec pops it -- we do not, which is the
+            # nesting bug test_html5lib_tree already tracks). Recording it is
+            # the honest half; the repair belongs to a tree-construction task.
+            if name in HEADINGS and self.current is not None:
+                if self.current.tag_name in HEADINGS:
+                    self._error("unexpected-start-tag", token.pos)
             # xmp is the one p-closing element whose rule reconstructs; the
             # rest (div, table, h1..h6, hr, form, pre, ...) do not.
             reconstruct = name == "xmp"
@@ -509,8 +599,11 @@ class TreeBuilder:
         if name == "p":
             if not self.has_element_in_scope("p", BUTTON_SCOPE):
                 # Spec: parse error, then insert an empty <p> and close it.
+                # (The inserted p makes close_p_element's own check pass, so
+                # this error is not a duplicate of that one.)
+                self._error("unexpected-end-tag", token.pos)
                 self.insert_element(StartTagToken("p"))
-            self.close_p_element()
+            self.close_p_element(token.pos)
         elif name == "body":
             self.mode = "after_body"
         elif name == "html":
@@ -519,17 +612,29 @@ class TreeBuilder:
         elif name == "li":
             # List-item scope, not the default barriers: inside a nested <ul>
             # a stray </li> must NOT reach out and close the enclosing <li>.
-            if self.has_element_in_scope("li", LIST_ITEM_SCOPE):
+            if not self.has_element_in_scope("li", LIST_ITEM_SCOPE):
+                self._error("unexpected-end-tag", token.pos)
+            else:
                 self.generate_implied_end_tags(excluding="li")
+                if self.current is not None and self.current.tag_name != "li":
+                    self._error("end-tag-too-early", token.pos)
                 self.pop_until("li")
         elif name in ("dd", "dt"):
-            if self.has_element_in_scope(name):
+            if not self.has_element_in_scope(name):
+                self._error("unexpected-end-tag", token.pos)
+            else:
                 self.generate_implied_end_tags(excluding=name)
+                if self.current is not None and self.current.tag_name != name:
+                    self._error("end-tag-too-early", token.pos)
                 self.pop_until(name)
         elif name in HEADINGS:
             # Any open heading closes any other: </h2> closes an open <h1>.
-            if self.has_any_element_in_scope(HEADINGS):
+            if not self.has_any_element_in_scope(HEADINGS):
+                self._error("unexpected-end-tag", token.pos)
+            else:
                 self.generate_implied_end_tags()
+                if self.current is not None and self.current.tag_name != name:
+                    self._error("end-tag-too-early", token.pos)
                 while self.open_elements:
                     if self.open_elements.pop().tag_name in HEADINGS:
                         break
@@ -559,8 +664,18 @@ class TreeBuilder:
                 self.generate_implied_end_tags(excluding=name)
                 self.pop_until(name)
         elif name in CLOSES_IN_SCOPE:
-            if self.has_element_in_scope(name):
+            # One parse error covers both failure shapes here, which is the
+            # vocabulary's own shape: `end-tag-too-early` is reported whenever
+            # the current node is not the element being closed, whether that
+            # is because something is still open inside it or because it is
+            # not in scope at all. There is no separate not-in-scope code for
+            # this family.
+            in_scope = self.has_element_in_scope(name)
+            if in_scope:
                 self.generate_implied_end_tags(excluding=name)
+            if self.current is None or self.current.tag_name != name:
+                self._error("end-tag-too-early", token.pos)
+            if in_scope:
                 self.pop_until(name)
                 if name in FORMATTING_MARKER_ELEMENTS:
                     self.clear_formatting_to_marker()
@@ -587,6 +702,7 @@ class TreeBuilder:
                     self.open_elements.pop()
                 return
             if node.tag_name in SPECIAL_ELEMENTS:
+                self._error("unexpected-end-tag", token.pos)
                 return  # parse error; ignore the token
 
     def _mode_text(self, token) -> None:
@@ -596,11 +712,15 @@ class TreeBuilder:
             self.open_elements.pop()
             self.mode = self.original_mode
         elif isinstance(token, EOFToken):
+            self._error("expected-closing-tag-but-got-eof", token.pos)
             self.open_elements.pop()
             self.mode = self.original_mode
             self.dispatch(token)
 
     def _mode_after_body(self, token) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if isinstance(token, CommentToken):
             self.document.append_child(Comment(token.data))
         elif isinstance(token, EOFToken):
