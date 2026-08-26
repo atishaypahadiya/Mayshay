@@ -27,47 +27,71 @@ WHITESPACE = "\t\n\f\r "
 EOF = None  # sentinel for end of input
 
 
+def _is_ascii_alpha(ch: str | None) -> bool:
+    """The spec means ASCII alpha. Python's str.isalpha() also accepts 'é'."""
+    return ch is not None and ch.isascii() and ch.isalpha()
+
+
 # --------------------------------------------------------------------------
 # Tokens
 # --------------------------------------------------------------------------
 
 @dataclass
-class Doctype:
+class DoctypeToken:
     name: str | None = None
     force_quirks: bool = False
+    pos: int = -1
 
 
 @dataclass
-class StartTag:
+class StartTagToken:
     name: str
     attrs: dict[str, str] = field(default_factory=dict)
     self_closing: bool = False
+    pos: int = -1
 
 
 @dataclass
-class EndTag:
+class EndTagToken:
     name: str
     # Kept so the tree builder can warn about </div class="x">, which is a
     # parse error the spec ignores but which is a useful signal in our metrics.
     attrs: dict[str, str] = field(default_factory=dict)
+    pos: int = -1
 
 
 @dataclass
-class Comment:
+class CommentToken:
     data: str = ""
+    pos: int = -1
 
 
 @dataclass
-class Character:
+class CharacterToken:
     data: str
+    pos: int = -1
 
 
 @dataclass
-class EndOfFile:
-    pass
+class EOFToken:
+    pos: int = -1
 
 
-Token = Doctype | StartTag | EndTag | Comment | Character | EndOfFile
+Token = (
+    DoctypeToken | StartTagToken | EndTagToken
+    | CommentToken | CharacterToken | EOFToken
+)
+
+
+# Elements whose content is tokenized as RCDATA: character references ARE
+# decoded, but tags are not recognised.
+RCDATA_ELEMENTS = frozenset({"title", "textarea"})
+
+# Elements whose content is tokenized as RAWTEXT: neither references nor tags.
+RAWTEXT_ELEMENTS = frozenset({"style", "xmp", "iframe", "noembed", "noframes"})
+
+# <script> has its own state family because of the <!-- --> escape rules.
+SCRIPT_ELEMENTS = frozenset({"script"})
 
 
 # --------------------------------------------------------------------------
@@ -86,7 +110,8 @@ class Tokenizer:
     """
 
     def __init__(self, source: str) -> None:
-        self.source = source
+        # Spec input preprocessing: normalise CRLF and lone CR to LF.
+        self.source = source.replace("\r\n", "\n").replace("\r", "\n")
         self.pos = 0
         self.state = "data"
 
@@ -102,6 +127,10 @@ class Tokenizer:
         # The tag name whose RAWTEXT we're currently inside ("script", "style"),
         # or None when we're in normal Data state.
         self._rawtext_tag: str | None = None
+
+        self._token_start = 0     # offset where the in-progress token began
+        self._buffer_start = 0    # offset where the pending text run began
+        self._last_start_tag: str | None = None
 
         self.errors: list[tuple[int, str]] = []
         self.metrics: Counter[str] = Counter()
@@ -129,13 +158,14 @@ class Tokenizer:
             text = "".join(self._buffer)
             self._buffer.clear()
             self.metrics["character_tokens"] += 1
-            yield Character(text)
+            yield CharacterToken(text, pos=self._buffer_start)
 
     def _start_tag(self, is_end: bool, first_char: str) -> None:
         self._tag_name = [first_char.lower()]
         self._is_end_tag = is_end
         self._self_closing = False
         self._attrs = {}
+        self._token_start = self.pos - (3 if is_end else 2)
 
     def _save_attr(self) -> None:
         if not self._attr_name:
@@ -153,17 +183,22 @@ class Tokenizer:
         self._save_attr()
         name = "".join(self._tag_name)
 
-        # <script> and <style> switch the tokenizer into RAWTEXT so that a bare
-        # '<' inside JS (e.g. `if (a < b)`) isn't read as the start of a tag.
-        # This single rule is why regex-based parsers fail on the real web.
-        if not self._is_end_tag and name in ("script", "style", "textarea", "title"):
-            self._rawtext_tag = name
-
         if self._is_end_tag:
+            # Clear here, not in _state_tag_name: an end tag can also be
+            # emitted from after_attribute_name (`</script >`), and missing
+            # those paths leaves the tokenizer stuck in RAWTEXT forever.
+            if name == self._rawtext_tag:
+                self._rawtext_tag = None
             self.metrics["end_tags"] += 1
-            return EndTag(name, self._attrs)
+            return EndTagToken(name, self._attrs, pos=self._token_start)
+
+        self._last_start_tag = name
+        if name in RCDATA_ELEMENTS | RAWTEXT_ELEMENTS | SCRIPT_ELEMENTS:
+            self._rawtext_tag = name
         self.metrics["start_tags"] += 1
-        return StartTag(name, self._attrs, self._self_closing)
+        return StartTagToken(
+            name, self._attrs, self._self_closing, pos=self._token_start
+        )
 
     # -- main loop ---------------------------------------------------------
 
@@ -171,9 +206,21 @@ class Tokenizer:
         while True:
             if self.state == "eof":
                 yield from self._flush_text()
-                yield EndOfFile()
+                yield EOFToken()
                 return
             yield from getattr(self, f"_state_{self.state}")()
+
+    def switch_to(self, state: str, last_start_tag: str | None = None) -> None:
+        """
+        Let the tree builder drive the tokenizer.
+
+        The spec puts the RCDATA/RAWTEXT decision in the tree builder, not the
+        tokenizer, because it is contextual. Task 6 uses this when it inserts
+        a <title>, <style>, <script> or <textarea> element.
+        """
+        self.state = state
+        if last_start_tag is not None:
+            self._last_start_tag = last_start_tag
 
     # -- states ------------------------------------------------------------
 
@@ -192,6 +239,8 @@ class Tokenizer:
             yield from self._flush_text()
             self.state = "tag_open"
         else:
+            if not self._buffer:
+                self._buffer_start = self.pos - 1
             self._buffer.append(ch)
         return
         yield  # makes this a generator even on paths that emit nothing
@@ -200,22 +249,27 @@ class Tokenizer:
         ch = self._next()
         if ch is EOF:
             self._error("eof in tag")
+            if not self._buffer:
+                self._buffer_start = self.pos - 1
             self._buffer.append("<")
             self.state = "eof"
         elif ch == "!":
             self.state = "markup_declaration_open"
         elif ch == "/":
             self.state = "end_tag_open"
-        elif ch.isalpha():
+        elif _is_ascii_alpha(ch):
             self._start_tag(is_end=False, first_char=ch)
             self.state = "tag_name"
         elif ch == "?":
             self._error("unexpected ? instead of tag name")
+            self._buffer_start = self.pos - 1
             self._buffer = [ch]
             self.state = "bogus_comment"
         else:
             # A bare '<' in text. Extremely common. Treat as literal.
             self._error("invalid first character of tag name")
+            if not self._buffer:
+                self._buffer_start = self.pos - 2
             self._buffer.append("<")
             self.pos -= 1
             self.state = "data"
@@ -227,7 +281,7 @@ class Tokenizer:
         if ch is EOF:
             self._error("eof before tag name")
             self.state = "eof"
-        elif ch.isalpha():
+        elif _is_ascii_alpha(ch):
             self._start_tag(is_end=True, first_char=ch)
             self.state = "tag_name"
         elif ch == ">":
@@ -252,8 +306,6 @@ class Tokenizer:
             self.state = "self_closing_start_tag"
         elif ch == ">":
             token = self._emit_tag()
-            if self._is_end_tag and "".join(self._tag_name) == self._rawtext_tag:
-                self._rawtext_tag = None
             self.state = "data"
             yield token
         else:
@@ -434,7 +486,7 @@ class Tokenizer:
             self._error("eof in comment")
             self.metrics["comments"] += 1
             self.state = "eof"
-            yield Comment("".join(self._buffer))
+            yield CommentToken("".join(self._buffer))
             self._buffer = []
         elif ch == "-" and self._peek(2) == "->":
             self.pos += 2
@@ -442,7 +494,7 @@ class Tokenizer:
             self._buffer = []
             self.metrics["comments"] += 1
             self.state = "data"
-            yield Comment(data)
+            yield CommentToken(data)
         else:
             self._buffer.append(ch)
 
@@ -453,7 +505,7 @@ class Tokenizer:
             self._buffer = []
             self.metrics["comments"] += 1
             self.state = "eof" if ch is EOF else "data"
-            yield Comment(data)
+            yield CommentToken(data)
         else:
             self._buffer.append(ch)
 
@@ -473,7 +525,7 @@ class Tokenizer:
         raw = "".join(chars).strip()
         name = raw.split()[0].lower() if raw else None
         self.metrics["doctypes"] += 1
-        yield Doctype(name=name, force_quirks=(name != "html"))
+        yield DoctypeToken(name=name, force_quirks=(name != "html"))
 
 
 # --------------------------------------------------------------------------
@@ -491,7 +543,7 @@ if __name__ == "__main__":
 
     tk = Tokenizer(sample)
     for tok in tk.tokenize():
-        if isinstance(tok, Character) and not tok.data.strip():
+        if isinstance(tok, CharacterToken) and not tok.data.strip():
             continue  # skip whitespace-only text for readability
         print(tok)
 
