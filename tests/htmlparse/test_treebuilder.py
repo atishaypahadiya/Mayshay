@@ -294,26 +294,148 @@ def test_whitespace_only_text_reconstructs():
     assert u.children[1].tag_name == "p"
 
 
-def test_formatting_end_tag_out_of_scope_keeps_the_list_entry():
-    """AAA step 4.5: on the stack but not in scope -> keep the entry.
+# -- the four adoption-agency early exits ----------------------------------
+#
+# _in_body_end's formatting branch has four arms, and no single observable
+# separates them. The formatting list is empty afterwards on three of the
+# four; the open-elements stack ends as ['html', 'body'] on several; and the
+# serialized tree is shared by others. An earlier version of these tests
+# asserted `active_formatting == []` and so passed for two different arms at
+# once -- it claimed to cover step 4.4 while actually exercising 4.7.
+#
+# _afe_probe therefore returns three observables at once, and
+# test_formatting_end_tag_branches_are_distinguishable asserts the four
+# inputs are pairwise distinct under it. That assertion is the real guard:
+# without it, the per-step tests below are just four spellings of "nothing
+# crashed".
 
-    <table> is a scope barrier, so </b> cannot close the <b>. Removing the
-    entry anyway would stop "x" being reconstructed into a <b> later.
+# Inputs chosen so each one takes a different arm. Keep them in sync with the
+# per-step tests; the distinctness test will fail loudly if they drift.
+AFE_STEP_INPUTS = {
+    # 4.3  no <b> on the list at all -> the "any other end tag" stack walk,
+    #      which stops dead at the special <div> and drops the token.
+    "4.3": "<div></b>x",
+    # 4.4  </div> pops through the <b>, leaving it on the list but off the
+    #      stack -> drop the entry. If the entry survived, "y" would be
+    #      reconstructed into a second <b>.
+    "4.4": "<div><b>text</div></b>y",
+    # 4.5  <table> is a scope barrier, so the <b> is on the stack but out of
+    #      scope -> parse error, KEEP the entry.
+    "4.5": "<b><table></b>x",
+    # 4.7  ordinary close: on the stack and in scope -> pop to it, drop the
+    #      entry.
+    "4.7": "<b><p>a</p></b>x",
+}
+
+
+def _afe_probe(src):
+    """Observe *how* a formatting end tag was handled, not just the result.
+
+    Returns (the "any other end tag" walk ran for </b>, the formatting list
+    as tag names, the serialized tree). Step 4.3 is invisible in the tree
+    today -- with no <b> on the open-elements stack the walk has nothing to
+    pop -- so watching for the call is the only thing that separates it from
+    4.4. Verified by mutation: swapping any one arm for its neighbour changes
+    exactly this probe, for exactly the one input that takes that arm.
     """
     from mayshay.htmlparse.treebuilder import TreeBuilder
 
-    tb = TreeBuilder("<b><table></b>x")
-    tb.build()
-    assert [e.tag_name for e in tb.active_formatting if e is not None] == ["b"]
+    builder = TreeBuilder(src)
+    walked = []
+    real = builder._any_other_end_tag
+
+    def spy(token):
+        walked.append(token.name)
+        return real(token)
+
+    builder._any_other_end_tag = spy
+    document = builder.build()
+    return (
+        "b" in walked,
+        [e.tag_name if e is not None else None for e in builder.active_formatting],
+        serialize(document),
+    )
 
 
-def test_formatting_end_tag_not_on_the_stack_drops_the_entry():
-    """AAA step 4.4: on the list but off the stack -> drop the entry."""
-    from mayshay.htmlparse.treebuilder import TreeBuilder
+def test_formatting_end_tag_branches_are_distinguishable():
+    """No two of the four inputs may look alike under _afe_probe.
 
-    tb = TreeBuilder("<b><p>a</p></b>x")
-    tb.build()
-    assert tb.active_formatting == []
+    This is the test that would have caught the earlier mislabelled case:
+    its input and the 4.7 input were indistinguishable by the assertion used.
+    """
+    probes = {step: _afe_probe(src) for step, src in AFE_STEP_INPUTS.items()}
+    for left in AFE_STEP_INPUTS:
+        for right in AFE_STEP_INPUTS:
+            if left < right:
+                assert probes[left] != probes[right], (
+                    f"steps {left} and {right} are indistinguishable; a test "
+                    f"naming either one is not testing it"
+                )
+
+
+def test_formatting_end_tag_step_4_3_falls_to_any_other_end_tag():
+    """No <b> on the list -> the "any other end tag" walk, which the special
+    <div> stops. Only this arm calls that walk."""
+    walked, formatting, document = _afe_probe(AFE_STEP_INPUTS["4.3"])
+    assert walked is True
+    assert formatting == []
+    assert document == (
+        "| <html>\n"
+        "|   <head>\n"
+        "|   <body>\n"
+        "|     <div>\n"
+        '|       "x"'
+    )
+
+
+def test_formatting_end_tag_step_4_4_drops_an_entry_that_left_the_stack():
+    """</div> pops through the <b>; the </b> then drops the orphaned entry.
+
+    The discriminating assertion is the bare "y": if the entry survived (the
+    4.5 arm) it would be reconstructed into a second <b>.
+    """
+    walked, formatting, document = _afe_probe(AFE_STEP_INPUTS["4.4"])
+    assert walked is False
+    assert formatting == []
+    assert document == (
+        "| <html>\n"
+        "|   <head>\n"
+        "|   <body>\n"
+        "|     <div>\n"
+        "|       <b>\n"
+        '|         "text"\n'
+        '|     "y"'
+    )
+
+
+def test_formatting_end_tag_step_4_5_keeps_an_out_of_scope_entry():
+    """<table> is a scope barrier, so </b> cannot close the <b> -- and, per
+    the spec, must not remove its list entry either. The surviving entry is
+    what separates this arm from all three others."""
+    walked, formatting, _ = _afe_probe(AFE_STEP_INPUTS["4.5"])
+    assert walked is False
+    assert formatting == ["b"]
+
+
+def test_formatting_end_tag_step_4_7_pops_to_the_element():
+    """The ordinary close: on the stack and in scope -> pop to it and drop
+    the entry. "x" lands in <body>, outside the closed <b>.
+
+    Previously mislabelled as step 4.4: the </p> pops only the <p>, so the
+    <b> is still on the stack when </b> arrives and this arm runs, not 4.4.
+    """
+    walked, formatting, document = _afe_probe(AFE_STEP_INPUTS["4.7"])
+    assert walked is False
+    assert formatting == []
+    assert document == (
+        "| <html>\n"
+        "|   <head>\n"
+        "|   <body>\n"
+        "|     <b>\n"
+        "|       <p>\n"
+        '|         "a"\n'
+        '|     "x"'
+    )
 
 
 def test_formatting_end_tag_over_pops_a_furthest_block():
