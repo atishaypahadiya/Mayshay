@@ -202,11 +202,26 @@ class Tokenizer:
         `self.pos - 1` (or further back when the offender is not the character
         just read, e.g. the solidus in `_state_self_closing_start_tag`).
 
-        Omitting `pos` records `self.pos`, which is correct for the two cases
-        where there is no consumed offending character: EOF errors (`self.pos`
-        is then `len(self.source)`, one past the last character) and errors
-        about a character that is *absent*, such as the missing semicolon after
-        a character reference -- the offset is where it should have been.
+        Omitting `pos` records `self.pos`. That is correct at exactly two
+        kinds of site, and both are checked: the eighteen EOF errors, where
+        there is no offending character at all and `self.pos` is
+        `len(self.source)`, one past the last character; and
+        `_state_markup_declaration_open`, which peeks rather than consuming, so
+        `self.pos` is still sitting on the offender. Every other site passes an
+        explicit offset.
+
+        Two sub-conventions cover the cases where no character is literally at
+        fault:
+
+        - An error about an *absent* character is recorded at the position it
+          should have occupied -- the missing semicolon after a character
+          reference points at whatever is sitting where the ';' belonged.
+        - The two character-reference *value* errors (control-character and
+          invalid-numeric) are recorded at the opening '&'. Their offence is
+          the code point the reference as a whole denotes, so no single
+          character causes them and the convention has no unique answer; the
+          '&' is chosen because it is the one character guaranteed to exist and
+          to belong to the offending construct. See entities.decode_reference.
         """
         self.errors.append((self.pos if pos is None else pos, message))
         self.metrics["parse_errors"] += 1
@@ -217,10 +232,11 @@ class Tokenizer:
         text, new_pos, error = decode_reference(self.source, start, in_attribute)
         self.pos = new_pos
         if error:
-            # self.pos is the offset just past the reference, which is exactly
-            # the character the error is about: the missing ';' should have
-            # been there, and "absence of digits" points at the non-digit.
-            self._error(error)
+            # decode_reference reports its own offset. Deriving one from
+            # self.pos here would be wrong three ways: on the absence-of-digits
+            # path new_pos has not moved off the '#' at all, and the two value
+            # errors land past the reference entirely.
+            self._error(error[1], error[0])
         # A reference was actually consumed iff decode_reference advanced the
         # position. Checking `text != "&"` instead is wrong: a *successful*
         # decode of "&amp;" also returns "&", which would undercount it as a

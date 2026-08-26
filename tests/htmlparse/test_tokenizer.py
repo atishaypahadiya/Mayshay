@@ -109,3 +109,31 @@ def test_eof_errors_are_recorded_at_end_of_input(src):
     tk = Tokenizer(src)
     list(tk.tokenize())
     assert tk.errors == [(len(src), "eof in tag")]
+
+
+@pytest.mark.parametrize(
+    "src,expected",
+    [
+        # Absence of digits: the offender is the non-digit after '#'. Note the
+        # decoder consumes nothing on this path, so an offset derived from the
+        # post-decode position would point at the '#' instead.
+        ("&#qX", [(2, "absence of digits in numeric character reference")]),
+        ("&#xZ", [(3, "absence of digits in numeric character reference")]),
+        # No character is at fault for the two value errors -- the offence is
+        # the code point the whole reference denotes -- so both are recorded at
+        # the opening '&'. See Tokenizer._error's convention note.
+        ("&#0;A", [(0, "invalid numeric character reference")]),
+        ("&#153;Z", [(0, "control character reference")]),
+        # ...and the '&', not a hard-coded 0: the offset is the reference's own.
+        ("x&#0;", [(1, "invalid numeric character reference")]),
+        # Absent character: the offset is where the ';' should have been.
+        ("&#65A", [(4, "missing semicolon after character reference")]),
+    ],
+)
+def test_character_reference_error_offsets(src, expected):
+    """The character-reference family follows the same convention as every
+    other _error call site; decode_reference reports its own offset rather than
+    letting the tokenizer derive one from the post-decode position."""
+    tk = Tokenizer(src)
+    list(tk.tokenize())
+    assert tk.errors == expected
