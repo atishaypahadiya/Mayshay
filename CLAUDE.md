@@ -16,7 +16,12 @@ Package root is `src/mayshay/`. Imports look like:
   not a parser. All matching logic (longest match, the legacy semicolon rule,
   numeric remapping) is hand-rolled in `htmlparse/entities.py`.
 - BeautifulSoup allowed ONLY in scripts/ for corpus collection, never in src/mayshay/.
-- Every stage emits timing + size metrics to data/metrics/.
+- Every stage emits timing + size metrics to data/metrics/. Stages populate
+  `self.metrics`; `src/mayshay/metrics.py` writes them, and entry points call
+  the writer — never a parse method. `htmlparse` emits TWO stage values,
+  `tokenize` and `treebuild`: the five-box pipeline above is the conceptual
+  shape, not the metrics schema, and their counters and error counts are
+  separately meaningful.
 - Tests in tests/ mirror src/mayshay/. pytest.
 - Follow the WHATWG HTML spec tokenizer state machine where practical.
 - The `tests/html5lib-tests` submodule is pinned to `9329e64` on purpose.
