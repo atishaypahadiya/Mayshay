@@ -20,6 +20,10 @@ class Node:
     def __init__(self) -> None:
         self.parent: Node | None = None
         self.children: list[Node] = []
+        # Phase 2 attaches a ComputedStyle here. On Node rather than Element so
+        # text nodes inherit their parent's style directly, instead of layout
+        # carrying a special case for every text run.
+        self.computed_style: object | None = None
 
     def append_child(self, node: Node) -> Node:
         if node.parent is not None:
@@ -95,9 +99,39 @@ class Element(Node):
         super().__init__()
         self.tag_name = tag_name
         self.attrs: dict[str, str] = dict(attrs or {})
+        self._class_list: frozenset[str] | None = None
+        # Set by annotate_positions(). Position among ELEMENT siblings, which
+        # is what :nth-child counts -- self.children interleaves Text/Comment.
+        self.element_index: int | None = None
 
     def __repr__(self) -> str:
         return f"<Element {self.tag_name} {self.attrs}>"
+
+    @property
+    def id(self) -> str | None:
+        return self.attrs.get("id")
+
+    @property
+    def class_list(self) -> frozenset[str]:
+        """Cached. `str.split()` with no argument splits on whitespace runs
+        and drops empties, which is exactly the HTML class-attribute rule --
+        `class="box  wide"` (two spaces) must not yield an empty string, which
+        `split(" ")` would produce.
+
+        Cached because selector matching asks for this once per element per
+        rule; re-splitting there is the difference between a scan and a hot
+        loop. Nothing mutates `attrs` in Phase 2, so a stale cache can't
+        happen yet -- if a mutator (e.g. `Element.setAttribute`) is ever
+        added, it must reset `self._class_list = None` whenever it touches
+        the `class` attribute.
+        """
+        if self._class_list is None:
+            self._class_list = frozenset(self.attrs.get("class", "").split())
+        return self._class_list
+
+    @property
+    def element_children(self) -> list[Element]:
+        return [c for c in self.children if isinstance(c, Element)]
 
 
 class Text(Node):
@@ -132,6 +166,27 @@ def _render(node: Node, depth: int, out: list[str]) -> None:
             public = node.public_id or ""
             system = node.system_id or ""
             out.append(f'{pad}<!DOCTYPE {node.name} "{public}" "{system}">')
+
+
+def annotate_positions(root: Node) -> int:
+    """Give every Element its index among its element siblings. Returns the
+    count of elements annotated.
+
+    One pass before matching, rather than an O(n) filter inside every
+    :nth-child / '+' / '~' test.
+    """
+    count = 0
+    stack: list[Node] = [root]
+    while stack:
+        node = stack.pop()
+        index = 0
+        for child in node.children:
+            if isinstance(child, Element):
+                child.element_index = index
+                index += 1
+                count += 1
+            stack.append(child)
+    return count
 
 
 def serialize(document: Document) -> str:

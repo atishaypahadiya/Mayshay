@@ -6,6 +6,7 @@ from mayshay.dom.node import (
     DocumentType,
     Element,
     Text,
+    annotate_positions,
     serialize,
 )
 from tests.support.dat import load_tree_tests
@@ -183,3 +184,66 @@ def test_serializer_matches_corpus_multiple_attributes():
     )
 
     assert serialize(doc) == fixture.document
+
+
+def test_computed_style_defaults_to_none_on_every_node_type():
+    from mayshay.dom.node import Comment, Document, DocumentType, Element, Text
+
+    for node in (Document(), DocumentType("html"), Element("p"), Text("x"), Comment("c")):
+        assert node.computed_style is None
+
+
+def test_class_list_splits_on_whitespace_runs():
+    """Real markup: `class="box  wide"` -- two spaces."""
+    el = Element("div", {"class": "box  wide"})
+    assert el.class_list == frozenset({"box", "wide"})
+
+
+def test_class_list_handles_tabs_newlines_and_edges():
+    el = Element("div", {"class": "  a\tb\nc  "})
+    assert el.class_list == frozenset({"a", "b", "c"})
+
+
+def test_class_list_absent_is_empty():
+    assert Element("div").class_list == frozenset()
+
+
+def test_id_accessor():
+    assert Element("div", {"id": "Main"}).id == "Main"
+    assert Element("div").id is None
+
+
+def test_id_case_is_preserved():
+    """Attribute names fold; values do not. CSS id matching is case-sensitive."""
+    assert Element("div", {"id": "Main"}).id != "main"
+
+
+def test_element_children_excludes_text_and_comments():
+    from mayshay.dom.node import Comment, Text
+
+    div = Element("div")
+    div.append_child(Text("\n"))
+    a = div.append_child(Element("a"))
+    div.append_child(Comment("c"))
+    b = div.append_child(Element("b"))
+    assert div.element_children == [a, b]
+
+
+def test_annotate_positions_indexes_elements_only():
+    from mayshay.dom.node import Document, Text
+
+    doc = Document()
+    div = doc.append_child(Element("div"))
+    div.append_child(Text("\n"))
+    first = div.append_child(Element("p"))
+    div.append_child(Text("\n"))
+    second = div.append_child(Element("p"))
+
+    count = annotate_positions(doc)
+    assert first.element_index == 0
+    assert second.element_index == 1
+    assert count == 3
+
+
+def test_element_index_is_none_before_annotation():
+    assert Element("p").element_index is None
