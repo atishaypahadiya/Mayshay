@@ -124,11 +124,11 @@ class Tokenizer:
         self._attr_name: list[str] = []
         self._attr_value: list[str] = []
 
-        # The tag name whose RAWTEXT we're currently inside ("script", "style"),
-        # or None when we're in normal Data state.
-        self._rawtext_tag: str | None = None
+        # Characters consumed while trying to match an "appropriate end tag"
+        # inside raw text. Replayed as text when the match fails.
+        self._temp_buffer: list[str] = []
 
-        self._token_start = 0     # offset where the in-progress token began
+        self._token_start = 0    # offset where the in-progress token began
         self._buffer_start = 0    # offset where the pending text run began
         self._last_start_tag: str | None = None
 
@@ -184,17 +184,18 @@ class Tokenizer:
         name = "".join(self._tag_name)
 
         if self._is_end_tag:
-            # Clear here, not in _state_tag_name: an end tag can also be
-            # emitted from after_attribute_name (`</script >`), and missing
-            # those paths leaves the tokenizer stuck in RAWTEXT forever.
-            if name == self._rawtext_tag:
-                self._rawtext_tag = None
             self.metrics["end_tags"] += 1
             return EndTagToken(name, self._attrs, pos=self._token_start)
 
+        # A raw-text start tag switches the tokenizer itself. Callers assign
+        # self.state = "data" *before* calling _emit_tag, so this wins.
         self._last_start_tag = name
-        if name in RCDATA_ELEMENTS | RAWTEXT_ELEMENTS | SCRIPT_ELEMENTS:
-            self._rawtext_tag = name
+        if name in RCDATA_ELEMENTS:
+            self.state = "rcdata"
+        elif name in RAWTEXT_ELEMENTS:
+            self.state = "rawtext"
+        elif name in SCRIPT_ELEMENTS:
+            self.state = "script_data"
         self.metrics["start_tags"] += 1
         return StartTagToken(
             name, self._attrs, self._self_closing, pos=self._token_start
@@ -229,15 +230,6 @@ class Tokenizer:
         if ch is EOF:
             self.state = "eof"
         elif ch == "<":
-            # If we're inside <script>/<style>, only the matching close tag ends it.
-            if self._rawtext_tag and self._peek(2 + len(self._rawtext_tag)).lower() \
-                    != f"/{self._rawtext_tag}>"[:2 + len(self._rawtext_tag)]:
-                if not self._peek(1 + len(self._rawtext_tag)).lower().startswith(
-                        f"/{self._rawtext_tag}"):
-                    if not self._buffer:
-                        self._buffer_start = self.pos - 1
-                    self._buffer.append(ch)
-                    return
             yield from self._flush_text()
             self.state = "tag_open"
         else:
@@ -246,6 +238,220 @@ class Tokenizer:
             self._buffer.append(ch)
         return
         yield  # makes this a generator even on paths that emit nothing
+
+    # -- raw text: RCDATA / RAWTEXT / ScriptData --------------------------
+    #
+    # The three families are structurally identical, so they share one
+    # parameterised body each rather than 26 near-duplicate methods. `name` is
+    # the family's own state name, which is also the prefix of its
+    # _less_than_sign / _end_tag_open / _end_tag_name states.
+
+    def _is_appropriate_end_tag(self) -> bool:
+        """An end tag in raw text only counts if it matches the last start tag."""
+        return "".join(self._tag_name) == self._last_start_tag
+
+    def _raw_text_state(self, name: str) -> Iterator[Token]:
+        """Shared body for the rcdata / rawtext / script_data states."""
+        ch = self._next()
+        if ch is EOF:
+            self._error(f"eof in {name}")
+            self.state = "eof"
+        elif ch == "<":
+            self._temp_buffer = []
+            self.state = f"{name}_less_than_sign"
+        else:
+            # No special case for '-' here. A dash in script data is ordinary
+            # text; the escaped family is entered via '<!' in
+            # _raw_less_than_sign_state, and the dash counting happens in
+            # script_data_escape_start / _escape_start_dash.
+            if not self._buffer:
+                self._buffer_start = self.pos - 1
+            self._buffer.append(ch)
+        return
+        yield
+
+    def _raw_less_than_sign_state(self, name: str) -> Iterator[Token]:
+        ch = self._next()
+        if ch == "/":
+            self._temp_buffer = []
+            self.state = f"{name}_end_tag_open"
+        elif name == "script_data" and ch == "!":
+            self._buffer.append("<!")
+            self.state = "script_data_escape_start"
+        else:
+            # Reconsume first: _buffer_start is derived from self.pos.
+            if ch is not EOF:
+                self.pos -= 1
+            if not self._buffer:
+                self._buffer_start = self.pos - 1
+            self._buffer.append("<")
+            self.state = name
+        return
+        yield
+
+    def _raw_end_tag_open_state(self, name: str) -> Iterator[Token]:
+        ch = self._next()
+        if _is_ascii_alpha(ch):
+            self._start_tag(is_end=True, first_char=ch)
+            self._temp_buffer = [ch]
+            self.state = f"{name}_end_tag_name"
+        else:
+            if ch is not EOF:
+                self.pos -= 1
+            if not self._buffer:
+                self._buffer_start = self.pos - 2
+            self._buffer.append("</")
+            self.state = name
+        return
+        yield
+
+    def _raw_end_tag_name_state(self, name: str) -> Iterator[Token]:
+        ch = self._next()
+        # Each appropriate-end-tag branch MUST flush pending raw text first.
+        # The buffer still holds the element's content at this point, and the
+        # tag token is about to be emitted (here for '>', or shortly after via
+        # before_attribute_name / self_closing_start_tag). Without the flush
+        # the text token surfaces *after* its own closing tag.
+        #
+        # `ch is not EOF` guards the membership test: `None in WHITESPACE`
+        # raises TypeError, so EOF must fall through to the else branch.
+        if ch is not EOF and ch in WHITESPACE and self._is_appropriate_end_tag():
+            yield from self._flush_text()
+            self.state = "before_attribute_name"
+        elif ch == "/" and self._is_appropriate_end_tag():
+            yield from self._flush_text()
+            self.state = "self_closing_start_tag"
+        elif ch == ">" and self._is_appropriate_end_tag():
+            yield from self._flush_text()
+            self.state = "data"
+            yield self._emit_tag()
+        elif _is_ascii_alpha(ch):
+            self._tag_name.append(ch.lower())
+            self._temp_buffer.append(ch)
+        else:
+            # Not the appropriate end tag: everything consumed becomes text.
+            # Reconsume before computing _buffer_start -- the offset is
+            # relative to self.pos, and _next() already advanced past ch.
+            if ch is not EOF:
+                self.pos -= 1
+            if not self._buffer:
+                self._buffer_start = self.pos - len(self._temp_buffer) - 2
+            self._buffer.append("</")
+            self._buffer.extend(self._temp_buffer)
+            self.state = name
+
+    def _state_rcdata(self): return self._raw_text_state("rcdata")
+    def _state_rcdata_less_than_sign(self): return self._raw_less_than_sign_state("rcdata")
+    def _state_rcdata_end_tag_open(self): return self._raw_end_tag_open_state("rcdata")
+    def _state_rcdata_end_tag_name(self): return self._raw_end_tag_name_state("rcdata")
+
+    def _state_rawtext(self): return self._raw_text_state("rawtext")
+    def _state_rawtext_less_than_sign(self): return self._raw_less_than_sign_state("rawtext")
+    def _state_rawtext_end_tag_open(self): return self._raw_end_tag_open_state("rawtext")
+    def _state_rawtext_end_tag_name(self): return self._raw_end_tag_name_state("rawtext")
+
+    def _state_script_data(self): return self._raw_text_state("script_data")
+    def _state_script_data_less_than_sign(self): return self._raw_less_than_sign_state("script_data")
+    def _state_script_data_end_tag_open(self): return self._raw_end_tag_open_state("script_data")
+    def _state_script_data_end_tag_name(self): return self._raw_end_tag_name_state("script_data")
+
+    # -- script data escaped ("<!-- ... -->" inside <script>) --------------
+
+    def _state_script_data_escape_start(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch == "-":
+            self._buffer.append("-")
+            self.state = "script_data_escape_start_dash"
+        else:
+            if ch is not EOF:
+                self.pos -= 1
+            self.state = "script_data"
+        return
+        yield
+
+    def _state_script_data_escape_start_dash(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch == "-":
+            self._buffer.append("-")
+            self.state = "script_data_escaped_dash_dash"
+        else:
+            if ch is not EOF:
+                self.pos -= 1
+            self.state = "script_data"
+        return
+        yield
+
+    def _state_script_data_escaped(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            self._error("eof in script comment")
+            self.state = "eof"
+        elif ch == "-":
+            self._buffer.append("-")
+            self.state = "script_data_escaped_dash"
+        elif ch == "<":
+            self.state = "script_data_escaped_less_than_sign"
+        else:
+            self._buffer.append(ch)
+        return
+        yield
+
+    def _state_script_data_escaped_dash(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            self._error("eof in script comment")
+            self.state = "eof"
+        elif ch == "-":
+            self._buffer.append("-")
+            self.state = "script_data_escaped_dash_dash"
+        elif ch == "<":
+            self.state = "script_data_escaped_less_than_sign"
+        else:
+            self._buffer.append(ch)
+            self.state = "script_data_escaped"
+        return
+        yield
+
+    def _state_script_data_escaped_dash_dash(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch is EOF:
+            self._error("eof in script comment")
+            self.state = "eof"
+        elif ch == "-":
+            self._buffer.append("-")
+        elif ch == "<":
+            self.state = "script_data_escaped_less_than_sign"
+        elif ch == ">":
+            self._buffer.append(">")
+            self.state = "script_data"
+        else:
+            self._buffer.append(ch)
+            self.state = "script_data_escaped"
+        return
+        yield
+
+    def _state_script_data_escaped_less_than_sign(self) -> Iterator[Token]:
+        ch = self._next()
+        if ch == "/":
+            self._temp_buffer = []
+            self.state = "script_data_escaped_end_tag_open"
+        else:
+            if ch is not EOF:
+                self.pos -= 1
+            if not self._buffer:
+                self._buffer_start = self.pos - 1
+            self._buffer.append("<")
+            self.state = "script_data_escaped"
+        return
+        yield
+
+    def _state_script_data_escaped_end_tag_open(self):
+        return self._raw_end_tag_open_state("script_data_escaped")
+
+    def _state_script_data_escaped_end_tag_name(self):
+        return self._raw_end_tag_name_state("script_data_escaped")
+
+    # -- tags --------------------------------------------------------------
 
     def _state_tag_open(self) -> Iterator[Token]:
         ch = self._next()
@@ -307,8 +513,8 @@ class Tokenizer:
         elif ch == "/":
             self.state = "self_closing_start_tag"
         elif ch == ">":
-            token = self._emit_tag()
             self.state = "data"
+            token = self._emit_tag()   # may override state to rcdata/rawtext/script_data
             yield token
         else:
             self._tag_name.append(ch.lower())
@@ -362,8 +568,8 @@ class Tokenizer:
         elif ch == "=":
             self.state = "before_attribute_value"
         elif ch == ">":
-            token = self._emit_tag()
             self.state = "data"
+            token = self._emit_tag()   # may override state to rcdata/rawtext/script_data
             yield token
         else:
             # Valueless attribute, e.g. <input disabled name="x">
@@ -384,8 +590,8 @@ class Tokenizer:
             self.state = "attribute_value_single"
         elif ch == ">":
             self._error("missing attribute value")
-            token = self._emit_tag()
             self.state = "data"
+            token = self._emit_tag()   # may override state to rcdata/rawtext/script_data
             yield token
         else:
             self.pos -= 1
@@ -424,8 +630,8 @@ class Tokenizer:
             self._save_attr()
             self.state = "before_attribute_name"
         elif ch == ">":
-            token = self._emit_tag()
             self.state = "data"
+            token = self._emit_tag()   # may override state to rcdata/rawtext/script_data
             yield token
         else:
             self._attr_value.append(ch)
@@ -442,8 +648,8 @@ class Tokenizer:
             self._save_attr()
             self.state = "self_closing_start_tag"
         elif ch == ">":
-            token = self._emit_tag()
             self.state = "data"
+            token = self._emit_tag()   # may override state to rcdata/rawtext/script_data
             yield token
         else:
             self._error("missing whitespace between attributes")
@@ -458,8 +664,8 @@ class Tokenizer:
             self.state = "eof"
         elif ch == ">":
             self._self_closing = True
-            token = self._emit_tag()
             self.state = "data"
+            token = self._emit_tag()   # may override state to rcdata/rawtext/script_data
             yield token
         else:
             self._error("unexpected solidus in tag")
