@@ -58,8 +58,9 @@ _FRAMESET = "FRAMESET: needs the in_frameset / after_frameset modes"
 KNOWN_MISSES: dict[str, str] = {}
 KNOWN_MISSES.update({
     f"tests1.dat:{i}": _AFE
-    for i in (22, 23, 25, 31, 51, 53, 56, 60, 70, 71, 72, 73, 74, 75, 81,
-              95, 96, 97)
+    # 25, 81 and 97 were fixed by Task 7 (reconstruction) and removed.
+    # The rest still need the adoption agency algorithm itself.
+    for i in (22, 23, 31, 51, 53, 56, 60, 70, 71, 72, 73, 74, 75, 95, 96)
 })
 KNOWN_MISSES.update({
     f"tests1.dat:{i}": _TABLE

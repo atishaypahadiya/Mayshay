@@ -90,6 +90,29 @@ SPECIAL_ELEMENTS = frozenset({
 
 HEADINGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 
+# The spec's formatting elements. These are the ones tracked on the list of
+# active formatting elements and re-opened by reconstruction.
+FORMATTING_ELEMENTS = frozenset({
+    "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small",
+    "strike", "strong", "tt", "u",
+})
+
+# Elements that push a scope marker onto the formatting list: reconstruction
+# never crosses one, so <b><object>x</object> does not re-open the b inside.
+FORMATTING_MARKER_ELEMENTS = frozenset({"applet", "marquee", "object"})
+
+# In-body start tags whose spec rule does NOT begin by reconstructing the
+# active formatting elements. Everything else -- the "any other start tag"
+# catch-all included -- does. Reconstructing for a block element would be
+# actively wrong: <p><b>a<p> must not re-open <b> around the second <p>.
+NO_RECONSTRUCT_START = HEAD_ELEMENTS | frozenset({
+    "html", "body", "head", "frame", "frameset",
+    "caption", "col", "colgroup", "tbody", "tfoot", "thead", "td", "th", "tr",
+    "param", "source", "track",
+    "textarea", "iframe", "noembed", "noscript",
+    "rb", "rp", "rt", "rtc",
+})
+
 # End tags the spec closes with an explicit scope check rather than with the
 # "any other end tag" stack walk. Keeping them separate is load-bearing: the
 # stack walk aborts on a special element, so routing </div> through it would
@@ -112,6 +135,10 @@ class TreeBuilder:
         self.mode = "initial"
         self.original_mode = "in_body"
         self.head: Element | None = None
+        # None entries are scope markers (inserted by applet/object/marquee
+        # and, once they exist, the table modes). Reconstruction never
+        # crosses one.
+        self.active_formatting: list[Element | None] = []
         self.metrics: Counter[str] = Counter()
 
     # -- stack helpers -----------------------------------------------------
@@ -158,6 +185,83 @@ class TreeBuilder:
         while self.open_elements:
             if self.open_elements.pop().tag_name == name:
                 break
+
+    # -- active formatting elements ---------------------------------------
+
+    def push_formatting(self, el: Element) -> None:
+        """Add `el` to the list, honouring the Noah's Ark clause."""
+        # Noah's Ark: at most three entries with the same tag name and the
+        # same attributes may appear after the last marker. The fourth
+        # evicts the *earliest* of the three, not the latest.
+        matches: list[Element] = []
+        for entry in reversed(self.active_formatting):
+            if entry is None:
+                break
+            if entry.tag_name == el.tag_name and entry.attrs == el.attrs:
+                matches.append(entry)
+        if len(matches) >= 3:
+            self.active_formatting.remove(matches[-1])
+        self.active_formatting.append(el)
+
+    def push_formatting_marker(self) -> None:
+        self.active_formatting.append(None)
+
+    def clear_formatting_to_marker(self) -> None:
+        while self.active_formatting:
+            if self.active_formatting.pop() is None:
+                break
+
+    def remove_formatting(self, el: Element) -> None:
+        """Drop `el` from the list if it is on it (identity, not equality)."""
+        for index, entry in enumerate(self.active_formatting):
+            if entry is el:
+                del self.active_formatting[index]
+                return
+
+    def last_formatting(self, name: str) -> Element | None:
+        """The most recent entry named `name` after the last marker."""
+        for entry in reversed(self.active_formatting):
+            if entry is None:
+                return None
+            if entry.tag_name == name:
+                return entry
+        return None
+
+    def reconstruct_formatting(self) -> None:
+        """
+        Re-open formatting elements that are on the list but no longer on the
+        open-elements stack. This is what makes <p><b>one<p>two render `two`
+        in bold. It is NOT the adoption agency algorithm.
+        """
+        if not self.active_formatting:
+            return
+        last = self.active_formatting[-1]
+        if last is None or any(el is last for el in self.open_elements):
+            return
+
+        index = len(self.active_formatting) - 1
+        while index > 0:
+            candidate = self.active_formatting[index - 1]
+            if candidate is None or any(
+                el is candidate for el in self.open_elements
+            ):
+                break
+            index -= 1
+
+        while index < len(self.active_formatting):
+            entry = self.active_formatting[index]
+            clone = Element(entry.tag_name, entry.attrs)
+            self._insertion_point().append_child(clone)
+            self.open_elements.append(clone)
+            self.metrics["elements"] += 1
+            self.metrics["max_depth"] = max(
+                self.metrics["max_depth"], len(self.open_elements)
+            )
+            # Rewriting the entry in place is what stops the next call
+            # re-cloning the same element forever: the list now points at a
+            # node that is on the stack.
+            self.active_formatting[index] = clone
+            index += 1
 
     # -- insertion ---------------------------------------------------------
 
@@ -314,6 +418,7 @@ class TreeBuilder:
 
     def _mode_in_body(self, token) -> None:
         if isinstance(token, CharacterToken):
+            self.reconstruct_formatting()
             self.insert_text(token.data)
         elif isinstance(token, CommentToken):
             self._insertion_point().append_child(Comment(token.data))
@@ -333,12 +438,14 @@ class TreeBuilder:
         say -- which is the order the spec uses.
         """
         name = token.name
+        reconstruct = name not in NO_RECONSTRUCT_START
         if name == "li":
             if self.has_element_in_scope("li", LIST_ITEM_SCOPE):
                 self.generate_implied_end_tags(excluding="li")
                 self.pop_until("li")
             if self.has_element_in_scope("p", BUTTON_SCOPE):
                 self.close_p_element()
+            reconstruct = False
         elif name in ("dd", "dt"):
             for tag in ("dd", "dt"):
                 if self.has_element_in_scope(tag):
@@ -347,10 +454,24 @@ class TreeBuilder:
                     break
             if self.has_element_in_scope("p", BUTTON_SCOPE):
                 self.close_p_element()
+            reconstruct = False
         elif name in CLOSES_P:
             if self.has_element_in_scope("p", BUTTON_SCOPE):
                 self.close_p_element()
-        self.insert_element_maybe_raw_text(token)
+            # xmp is the one p-closing element whose rule reconstructs; the
+            # rest (div, table, h1..h6, hr, form, pre, ...) do not.
+            reconstruct = name == "xmp"
+
+        if reconstruct:
+            self.reconstruct_formatting()
+
+        if name in FORMATTING_ELEMENTS:
+            self.push_formatting(self.insert_element(token))
+        elif name in FORMATTING_MARKER_ELEMENTS:
+            self.insert_element(token)
+            self.push_formatting_marker()
+        else:
+            self.insert_element_maybe_raw_text(token)
 
     def _in_body_end(self, token: EndTagToken) -> None:
         name = token.name
@@ -381,10 +502,23 @@ class TreeBuilder:
                 while self.open_elements:
                     if self.open_elements.pop().tag_name in HEADINGS:
                         break
+        elif name in FORMATTING_ELEMENTS:
+            # Without the adoption agency algorithm this is the simple case:
+            # drop the element from the formatting list and pop to it.
+            # Misnested cases (<b><i></b></i>) still come out wrong -- see
+            # test_misnested_formatting_tags in tests/htmlparse/.
+            entry = self.last_formatting(name)
+            if entry is not None:
+                self.remove_formatting(entry)
+            if self.has_element_in_scope(name):
+                self.generate_implied_end_tags(excluding=name)
+                self.pop_until(name)
         elif name in CLOSES_IN_SCOPE:
             if self.has_element_in_scope(name):
                 self.generate_implied_end_tags(excluding=name)
                 self.pop_until(name)
+                if name in FORMATTING_MARKER_ELEMENTS:
+                    self.clear_formatting_to_marker()
         else:
             self._any_other_end_tag(token)
         # An end tag with nothing matching in scope is ignored.
