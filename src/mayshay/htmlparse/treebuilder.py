@@ -63,7 +63,7 @@ CLOSES_P = frozenset({
     "dialog", "dir", "div", "dl", "fieldset", "figcaption", "figure",
     "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header",
     "hgroup", "hr", "listing", "main", "menu", "nav", "ol", "p", "plaintext",
-    "pre", "section", "summary", "table", "ul",
+    "pre", "search", "section", "summary", "table", "ul",
     # xmp belongs here even though it is a raw-text element: the spec's in-body
     # xmp rule closes an open p *before* the generic raw text algorithm runs.
     # textarea, iframe and noembed deliberately do NOT close a p.
@@ -109,7 +109,10 @@ NO_RECONSTRUCT_START = HEAD_ELEMENTS | frozenset({
     "html", "body", "head", "frame", "frameset",
     "caption", "col", "colgroup", "tbody", "tfoot", "thead", "td", "th", "tr",
     "param", "source", "track",
-    "textarea", "iframe", "noembed", "noscript",
+    # noscript is absent deliberately: this parser models scripting as
+    # disabled, so <noscript> is an ordinary element that falls to the
+    # "any other start tag" catch-all -- which reconstructs.
+    "textarea", "iframe", "noembed",
     "rb", "rp", "rt", "rtc",
 })
 
@@ -503,14 +506,28 @@ class TreeBuilder:
                     if self.open_elements.pop().tag_name in HEADINGS:
                         break
         elif name in FORMATTING_ELEMENTS:
-            # Without the adoption agency algorithm this is the simple case:
-            # drop the element from the formatting list and pop to it.
-            # Misnested cases (<b><i></b></i>) still come out wrong -- see
-            # test_misnested_formatting_tags in tests/htmlparse/.
+            # The adoption agency algorithm minus the repair itself. Its
+            # early-exit steps are all here, in spec order, so landing the
+            # real thing later is an insertion rather than a rewrite:
+            #
+            #   4.3  not on the list          -> "any other end tag"
+            #   4.4  on the list, off the stack -> drop the entry
+            #   4.5  on the stack, out of scope -> parse error, KEEP the entry
+            #   4.7  no furthest block        -> pop to it, drop the entry
+            #
+            # Step 4.5 keeping the entry is load-bearing: <b><table></b>x
+            # must still reconstruct the <b> around "x". What is missing is
+            # only the furthest-block case, where we over-pop instead of
+            # reparenting -- see test_misnested_formatting_tags.
             entry = self.last_formatting(name)
-            if entry is not None:
+            if entry is None:
+                self._any_other_end_tag(token)
+            elif not any(el is entry for el in self.open_elements):
                 self.remove_formatting(entry)
-            if self.has_element_in_scope(name):
+            elif not self.has_element_in_scope(name):
+                pass
+            else:
+                self.remove_formatting(entry)
                 self.generate_implied_end_tags(excluding=name)
                 self.pop_until(name)
         elif name in CLOSES_IN_SCOPE:

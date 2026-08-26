@@ -292,3 +292,73 @@ def test_whitespace_only_text_reconstructs():
     assert u.tag_name == "u"
     assert u.children[0].data == " "
     assert u.children[1].tag_name == "p"
+
+
+def test_formatting_end_tag_out_of_scope_keeps_the_list_entry():
+    """AAA step 4.5: on the stack but not in scope -> keep the entry.
+
+    <table> is a scope barrier, so </b> cannot close the <b>. Removing the
+    entry anyway would stop "x" being reconstructed into a <b> later.
+    """
+    from mayshay.htmlparse.treebuilder import TreeBuilder
+
+    tb = TreeBuilder("<b><table></b>x")
+    tb.build()
+    assert [e.tag_name for e in tb.active_formatting if e is not None] == ["b"]
+
+
+def test_formatting_end_tag_not_on_the_stack_drops_the_entry():
+    """AAA step 4.4: on the list but off the stack -> drop the entry."""
+    from mayshay.htmlparse.treebuilder import TreeBuilder
+
+    tb = TreeBuilder("<b><p>a</p></b>x")
+    tb.build()
+    assert tb.active_formatting == []
+
+
+def test_formatting_end_tag_over_pops_a_furthest_block():
+    """Pins CURRENT behaviour, which the adoption agency will change.
+
+    </b> here has a furthest block (<div>), so the spec reparents: the <div>
+    keeps its place and a fresh <b> is created inside it to hold "x". We
+    instead pop straight through the div and drop "x" into <body>. Routing
+    formatting end tags through the scope check rather than the "any other
+    end tag" stack walk is what makes this the failure mode; the test exists
+    so that landing the adoption agency shows up as a deliberate diff.
+    """
+    assert tree("<b><div></b>x") == (
+        "| <html>\n"
+        "|   <head>\n"
+        "|   <body>\n"
+        "|     <b>\n"
+        "|       <div>\n"
+        '|     "x"'
+    )
+
+
+def test_search_closes_an_open_p_and_does_not_reconstruct():
+    """<search> is in CLOSES_P, so it closes the <p> and, like every other
+    p-closing block element, does not re-open <b> around itself."""
+    assert tree("<p><b>a<search>b") == (
+        "| <html>\n"
+        "|   <head>\n"
+        "|   <body>\n"
+        "|     <p>\n"
+        "|       <b>\n"
+        '|         "a"\n'
+        "|     <search>\n"
+        "|       <b>\n"
+        '|         "b"'
+    )
+
+
+def test_noscript_reconstructs_because_scripting_is_disabled():
+    """This parser models scripting as disabled, so <noscript> is an ordinary
+    element: it hits the "any other start tag" catch-all, which reconstructs."""
+    result = parse("<p><b>a</p><noscript>b")
+    body = result.document_element.children[1]
+    # The second <b> is the reconstructed one, and the noscript sits inside it.
+    assert [c.tag_name for c in body.children] == ["p", "b"]
+    reopened = body.children[1]
+    assert [c.tag_name for c in reopened.children] == ["noscript"]
+    assert reopened.children[0].children[0].data == "b"
