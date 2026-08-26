@@ -33,6 +33,7 @@ Commit one is the tokenizer fixes. Then the four pieces run **2 → 1 → 3 → 
 | 5 | `src/mayshay/dom/node.py` (piece 3) |
 | 6 | Tree builder, 8 insertion modes (piece 4a) |
 | 7 | Active formatting elements + reconstruction (piece 4b) |
+| 8 | Document the html5lib-tests submodule pin (any time after Task 2) |
 
 ## File Structure
 
@@ -1627,9 +1628,10 @@ The scope algorithm is written generally rather than as `p`/`li` special cases: 
 **Files:**
 - Create: `src/mayshay/htmlparse/treebuilder.py`
 - Create: `tests/htmlparse/test_treebuilder.py`, `tests/htmlparse/test_html5lib_tree.py`
+- Generates (gitignored): `data/metrics/conformance.csv`
 
 **Interfaces:**
-- Consumes: all token classes and `Tokenizer.switch_to` (Tasks 1, 3, 4); all DOM types and `serialize` (Task 5); `load_tree_tests`, `requires_corpus` (Task 2)
+- Consumes: all token classes and `Tokenizer.switch_to` (Tasks 1, 3, 4); all DOM types and `serialize` (Task 5); `load_tree_tests` from `tests.support.dat` and `requires_corpus` from `tests.support.marks` (Task 2)
 - Produces:
   - `TreeBuilder(source: str)` with `build() -> Document`
   - `TreeBuilder.open_elements: list[Element]`
@@ -1759,30 +1761,116 @@ def test_table_structure():
 Create `tests/htmlparse/test_html5lib_tree.py`:
 
 ```python
+import csv
+import time
+from pathlib import Path
+
 import pytest
 
 from mayshay.dom.node import serialize
 from mayshay.htmlparse.treebuilder import parse
-from tests.conftest import requires_corpus
 from tests.support.dat import load_tree_tests
+from tests.support.marks import requires_corpus
 
 # Files whose features are in scope for phase 1. Everything else waits for
 # the table modes, foreign content, and the adoption agency algorithm.
 IN_SCOPE_FILES = ("tests1.dat",)
 
+METRICS_PATH = (
+    Path(__file__).resolve().parents[2] / "data" / "metrics" / "conformance.csv"
+)
+
+# (case_id, outcome, input_bytes, expected_lines, elapsed_ms)
+_results: list[tuple[str, str, int, int, float]] = []
+
 
 def _cases():
+    """Corpus cases phase 1 is expected to handle.
+
+    Excluded deliberately, and reported rather than dropped silently:
+      - fragment-parsing cases: there is no fragment algorithm yet.
+      - `#script-on` cases and anything under `tree-construction/scripted/`:
+        these assert behaviour that depends on executing script, and mayshay
+        has no JS runtime (`src/mayshay/jsruntime/` is an empty package).
+        Scoring them would mean scoring the parser against semantics it is
+        not attempting.
+    """
     try:
-        return [t for t in load_tree_tests(*IN_SCOPE_FILES) if t.fragment is None]
+        cases = load_tree_tests(*IN_SCOPE_FILES)
     except FileNotFoundError:
         return []
+
+    kept = [
+        case
+        for case in cases
+        if case.fragment is None
+        and case.script != "on"
+        and "scripted" not in Path(case.path).parts
+    ]
+    dropped = len(cases) - len(kept)
+    if dropped:
+        print(
+            f"[conformance] {len(kept)} cases in scope; excluded {dropped} of "
+            f"{len(cases)} (fragment or script-dependent)"
+        )
+    return kept
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _emit_conformance_metrics():
+    """Write per-case conformance results to data/metrics/conformance.csv.
+
+    Required by the CLAUDE.md rule that every stage emit timing + size
+    metrics. This is also the dataset the project's analysis half consumes,
+    so it records outcome, input size, and parse time per case — not just a
+    pass count.
+    """
+    yield
+    if not _results:
+        return
+    METRICS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with METRICS_PATH.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            ["case_id", "outcome", "input_bytes", "expected_lines", "elapsed_ms"]
+        )
+        writer.writerows(_results)
 
 
 @requires_corpus
 @pytest.mark.parametrize("case", _cases(), ids=lambda c: c.id)
 def test_tree_construction(case):
-    assert serialize(parse(case.data)) == case.document
+    started = time.perf_counter()
+    try:
+        actual = serialize(parse(case.data))
+    except Exception:
+        _results.append(
+            (
+                case.id,
+                "error",
+                len(case.data),
+                len(case.document.splitlines()),
+                (time.perf_counter() - started) * 1000,
+            )
+        )
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    outcome = "pass" if actual == case.document else "fail"
+    _results.append(
+        (
+            case.id,
+            outcome,
+            len(case.data),
+            len(case.document.splitlines()),
+            elapsed_ms,
+        )
+    )
+    assert actual == case.document
 ```
+
+Note the import of `requires_corpus` from `tests.support.marks`, not from
+`tests/conftest.py` — importing a conftest as a module is fragile, so Task 2
+places the marker in `tests/support/marks.py`.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -2147,6 +2235,22 @@ Expected: a mix of pass and fail. `tests1.dat` includes cases needing the adopti
 
 If the failure list is dominated by categories outside phase 1, narrow `IN_SCOPE_FILES` or add an explicit skip-list with a comment naming the missing feature. Do not weaken the assertion.
 
+Then confirm the metrics file was written and is well-formed:
+
+```bash
+head -3 data/metrics/conformance.csv
+.venv/bin/python -c "
+import csv, collections
+rows = list(csv.DictReader(open('data/metrics/conformance.csv')))
+print('rows:', len(rows))
+print(collections.Counter(r['outcome'] for r in rows))
+"
+```
+
+Expected: a header plus one row per in-scope case, and an outcome breakdown whose `pass` count matches the pytest pass count. The file is gitignored (`data/metrics/*.csv`) — it is generated output, not a committed artifact. Record both the pass rate and the row count in the commit message.
+
+Note the exclusion line printed by `_cases()` during collection: it names how many cases were held out as fragment or script-dependent. If that number is zero for `tests1.dat`, say so in your report rather than assuming the filter is broken — `tests1.dat` may legitimately contain none.
+
 - [ ] **Step 8: Commit**
 
 ```bash
@@ -2351,6 +2455,89 @@ git commit -m "htmlparse: add active formatting elements list and reconstruction
 
 ---
 
+### Task 8: Document the html5lib-tests submodule pin
+
+Docs only, no code. Runnable any time after Task 2.
+
+Upstream html5lib-tests deleted `tree-construction/` at commit `224991e`
+("Tree construction tests have moved to WPT"). The submodule is deliberately
+pinned to `9329e64`, that commit's immediate parent, which still carries all
+60 `.dat` files. Nothing in the repo currently says so, which means the next
+person to run `git submodule update --remote` — a normal-looking act of
+housekeeping — silently empties the corpus and turns every conformance test
+into a skip. Three files need to say why the pin exists.
+
+**Files:**
+- Modify: `.gitmodules`
+- Modify: `CLAUDE.md`
+- Modify: `README.md`
+
+**Interfaces:** none — documentation only.
+
+- [ ] **Step 1: Annotate `.gitmodules`**
+
+Git config format accepts `#` comments. Add above the existing stanza:
+
+```
+# PINNED DELIBERATELY to 9329e64 -- do not run `git submodule update --remote`.
+# Upstream deleted tree-construction/ at 224991e ("Tree construction tests have
+# moved to WPT"); 9329e64 is its parent and the last commit that still has the
+# 60 .dat files our conformance suite scores against. Advancing this pin empties
+# the corpus and silently turns tests/htmlparse/test_html5lib_tree.py into skips.
+[submodule "tests/html5lib-tests"]
+	path = tests/html5lib-tests
+	url = https://github.com/html5lib/html5lib-tests.git
+```
+
+- [ ] **Step 2: Record it in `CLAUDE.md`**
+
+Add a new bullet to the `## Rules` section:
+
+```markdown
+- The `tests/html5lib-tests` submodule is pinned to `9329e64` on purpose.
+  Upstream removed `tree-construction/` in `224991e`; that pin is the last
+  commit that still has the fixtures. Never `git submodule update --remote`.
+```
+
+- [ ] **Step 3: Record it in `README.md`**
+
+Add a section after `## Status`:
+
+```markdown
+## Test corpus
+
+Conformance tests run against [html5lib-tests](https://github.com/html5lib/html5lib-tests),
+vendored as a submodule under `tests/html5lib-tests`:
+
+    git submodule update --init
+
+The submodule is **pinned to `9329e64`**, not tracking `master`. Upstream moved
+its tree-construction fixtures to web-platform-tests and deleted them in
+`224991e`; `9329e64` is the last commit that still carries all 60 `.dat` files.
+Do not advance the pin with `git submodule update --remote` — it will empty the
+corpus, and the conformance suite will skip rather than fail, so the loss is
+easy to miss.
+```
+
+- [ ] **Step 4: Verify the pin is what the docs claim**
+
+```bash
+git ls-tree HEAD tests/html5lib-tests
+git -C tests/html5lib-tests log --oneline -1
+ls tests/html5lib-tests/tree-construction/*.dat | wc -l
+```
+
+Expected: the tree entry and the submodule HEAD both read `9329e64`, and 57 top-level `.dat` files (60 including `scripted/`). If any number disagrees with the text you just wrote, fix the text — do not fix the numbers to match the text.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add .gitmodules CLAUDE.md README.md
+git commit -m "docs: explain why the html5lib-tests submodule is pinned"
+```
+
+---
+
 ## Phase 1 Done When
 
 - `.venv/bin/pytest` is green, with exactly three documented xfails: double-escaped script data, adoption agency, table modes.
@@ -2366,7 +2553,7 @@ git commit -m "htmlparse: add active formatting elements list and reconstruction
 4. **Double-escaped script data** — `<!--<script>` nested in script text.
 5. **NULL handling** — U+0000 is not replaced with U+FFFD.
 6. **DOCTYPE public/system identifiers** — discarded, so quirks-mode detection is name-only.
-7. **Metrics are not yet written to `data/metrics/`** — `TreeBuilder.metrics` is populated but never persisted, so the `CLAUDE.md` rule is only half satisfied.
+7. **Per-run stage metrics are not yet written to `data/metrics/`** — Task 6 emits `data/metrics/conformance.csv` (per-case outcome, input size, parse time), which satisfies the `CLAUDE.md` rule for tree construction. But `Tokenizer.metrics` and `TreeBuilder.metrics` for ordinary (non-corpus) parses are still populated in memory and discarded. A single writer shared by all five pipeline stages should be designed in phase 2 rather than invented per-stage.
 
 ## Self-Review
 
