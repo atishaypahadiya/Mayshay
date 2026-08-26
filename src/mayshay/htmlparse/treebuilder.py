@@ -20,7 +20,14 @@ from __future__ import annotations
 import time
 from collections import Counter
 
-from mayshay.dom.node import Comment, Document, DocumentType, Element, Text
+from mayshay.dom.node import (
+    Comment,
+    Document,
+    DocumentMode,
+    DocumentType,
+    Element,
+    Text,
+)
 from mayshay.htmlparse.tokenizer import (
     CharacterToken,
     CommentToken,
@@ -273,24 +280,48 @@ LIMITED_QUIRKS_PREFIXES = (
 #
 # The empty-string half is a real divergence from html5lib, which tests
 # `systemId is None` here and so classifies `PUBLIC "-//W3C//DTD HTML 4.01
-# Transitional//EN" ""` as limited-quirks. The spec's wording is explicit
-# ("missing or the empty string" / "neither missing nor the empty string") and
-# wins. The trailing note in the spec -- "a system identifier whose value is
-# the empty string is not considered missing" -- governs the *parse error*
-# condition at the top of the DOCTYPE rules, not these two clauses.
+# Transitional//EN" ""` as limited-quirks. The spec wins, and the two spec
+# sentences behind that agree rather than conflict:
+#
+#   "A system identifier whose value is the empty string is not considered
+#    missing for the purposes of the conditions above."
+#
+# That note applies to ALL the conditions, these two included. It says
+# "missing" never quietly means "missing or empty" -- so a clause that wants
+# to cover the empty string has to say so, and these two do, in as many words:
+# quirks when the system identifier is "missing or the empty string",
+# limited-quirks when it is "neither missing nor the empty string". Hence the
+# truthiness test in the code rather than `is not None`. The same note is why
+# `PUBLIC "..." ""` still trips the parse-error condition at the top of the
+# DOCTYPE rules: an empty system identifier is present, just empty.
 QUIRKS_UNLESS_SYSTEM_ID = (
     "-//w3c//dtd html 4.01 frameset//",
     "-//w3c//dtd html 4.01 transitional//",
 )
 
 
-def classify_document_mode(token: DoctypeToken | None) -> str:
+def classify_document_mode(token: DoctypeToken | None) -> DocumentMode:
     """Return "no-quirks", "limited-quirks" or "quirks" for a DOCTYPE token.
 
     `token is None` means the document had no DOCTYPE at all, which is quirks.
 
     Clause order is load-bearing and follows the spec's: the quirks conditions
     are exhausted before either limited-quirks condition is considered.
+
+    Two of the spec's gates on this algorithm are deliberately absent, because
+    neither concept exists in this parser yet:
+
+    - "if the document is not an iframe srcdoc document" -- there is no
+      browsing-context plumbing, so no document can be an srcdoc document. An
+      srcdoc document is always no-quirks regardless of its DOCTYPE.
+    - "and the parser cannot change the mode flag is false" -- that flag is set
+      only by the HTML fragment parsing algorithm and by XML-to-HTML
+      conversion, and there is no fragment entry point yet.
+
+    Both would gate the whole computation, so adding them later means wrapping
+    the call site, not editing the table. Neither affects any corpus case: the
+    html5lib tree-construction corpus has no srcdoc cases, and fragment cases
+    are excluded from our harness for want of a fragment parser.
     """
     if token is None:
         return "quirks"

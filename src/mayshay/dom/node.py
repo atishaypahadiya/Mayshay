@@ -9,6 +9,12 @@ suffix precisely so they don't collide with these.
 
 from __future__ import annotations
 
+from typing import Literal
+
+# The three document modes the spec defines. Named so a typo in an assignment
+# is a type error rather than a mode that silently matches nothing.
+DocumentMode = Literal["no-quirks", "limited-quirks", "quirks"]
+
 
 class Node:
     def __init__(self) -> None:
@@ -46,7 +52,7 @@ class Document(Node):
         # "initial" insertion mode. Recorded now, acted on in Phase 3 --
         # unitless lengths and the alternate box model are layout concerns,
         # not cascade concerns.
-        self.mode = "no-quirks"
+        self.mode: DocumentMode = "no-quirks"
 
     @property
     def quirks_mode(self) -> bool:
