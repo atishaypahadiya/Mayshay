@@ -17,4 +17,5 @@ Package root is `src/mayshay/`. Imports look like:
 - Follow the WHATWG HTML spec tokenizer state machine where practical.
 - The `tests/html5lib-tests` submodule is pinned to `9329e64` on purpose.
   Upstream removed `tree-construction/` in `224991e`; that pin is the last
-  commit that still has the fixtures. Never `git submodule update --remote`.
+  commit that still has the fixtures. Advancing it silently turns tests marked
+  `requires_corpus` into skips rather than failures. Never `git submodule update --remote`.
