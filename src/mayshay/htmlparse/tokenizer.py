@@ -13,8 +13,12 @@ Deliberate deviations from the spec, documented so they don't surprise us later:
    in the data state, the RCDATA state, and the three attribute-value states
    -- see htmlparse/entities.py. RAWTEXT, script data and comments leave
    references untouched, per spec.
-3. DOCTYPE parsing is simplified: we capture the name and ignore public/system
-   identifiers, since nothing downstream uses them except quirks-mode detection.
+3. DOCTYPE parsing is simplified: we capture the name and discard public and
+   system identifiers. The only thing downstream wants them for is quirks-mode
+   detection, so quirks detection is name-based only -- the spec's long list of
+   quirky public identifiers ("-//W3C//DTD HTML 4.01 Frameset//", "about:legacy-compat"
+   as a *non*-quirky system id, and so on) cannot be evaluated here. See the
+   force-quirks note on _state_doctype.
 4. The double-escaped script data states (script data double escape start /
    double escaped / double escaped dash / dash dash / less-than sign / double
    escape end) are NOT implemented. `<script><!--<script>...</script>-->` is
@@ -25,6 +29,24 @@ Deliberate deviations from the spec, documented so they don't surprise us later:
    error. The spec calls for no error there -- it just emits the EOF token.
    We keep the error because an unterminated <script>/<style>/<textarea> is a
    truncation signal worth counting in the metrics.
+6. U+0000 NULL is never replaced with U+FFFD, anywhere. The spec replaces NUL
+   in the data, RCDATA, RAWTEXT, script-data, tag-name, attribute-name and
+   attribute-value states (and the tree builder drops NUL character tokens in
+   "in body"). We pass it through untouched: a NUL inside a tag name lands in
+   Element.tag_name literally, and a NUL in text lands in a Text node.
+   ~46 tree-construction corpus cases.
+7. The PLAINTEXT state is NOT implemented, and neither is the <plaintext>
+   start tag that switches into it. Everything after `<plaintext>` is therefore
+   tokenized as ordinary data: `<plaintext>a<b>c` parses <b> as a real tag.
+   Note that treebuilder.CLOSES_P and treebuilder.SPECIAL_ELEMENTS *do* list
+   `plaintext`, because those sets are kept spec-correct -- the tree-builder
+   half of the feature exists, the tokenizer half does not. ~52 corpus cases.
+8. The comment states are collapsed into a single `_state_comment`: there is no
+   comment-start, comment-start-dash, comment-less-than-sign, comment-end-dash,
+   comment-end or comment-end-bang state. We scan for the first `-->` and take
+   everything before it as the data. So `<!-- <!--` gives " <!--" where the spec
+   gives " <!", and `<!--a--!>` gives "a--!>" where the spec gives "a".
+   ~17 corpus cases; also named in the xfail ledgers of two test files.
 """
 
 from __future__ import annotations
@@ -67,8 +89,12 @@ class StartTagToken:
 @dataclass
 class EndTagToken:
     name: str
-    # Kept so the tree builder can warn about </div class="x">, which is a
-    # parse error the spec ignores but which is a useful signal in our metrics.
+    # Attributes on an end tag are a parse error the spec tells you to ignore,
+    # and we do ignore them: the tokenizer runs the same attribute states for
+    # end tags as for start tags, so they land here, and nothing reads them.
+    # treebuilder.py contains zero references to EndTagToken.attrs. The field
+    # is kept only so both tag tokens have the same shape; do not read it
+    # expecting a warning surface that does not exist.
     attrs: dict[str, str] = field(default_factory=dict)
     pos: int = -1
 
@@ -136,6 +162,10 @@ class Tokenizer:
         self._attrs: dict[str, str] = {}
         self._attr_name: list[str] = []
         self._attr_value: list[str] = []
+        # Offset of the first character of the attribute name being built, so
+        # a duplicate-attribute error can point at the attribute rather than
+        # at whatever character happened to finish it.
+        self._attr_name_start = 0
 
         # Characters consumed while trying to match an "appropriate end tag"
         # inside raw text. Replayed as text when the match fails.
@@ -160,8 +190,25 @@ class Tokenizer:
     def _peek(self, n: int = 1) -> str:
         return self.source[self.pos:self.pos + n]
 
-    def _error(self, message: str) -> None:
-        self.errors.append((self.pos, message))
+    def _error(self, message: str, pos: int | None = None) -> None:
+        """Record a parse error.
+
+        Convention, and it is load-bearing because nothing downstream has been
+        written against this field yet: **the recorded offset points AT the
+        character that caused the error**, never past it.
+
+        `_next()` has already advanced `self.pos` past the character it
+        returned, so a state that has just consumed the offender passes
+        `self.pos - 1` (or further back when the offender is not the character
+        just read, e.g. the solidus in `_state_self_closing_start_tag`).
+
+        Omitting `pos` records `self.pos`, which is correct for the two cases
+        where there is no consumed offending character: EOF errors (`self.pos`
+        is then `len(self.source)`, one past the last character) and errors
+        about a character that is *absent*, such as the missing semicolon after
+        a character reference -- the offset is where it should have been.
+        """
+        self.errors.append((self.pos if pos is None else pos, message))
         self.metrics["parse_errors"] += 1
 
     def _consume_character_reference(self, in_attribute: bool) -> str:
@@ -170,6 +217,9 @@ class Tokenizer:
         text, new_pos, error = decode_reference(self.source, start, in_attribute)
         self.pos = new_pos
         if error:
+            # self.pos is the offset just past the reference, which is exactly
+            # the character the error is about: the missing ';' should have
+            # been there, and "absence of digits" points at the non-digit.
             self._error(error)
         # A reference was actually consumed iff decode_reference advanced the
         # position. Checking `text != "&"` instead is wrong: a *successful*
@@ -204,7 +254,7 @@ class Tokenizer:
         if name not in self._attrs:
             self._attrs[name] = "".join(self._attr_value)
         else:
-            self._error(f"duplicate attribute {name!r}")
+            self._error(f"duplicate attribute {name!r}", self._attr_name_start)
         self._attr_name.clear()
         self._attr_value.clear()
 
@@ -217,7 +267,10 @@ class Tokenizer:
             return EndTagToken(name, self._attrs, pos=self._token_start)
 
         # A raw-text start tag switches the tokenizer itself. Callers assign
-        # self.state = "data" *before* calling _emit_tag, so this wins.
+        # self.state = "data" *before* calling _emit_tag, so this wins -- and
+        # it also wins over TreeBuilder.insert_raw_text_element's switch_to,
+        # which runs later and therefore never changes anything. See
+        # Tokenizer.switch_to for why that duplication is deliberate for now.
         self._last_start_tag = name
         if name in RCDATA_ELEMENTS:
             self.state = "rcdata"
@@ -242,11 +295,27 @@ class Tokenizer:
 
     def switch_to(self, state: str, last_start_tag: str | None = None) -> None:
         """
-        Let the tree builder drive the tokenizer.
+        Seam for the tree builder to drive the tokenizer.
 
-        The spec puts the RCDATA/RAWTEXT decision in the tree builder, not the
-        tokenizer, because it is contextual. Task 6 uses this when it inserts
-        a <title>, <style>, <script> or <textarea> element.
+        **This does not currently drive anything.** `_emit_tag` above already
+        switches to rcdata / rawtext / script_data on every start tag, from the
+        same three frozensets the tree builder consults, and it does so before
+        the token is dispatched. So by the time `TreeBuilder.
+        insert_raw_text_element` calls this, the state and `_last_start_tag`
+        are already what it is about to assign. Measured over all 1592
+        tree-construction corpus cases: 354 calls, 0 that changed either field.
+        Every one is a no-op re-assignment.
+
+        It is kept, not deleted, for two reasons. The corpus harness uses it to
+        set up raw-text tokenizer cases with an explicit initial state and
+        last-start-tag. And it is the seam the spec's design requires: the
+        RCDATA/RAWTEXT decision belongs to the tree builder *because it is
+        contextual*, and the first contextual case -- foreign content, where
+        `<svg><title>` must not be tokenized as RCDATA -- breaks the moment a
+        tokenizer decides on its own. Retiring `_emit_tag`'s unilateral switch
+        in favour of this method is a phase-2 task, and the measurement above
+        is what makes it a safe refactor to do before foreign content lands
+        rather than after.
         """
         self.state = state
         if last_start_tag is not None:
@@ -479,8 +548,12 @@ class Tokenizer:
         else:
             if ch is not EOF:
                 self.pos -= 1
-            if not self._buffer:
-                self._buffer_start = self.pos - 1
+            # No `if not self._buffer: self._buffer_start = ...` guard, unlike
+            # the sibling _raw_less_than_sign_state. Reaching the escaped
+            # states requires having appended "<!--" to the buffer, so it is
+            # never empty here; the guard would be dead code that reads like a
+            # live one. Confirmed over all 1592 tree-construction corpus
+            # cases: 119 arrivals at this branch, 0 with an empty buffer.
             self._buffer.append("<")
             self.state = "script_data_escaped"
         return
@@ -510,13 +583,15 @@ class Tokenizer:
             self._start_tag(is_end=False, first_char=ch)
             self.state = "tag_name"
         elif ch == "?":
-            self._error("unexpected ? instead of tag name")
-            self._buffer_start = self.pos - 1
+            self._error("unexpected ? instead of tag name", self.pos - 1)
+            # No _buffer_start here: the buffer is about to become comment
+            # data, and _state_bogus_comment emits a CommentToken, which
+            # carries no pos. Nothing would ever read the offset.
             self._buffer = [ch]
             self.state = "bogus_comment"
         else:
             # A bare '<' in text. Extremely common. Treat as literal.
-            self._error("invalid first character of tag name")
+            self._error("invalid first character of tag name", self.pos - 1)
             if not self._buffer:
                 self._buffer_start = self.pos - 2
             self._buffer.append("<")
@@ -534,10 +609,10 @@ class Tokenizer:
             self._start_tag(is_end=True, first_char=ch)
             self.state = "tag_name"
         elif ch == ">":
-            self._error("missing end tag name")
+            self._error("missing end tag name", self.pos - 1)
             self.state = "data"
         else:
-            self._error("invalid first character of tag name")
+            self._error("invalid first character of tag name", self.pos - 1)
             self._buffer = []
             self.pos -= 1
             self.state = "bogus_comment"
@@ -571,12 +646,14 @@ class Tokenizer:
             self.pos -= 1
             self.state = "after_attribute_name"
         elif ch == "=":
-            self._error("unexpected = before attribute name")
+            self._error("unexpected = before attribute name", self.pos - 1)
             self._attr_name = [ch]
+            self._attr_name_start = self.pos - 1
             self.state = "attribute_name"
         else:
             self._save_attr()
             self._attr_name = [ch.lower()]
+            self._attr_name_start = self.pos - 1
             self.state = "attribute_name"
         return
         yield
@@ -616,6 +693,7 @@ class Tokenizer:
             # Valueless attribute, e.g. <input disabled name="x">
             self._save_attr()
             self._attr_name = [ch.lower()]
+            self._attr_name_start = self.pos - 1
             self.state = "attribute_name"
 
     def _state_before_attribute_value(self) -> Iterator[Token]:
@@ -630,7 +708,7 @@ class Tokenizer:
         elif ch == "'":
             self.state = "attribute_value_single"
         elif ch == ">":
-            self._error("missing attribute value")
+            self._error("missing attribute value", self.pos - 1)
             self.state = "data"
             token = self._emit_tag()   # may override state to rcdata/rawtext/script_data
             yield token
@@ -699,7 +777,7 @@ class Tokenizer:
             token = self._emit_tag()   # may override state to rcdata/rawtext/script_data
             yield token
         else:
-            self._error("missing whitespace between attributes")
+            self._error("missing whitespace between attributes", self.pos - 1)
             self._save_attr()
             self.pos -= 1
             self.state = "before_attribute_name"
@@ -715,7 +793,10 @@ class Tokenizer:
             token = self._emit_tag()   # may override state to rcdata/rawtext/script_data
             yield token
         else:
-            self._error("unexpected solidus in tag")
+            # self.pos - 2, not - 1: the offender is the '/', and every state
+            # that routes here consumed it as the character immediately before
+            # the one _next() just returned.
+            self._error("unexpected solidus in tag", self.pos - 2)
             self.pos -= 1
             self.state = "before_attribute_name"
 
@@ -729,6 +810,8 @@ class Tokenizer:
             self._buffer = []
             self.state = "doctype"
         else:
+            # Nothing was consumed here (_peek, not _next), so self.pos
+            # already points at the offending character after "<!".
             self._error("incorrectly opened comment")
             self._buffer = []
             self.state = "bogus_comment"
@@ -765,22 +848,45 @@ class Tokenizer:
             self._buffer.append(ch)
 
     def _state_doctype(self) -> Iterator[Token]:
-        # Simplified: consume to '>', keep the first word as the name.
+        """Simplified: consume to '>', keep the first word as the name.
+
+        `force_quirks` is the *spec's* force-quirks flag, which is a tokenizer
+        error flag and nothing else: it is set by eof-in-doctype, by a missing
+        name, and by malformed public/system identifiers. It is NOT the quirks
+        *mode* decision -- deciding that is the tree builder's "initial"
+        insertion mode's job, and it also takes the name and the identifiers
+        into account. See TreeBuilder._mode_initial.
+
+        Because we discard public and system identifiers (deviation #3), the
+        identifier-driven half of both the flag and the decision is a known
+        gap: `<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0//EN">` should end up
+        in quirks mode here and does not.
+        """
         chars: list[str] = []
+        force_quirks = False
+        close_pos = -1
         while True:
             ch = self._next()
             if ch is EOF:
                 self._error("eof in doctype")
+                force_quirks = True   # spec: eof-in-doctype sets force-quirks
                 self.state = "eof"
                 break
             if ch == ">":
+                close_pos = self.pos - 1
                 self.state = "data"
                 break
             chars.append(ch)
         raw = "".join(chars).strip()
         name = raw.split()[0].lower() if raw else None
+        if name is None and not force_quirks:
+            # `<!DOCTYPE>` / `<!DOCTYPE >`. At EOF the spec reports only
+            # eof-in-doctype, so don't double-report; force-quirks is already
+            # set on that path.
+            self._error("missing doctype name", close_pos)
+            force_quirks = True
         self.metrics["doctypes"] += 1
-        yield DoctypeToken(name=name, force_quirks=(name != "html"))
+        yield DoctypeToken(name=name, force_quirks=force_quirks)
 
 
 # --------------------------------------------------------------------------

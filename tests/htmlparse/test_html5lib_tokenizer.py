@@ -39,6 +39,10 @@ STATE_NAMES = {
     "RAWTEXT state": "rawtext",
     "Script data state": "script_data",
 }
+# "PLAINTEXT state" is deliberately absent, which silently drops the corpus's
+# PLAINTEXT cases (~52) rather than xfailing them. There is no tokenizer state
+# to map it to -- see tokenizer deviation #7 -- so there is nothing to pin.
+# When PLAINTEXT lands, add it here and the cases start being enforced.
 
 # Cases known to fail, each with the reason it is deferred. Keyed by
 # (description, html5lib state name) -- verified unique across the subset.
@@ -159,15 +163,24 @@ def test_raw_text_corpus_is_not_empty():
 
 
 # --------------------------------------------------------------------------
-# Character reference corpus: entities.test + namedEntities.test (Task 4)
+# Character reference corpus: entities / namedEntities / numericEntities (Task 4)
 # --------------------------------------------------------------------------
 #
-# Both files consist entirely of "Data state" cases -- no initialStates/
+# All three files consist entirely of "Data state" cases -- no initialStates/
 # lastStartTag plumbing needed, unlike the raw-text section above. Coverage
-# includes the named-reference table end to end (namedEntities.test) plus the
-# legacy-attribute-rule and numeric-reference edge cases (entities.test).
+# includes the named-reference table end to end (namedEntities.test), the
+# legacy-attribute-rule and numeric-reference edge cases (entities.test), and
+# the numeric-reference boundaries -- surrogates, out-of-range, overflow, the
+# Windows-1252 C1 remapping -- from numericEntities.test.
+#
+# numericEntities.test is the only Data-state file adopted so far beyond the
+# two entity ones. The remaining ~2,400 Data-state corpus cases (domjs, test1
+# through test4, unicodeChars, xmlViolation) are a phase-2 task: they exercise
+# the tag / attribute / comment / DOCTYPE states, where roughly 500 cases fail
+# against the tokenizer's documented deviations and need a written ledger
+# before they can be adopted without muting anything.
 
-ENTITY_FILES = ("entities.test", "namedEntities.test")
+ENTITY_FILES = ("entities.test", "namedEntities.test", "numericEntities.test")
 
 # Keyed by (filename, description, input) rather than just (filename,
 # description): entities.test alone has three descriptions reused across
@@ -209,7 +222,7 @@ def test_html5lib_entity_case(source, expected):
 def test_entity_corpus_is_not_empty():
     """A loader regression that silently yields nothing must not read green."""
     cases = list(_entity_cases())
-    assert len(cases) == 4290, (
-        f"expected 4290 entity cases from the pinned corpus, got {len(cases)}; "
+    assert len(cases) == 4626, (
+        f"expected 4626 entity cases from the pinned corpus, got {len(cases)}; "
         "if the submodule moved, re-check ENTITY_KNOWN_MISSES before updating this"
     )

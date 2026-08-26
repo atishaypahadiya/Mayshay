@@ -64,6 +64,12 @@ CLOSES_P = frozenset({
     "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header",
     "hgroup", "hr", "listing", "main", "menu", "nav", "ol", "p", "plaintext",
     "pre", "search", "section", "summary", "table", "ul",
+    # `plaintext` is listed because this set is kept spec-correct, but be aware
+    # it cannot fire end to end: the tokenizer has no PLAINTEXT state and no
+    # <plaintext> start tag switches into one (tokenizer deviation #7), so the
+    # rest of the document after <plaintext> is still tokenized as data. The
+    # p-closing half works; the feature does not. Same caveat in
+    # SPECIAL_ELEMENTS below.
     # xmp belongs here even though it is a raw-text element: the spec's in-body
     # xmp rule closes an open p *before* the generic raw text algorithm runs.
     # textarea, iframe and noembed deliberately do NOT close a p.
@@ -82,6 +88,8 @@ SPECIAL_ELEMENTS = frozenset({
     "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hgroup", "hr",
     "html", "iframe", "img", "input", "keygen", "li", "link", "listing",
     "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
+    # `plaintext` here has the same caveat as in CLOSES_P: spec-correct set,
+    # no tokenizer support behind it (tokenizer deviation #7).
     "noscript", "object", "ol", "p", "param", "plaintext", "pre", "script",
     "search", "section", "select", "source", "style", "summary", "table",
     "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "title",
@@ -300,8 +308,20 @@ class TreeBuilder:
         return None
 
     def insert_raw_text_element(self, token: StartTagToken, state: str) -> None:
-        """Generic RAWTEXT/RCDATA element parsing: the tree builder drives
-        the tokenizer, which is why Tokenizer.switch_to exists."""
+        """Generic RAWTEXT/RCDATA element parsing.
+
+        Only `self.mode = "text"` does any work today. The `switch_to` call is
+        currently inert: `Tokenizer._emit_tag` already set the same state and
+        the same last-start-tag from the same three frozensets before this
+        token was ever dispatched. Measured over all 1592 tree-construction
+        corpus cases: 354 calls from here, 0 that changed either field.
+
+        The call stays because the spec puts this decision in the tree builder
+        precisely because it is contextual, and the first contextual case --
+        foreign content, where <svg><title> must NOT become RCDATA -- will need
+        the tokenizer to stop deciding for itself. Retiring `_emit_tag`'s
+        unilateral switch is the phase-2 half of that; see Tokenizer.switch_to.
+        """
         self.insert_element(token)
         self.tokenizer.switch_to(state, last_start_tag=token.name)
         self.original_mode = self.mode
@@ -349,7 +369,15 @@ class TreeBuilder:
     def _mode_initial(self, token) -> None:
         if isinstance(token, DoctypeToken):
             self.document.append_child(DocumentType(token.name or "html"))
-            self.document.quirks_mode = token.force_quirks
+            # The quirks-mode *decision* lives here, not in the tokenizer.
+            # DoctypeToken.force_quirks is only the spec's force-quirks error
+            # flag (eof-in-doctype, missing name); the "initial" insertion mode
+            # additionally puts the document in quirks mode when the name is
+            # anything but "html", or when the public/system identifier matches
+            # one of the spec's quirky lists. That last clause is unimplemented:
+            # the tokenizer discards the identifiers (tokenizer deviation #3),
+            # so identifier-driven quirks is a documented gap, not an oversight.
+            self.document.quirks_mode = token.force_quirks or token.name != "html"
             self.mode = "before_html"
         elif isinstance(token, CommentToken):
             self.document.append_child(Comment(token.data))

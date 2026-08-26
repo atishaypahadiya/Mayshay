@@ -45,7 +45,9 @@ def test_decoding(src, expected):
 def test_missing_semicolon_is_a_parse_error():
     tk = Tokenizer("&amp")
     list(tk.tokenize())
-    assert tk.errors
+    # Offset 4 is where the ';' should have been: for an error about an absent
+    # character the convention points at the position it was expected at.
+    assert tk.errors == [(4, "missing semicolon after character reference")]
 
 
 def test_legacy_attribute_rule_blocks_decoding():

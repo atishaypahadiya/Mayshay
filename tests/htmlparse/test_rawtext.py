@@ -100,10 +100,15 @@ def test_script_comment_escape_states():
 
 
 def test_eof_inside_script_emits_text_and_error():
-    tk = Tokenizer("<script>abc")
+    src = "<script>abc"
+    tk = Tokenizer(src)
     out = list(tk.tokenize())
     assert "".join(t.data for t in out if isinstance(t, CharacterToken)) == "abc"
-    assert tk.errors
+    # Pin the message and the offset, not just truthiness: `assert tk.errors`
+    # reads as coverage of the error surface and is not. EOF carries no
+    # offending character, so the offset is len(src) by convention -- see
+    # Tokenizer._error and test_tokenizer.py's parse-error offset cases.
+    assert tk.errors == [(len(src), "eof in script_data")]
 
 
 def test_returns_to_data_between_scripts():

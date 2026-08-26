@@ -63,3 +63,49 @@ def test_rawtext_literal_lt_text_run_has_correct_offset():
     texts = [t for t in result if isinstance(t, CharacterToken)]
     rawtext_run = next(t for t in texts if t.data == "<x>foo")
     assert rawtext_run.pos == 14
+
+
+# -- parse-error offsets ----------------------------------------------------
+#
+# Tokenizer.errors is list[tuple[int, str]] and the int has one job: point at
+# the character that caused the error. _next() has already moved self.pos past
+# the character it returned, so every non-EOF call site has to pass an explicit
+# offset; before this was pinned the recorded positions were between +1 and +4
+# past the offence, varying by call site. These cases span five different
+# states so a regression in any one of them is visible.
+
+
+@pytest.mark.parametrize(
+    "src,expected",
+    [
+        # tag open state: the '@' is the offending character, not the '<'.
+        ("ab<@", [(3, "invalid first character of tag name")]),
+        # self-closing start tag state: the offender is the '/', which is two
+        # back from self.pos because 'x' was consumed to get here.
+        ("<p/x>", [(2, "unexpected solidus in tag")]),
+        # attribute name state: point at the start of the duplicate attribute,
+        # not at the '>' that happened to finish it.
+        ("<p a=1 a=2>", [(7, "duplicate attribute 'a'")]),
+        # before attribute value state.
+        ("<p a=>", [(5, "missing attribute value")]),
+        # before attribute name state.
+        ("<p =x>", [(3, "unexpected = before attribute name")]),
+        # end tag open state.
+        ("</>", [(2, "missing end tag name")]),
+        # doctype state: the '>' is where the absent name should have been.
+        ("<!DOCTYPE>", [(9, "missing doctype name")]),
+    ],
+)
+def test_parse_error_offsets_point_at_the_offending_character(src, expected):
+    tk = Tokenizer(src)
+    list(tk.tokenize())
+    assert tk.errors == expected
+
+
+@pytest.mark.parametrize("src", ["<div", "<div ", "<div a", '<div a="b'])
+def test_eof_errors_are_recorded_at_end_of_input(src):
+    """There is no offending character at EOF, so the offset is len(source) --
+    one past the last character, i.e. where input stopped."""
+    tk = Tokenizer(src)
+    list(tk.tokenize())
+    assert tk.errors == [(len(src), "eof in tag")]
