@@ -1,6 +1,15 @@
 .venv/
 __pycache__/
-*.pyc
+*.py[cod]
 *.egg-info/
-data/metrics/*.csv
+build/
+dist/
+.pytest_cache/
 .ipynb_checkpoints/
+.DS_Store
+.vscode/
+data/corpus/
+data/metrics/*.csv
+out/
+*.png
+!examples/**/*.png

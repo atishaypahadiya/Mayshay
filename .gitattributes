@@ -1,0 +1,3 @@
+*.ipynb linguist-documentation
+data/corpus/** linguist-generated
+*.py text eol=lf
