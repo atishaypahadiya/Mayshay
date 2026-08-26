@@ -13,4 +13,4 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-norecursedirs = ["tests/html5lib-tests", ".venv", ".git"]
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "tests/html5lib-tests"]

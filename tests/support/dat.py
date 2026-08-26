@@ -102,10 +102,13 @@ def parse_dat(text: str, path: str = "") -> list[DatTest]:
 
 
 def load_tree_tests(*filenames: str) -> list[DatTest]:
+    # Recursive: tree-construction/scripted/*.dat has no top-level duplicate,
+    # so a non-recursive glob would silently drop those files. Whether to use
+    # the script-on/off variants (see DatTest.script) is left to the caller.
     paths = (
         [TREE_DIR / name for name in filenames]
         if filenames
-        else sorted(TREE_DIR.glob("*.dat"))
+        else sorted(TREE_DIR.rglob("*.dat"))
     )
     tests: list[DatTest] = []
     for p in paths:
@@ -123,6 +126,20 @@ class TokenizerTest:
 
 
 def load_tokenizer_tests(*filenames: str) -> list[TokenizerTest]:
+    """Load tokenizer test cases from tokenizer/*.test JSON fixtures.
+
+    Each fixture file stores its test list under the key "tests", except
+    xmlViolation.test, which uses "xmlViolationTests" instead; both are read
+    so that file isn't silently skipped.
+
+    Entries with "doubleEscaped": true are deliberately skipped (10 of 6810
+    across the corpus as of the pinned submodule commit). Their input/output
+    strings use a JSON-within-JSON escaped form (e.g. "\\uDC00" sequences
+    meant to be unescaped a second time before use) that this loader does not
+    decode; consuming them as plain strings would silently feed wrong input
+    to the tokenizer under test. Skip until a future task adds real
+    doubleEscaped decoding.
+    """
     paths = (
         [TOKENIZER_DIR / name for name in filenames]
         if filenames
@@ -131,9 +148,10 @@ def load_tokenizer_tests(*filenames: str) -> list[TokenizerTest]:
     tests: list[TokenizerTest] = []
     for p in paths:
         blob = json.loads(p.read_text(encoding="utf-8"))
-        for entry in blob.get("tests", []):
+        entries = blob.get("tests", []) + blob.get("xmlViolationTests", [])
+        for entry in entries:
             if entry.get("doubleEscaped"):
-                continue  # escaped-string form; skip until Task 3 handles it
+                continue
             tests.append(
                 TokenizerTest(
                     description=entry["description"],
