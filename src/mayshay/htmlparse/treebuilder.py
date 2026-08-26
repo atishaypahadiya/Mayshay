@@ -185,6 +185,12 @@ class TreeBuilder:
         # offset points AT the token that caused the error, which is the
         # token's own `pos`.
         self.errors: list[tuple[int, str]] = []
+        # Set by _mode_after_head to the token whose fall-through synthesised
+        # the <body>. That token is one the spec would have handled in "after
+        # head", so in-body parse-error rules the spec does not apply there
+        # must not fire for it. Today only <frameset> is affected: it is
+        # legitimate in "after head" and a parse error in "in body".
+        self._after_head_fallthrough: object | None = None
         self.metrics: Counter[str] = Counter()
 
     # -- parse errors ------------------------------------------------------
@@ -516,11 +522,16 @@ class TreeBuilder:
             self.insert_element(token)
             self.mode = "in_body"
         else:
+            self._after_head_fallthrough = token
             self.insert_element(StartTagToken("body"))
             self.mode = "in_body"
             self.dispatch(token)
+            self._after_head_fallthrough = None
 
     def _mode_in_body(self, token) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if isinstance(token, CharacterToken):
             self.reconstruct_formatting()
             self.insert_text(token.data)
@@ -546,11 +557,20 @@ class TreeBuilder:
         say -- which is the order the spec uses.
         """
         name = token.name
-        # Spec: a <body> start tag in "in body" is a parse error (the spec then
-        # merges its attributes onto the open body). Only the error is recorded
-        # here; the merge, and the other in-body start-tag parse errors --
-        # html, head, frameset -- wait on rules this parser does not implement.
-        if name == "body":
+        # Spec: <body> and <frameset> start tags in "in body" are parse errors
+        # (the spec then merges body's attributes, or replaces the body with
+        # the frameset). Only the errors are recorded here; the repairs, and
+        # the other in-body start-tag parse errors -- html, head, form with the
+        # form pointer set -- wait on rules this parser does not implement.
+        #
+        # <frameset> is only an error when the spec would really be in "in
+        # body" for it. Two of its own modes, both unimplemented here, would
+        # have taken the token first and neither treats it as an error:
+        # "after head" (a document that opens with <frameset>, which reaches
+        # us via _mode_after_head's fall-through) and "in frameset" (a nested
+        # <frameset>, recognisable by one already being on the stack).
+        # Reporting those would invent errors html5lib does not report.
+        if name == "body" or (name == "frameset" and self._frameset_in_body(token)):
             self._error("unexpected-start-tag", token.pos)
         reconstruct = name not in NO_RECONSTRUCT_START
         if name == "li":
@@ -594,6 +614,12 @@ class TreeBuilder:
         else:
             self.insert_element_maybe_raw_text(token)
 
+    def _frameset_in_body(self, token: StartTagToken) -> bool:
+        """True when a <frameset> start tag really is an in-body parse error."""
+        if token is self._after_head_fallthrough:
+            return False  # the spec's "after head" frameset case
+        return not any(el.tag_name == "frameset" for el in self.open_elements)
+
     def _in_body_end(self, token: EndTagToken) -> None:
         name = token.name
         if name == "p":
@@ -629,12 +655,18 @@ class TreeBuilder:
                 self.pop_until(name)
         elif name in HEADINGS:
             # Any open heading closes any other: </h2> closes an open <h1>.
-            if not self.has_any_element_in_scope(HEADINGS):
-                self._error("unexpected-end-tag", token.pos)
-            else:
+            #
+            # This is the block shape, not the list-item shape: one error,
+            # `end-tag-too-early`, reported whenever the current node is not
+            # the element named by the tag -- including when no heading is in
+            # scope at all. See the note on CLOSES_IN_SCOPE below for why the
+            # two families genuinely differ rather than one being wrong.
+            in_scope = self.has_any_element_in_scope(HEADINGS)
+            if in_scope:
                 self.generate_implied_end_tags()
-                if self.current is not None and self.current.tag_name != name:
-                    self._error("end-tag-too-early", token.pos)
+            if self.current is None or self.current.tag_name != name:
+                self._error("end-tag-too-early", token.pos)
+            if in_scope:
                 while self.open_elements:
                     if self.open_elements.pop().tag_name in HEADINGS:
                         break
@@ -670,6 +702,14 @@ class TreeBuilder:
             # is because something is still open inside it or because it is
             # not in scope at all. There is no separate not-in-scope code for
             # this family.
+            #
+            # This looks asymmetric next to </li>, </dd> and </dt> above, which
+            # DO report `unexpected-end-tag` when nothing is in scope. The
+            # asymmetry is in the vocabulary, not here: the block family and
+            # the heading family gate only the *repair* on the scope check and
+            # report one code unconditionally, while the list-item family
+            # branches on scope and reports two. Flattening either family to
+            # match the other produces codes the corpus does not expect.
             in_scope = self.has_element_in_scope(name)
             if in_scope:
                 self.generate_implied_end_tags(excluding=name)

@@ -184,7 +184,14 @@ def _conformance_metrics():
         "elements",
         "max_depth",
         "text_nodes",
-        "parse_errors",
+        # Two columns, not one. This used to be a single `parse_errors`
+        # holding the TOKENIZER's count, because TreeBuilder.build() copied it
+        # over its own. Now that the two are distinct, recording only one of
+        # them under the old name would silently change what the column means
+        # and make rows written before and after this change incomparable.
+        # Both names say which producer they come from.
+        "tree_parse_errors",
+        "tokenizer_parse_errors",
         "parse_time_ms",
     ]
     with CONFORMANCE_CSV.open("w", newline="", encoding="utf-8") as fh:
@@ -219,7 +226,10 @@ def test_tree_construction(case):
                 "elements": builder.metrics["elements"],
                 "max_depth": builder.metrics["max_depth"],
                 "text_nodes": builder.metrics["text_nodes"],
-                "parse_errors": builder.metrics["parse_errors"],
+                "tree_parse_errors": builder.metrics["parse_errors"],
+                "tokenizer_parse_errors": builder.metrics[
+                    "tokenizer_parse_errors"
+                ],
                 "parse_time_ms": round(
                     (time.perf_counter() - started) * 1000, 3
                 ),
@@ -236,7 +246,8 @@ def test_tree_construction(case):
             "elements": builder.metrics["elements"],
             "max_depth": builder.metrics["max_depth"],
             "text_nodes": builder.metrics["text_nodes"],
-            "parse_errors": builder.metrics["parse_errors"],
+            "tree_parse_errors": builder.metrics["parse_errors"],
+            "tokenizer_parse_errors": builder.metrics["tokenizer_parse_errors"],
             "parse_time_ms": round((time.perf_counter() - started) * 1000, 3),
         }
     )

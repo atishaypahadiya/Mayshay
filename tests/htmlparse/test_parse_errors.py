@@ -78,9 +78,14 @@ KNOWN_ERROR_MISSES = {
         "diagnosed by the in-body block rule as end-tag-too-early"
     ),
     "tests1.dat:37": (
-        "tokenizer: `</` at EOF drops the two characters instead of emitting "
-        "them (spec eof-before-tag-name emits U+003C and U+002F), so the "
-        "initial mode sees EOF where html5lib sees characters"
+        "two independent causes, neither of them a tree-builder mapping bug. "
+        "(a) The tokenizer drops the two characters of a bare `</` at EOF "
+        "instead of emitting them (spec eof-before-tag-name emits U+003C and "
+        "U+002F), so the initial mode sees EOF where html5lib sees chars. "
+        "(b) The expected expected-closing-tag-but-got-eof is html5lib's "
+        "TOKENIZER error for EOF in the close-tag-open state, not a tree "
+        "error -- emitting the characters would not make it fire, since only "
+        "html and body are open at EOF. See the note on _curated_cases"
     ),
     "tests1.dat:98": "same _mode_in_head fall-through as tests1.dat:26",
     "tests1.dat:106": (
@@ -91,7 +96,25 @@ KNOWN_ERROR_MISSES = {
 
 
 def _curated_cases():
-    """Corpus cases whose expected errors fall entirely inside our set."""
+    """Corpus cases whose expected errors fall entirely inside our set.
+
+    The selection rule -- "every expected code is in TREE_ERROR_CODES" -- is a
+    proxy for "every expected error is one a tree builder could produce", and
+    the proxy has a known hole. html5lib's `#errors` vocabulary is not
+    partitioned by producer: at least one member of our set,
+    `expected-closing-tag-but-got-eof`, is emitted by html5lib's *tokenizer*
+    too (EOF in the tag-open and close-tag-open states) as well as by its tree
+    builder. A case whose only expected error is a tokenizer-origin instance
+    of such a code is therefore selected by this filter and can never agree,
+    no matter how complete the tree builder becomes. `tests1.dat:37` (`</`) is
+    exactly that case and is xfailed for it.
+
+    Measured across all 57 files: 1 of the 474 selected cases is affected. Do
+    not "fix" this by widening or narrowing TREE_ERROR_CODES -- the set
+    describes what the eight modes can produce, which is a different question.
+    Splitting the vocabulary by producer would need a per-code annotation the
+    corpus does not carry.
+    """
     try:
         cases = load_tree_tests("tests1.dat")
     except FileNotFoundError:
