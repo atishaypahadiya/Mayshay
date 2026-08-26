@@ -66,6 +66,38 @@ CLOSES_P = frozenset({
     "pre", "section", "summary", "table", "ul",
 })
 
+# The spec's "special" category. Its only job here is the "any other end tag"
+# algorithm: that stack walk must stop dead at a special element instead of
+# popping through it, which is why </span> cannot escape an open <button>.
+# The MathML/SVG members are omitted along with the rest of foreign content.
+SPECIAL_ELEMENTS = frozenset({
+    "address", "applet", "area", "article", "aside", "base", "basefont",
+    "bgsound", "blockquote", "body", "br", "button", "caption", "center",
+    "col", "colgroup", "dd", "details", "dir", "div", "dl", "dt", "embed",
+    "fieldset", "figcaption", "figure", "footer", "form", "frame", "frameset",
+    "h1", "h2", "h3", "h4", "h5", "h6", "head", "header", "hgroup", "hr",
+    "html", "iframe", "img", "input", "keygen", "li", "link", "listing",
+    "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
+    "noscript", "object", "ol", "p", "param", "plaintext", "pre", "script",
+    "search", "section", "select", "source", "style", "summary", "table",
+    "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "title",
+    "tr", "track", "ul", "wbr", "xmp",
+})
+
+HEADINGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+
+# End tags the spec closes with an explicit scope check rather than with the
+# "any other end tag" stack walk. Keeping them separate is load-bearing: the
+# stack walk aborts on a special element, so routing </div> through it would
+# make <div><p>x</div> ignore the </div> instead of closing the div.
+CLOSES_IN_SCOPE = frozenset({
+    "address", "applet", "article", "aside", "blockquote", "button", "center",
+    "details", "dialog", "dir", "div", "dl", "fieldset", "figcaption",
+    "figure", "footer", "form", "header", "hgroup", "listing", "main",
+    "marquee", "menu", "nav", "object", "ol", "pre", "search", "section",
+    "summary", "ul",
+})
+
 
 class TreeBuilder:
     def __init__(self, source: str) -> None:
@@ -90,6 +122,15 @@ class TreeBuilder:
     def has_element_in_scope(self, target: str, barriers=SCOPE_BARRIERS) -> bool:
         for el in reversed(self.open_elements):
             if el.tag_name == target:
+                return True
+            if el.tag_name in barriers:
+                return False
+        return False
+
+    def has_any_element_in_scope(self, targets, barriers=SCOPE_BARRIERS) -> bool:
+        """Scope predicate over a set of names -- the h1..h6 family needs it."""
+        for el in reversed(self.open_elements):
+            if el.tag_name in targets:
                 return True
             if el.tag_name in barriers:
                 return False
@@ -295,10 +336,51 @@ class TreeBuilder:
         elif name == "html":
             self.mode = "after_body"
             self.dispatch(token)
-        elif self.has_element_in_scope(name):
-            self.generate_implied_end_tags(excluding=name)
-            self.pop_until(name)
+        elif name == "li":
+            # List-item scope, not the default barriers: inside a nested <ul>
+            # a stray </li> must NOT reach out and close the enclosing <li>.
+            if self.has_element_in_scope("li", LIST_ITEM_SCOPE):
+                self.generate_implied_end_tags(excluding="li")
+                self.pop_until("li")
+        elif name in ("dd", "dt"):
+            if self.has_element_in_scope(name):
+                self.generate_implied_end_tags(excluding=name)
+                self.pop_until(name)
+        elif name in HEADINGS:
+            # Any open heading closes any other: </h2> closes an open <h1>.
+            if self.has_any_element_in_scope(HEADINGS):
+                self.generate_implied_end_tags()
+                while self.open_elements:
+                    if self.open_elements.pop().tag_name in HEADINGS:
+                        break
+        elif name in CLOSES_IN_SCOPE:
+            if self.has_element_in_scope(name):
+                self.generate_implied_end_tags(excluding=name)
+                self.pop_until(name)
+        else:
+            self._any_other_end_tag(token)
         # An end tag with nothing matching in scope is ignored.
+
+    def _any_other_end_tag(self, token: EndTagToken) -> None:
+        """The spec's "any other end tag" step.
+
+        Walk the stack from the top. A matching element closes normally; a
+        *special* element met first is a hard stop and the token is dropped.
+        This is deliberately not a scope check -- the barrier is the whole
+        special category, which is what keeps "bar" inside the button in
+        <span><button>foo</span>bar.
+        """
+        for index in range(len(self.open_elements) - 1, -1, -1):
+            node = self.open_elements[index]
+            if node.tag_name == token.name:
+                self.generate_implied_end_tags(excluding=token.name)
+                # generate_implied_end_tags stops at node (it is excluded), so
+                # the stack is still at least index + 1 deep here.
+                while len(self.open_elements) > index:
+                    self.open_elements.pop()
+                return
+            if node.tag_name in SPECIAL_ELEMENTS:
+                return  # parse error; ignore the token
 
     def _mode_text(self, token) -> None:
         if isinstance(token, CharacterToken):
