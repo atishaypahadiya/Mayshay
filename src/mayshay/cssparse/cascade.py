@@ -264,13 +264,47 @@ LONGHANDS: tuple[str, ...] = (
     "color",
     "background-color",
     "font-size",
+    # Phase 3 Task A2, deliverable 3. Task D cannot be written against a
+    # `ComputedStyle` with no `white-space` or `line-height`, and
+    # `box-sizing` changes what every width in Task C means -- cheaper to
+    # add now than to retrofit. `font-family` and `vertical-align` have no
+    # consumer this phase and are recorded anyway: a value nobody reads is
+    # a smaller problem than a value nobody recorded.
+    "white-space",
+    "line-height",
+    "font-family",
+    "font-weight",
+    "font-style",
+    "text-align",
+    "vertical-align",
+    "box-sizing",
+    "list-style-type",
 )
 
-# Of the nine, exactly these two inherit. `display`, the box-model
-# properties and `background-color` do not -- a `<p>` inside a bordered
-# `<div>` does not get its own border, and that is not an oversight in the
-# table, it is what the CSS property definitions say.
-INHERITED: frozenset[str] = frozenset({"color", "font-size"})
+# The inherited properties, per the CSS property definitions. `display`, the
+# box-model properties and `background-color` do not inherit -- a `<p>`
+# inside a bordered `<div>` does not get its own border, and that is not an
+# oversight in the table, it is what the specs say. Neither do
+# `vertical-align` or `box-sizing`, which is why deliverable 3 added nine
+# fields and this set gained only seven of them.
+#
+# This went from two entries to nine in one deliberate change, with a test
+# per property, rather than one at a time as each was needed. A property
+# that silently fails to inherit produces plausible-looking wrong output --
+# the whole page renders, every box is where a box could be, and only the
+# text is the wrong size or the wrong weight. That is the hardest kind of
+# defect to notice and the reason for the batch.
+INHERITED: frozenset[str] = frozenset({
+    "color",
+    "font-size",
+    "font-family",
+    "font-weight",
+    "font-style",
+    "line-height",
+    "white-space",
+    "text-align",
+    "list-style-type",
+})
 
 # `medium`. The one number in this module that is a convention rather than a
 # derivation; every `em`, `rem` and `%` font-size on a page with no explicit
@@ -288,6 +322,12 @@ _TRANSPARENT = Color(0, 0, 0, 0.0)
 # specifies a style and a colour and leaves the width to it. See
 # `_zero_widths_of_borderless_sides` for the other half of the rule.
 _MEDIUM_BORDER_WIDTH = Length(3, "px")
+
+# `font-family`'s initial value is UA-defined. Empty means "unspecified",
+# not "no fonts": Phase 3 renders with one vendored font whatever this says,
+# and recording a concrete family would put a guess where a declaration
+# would later be read.
+_INITIAL_FONT_FAMILY: tuple[str, ...] = ()
 
 _SIDES = ("top", "right", "bottom", "left")
 _BORDER_STYLE_PROPS = tuple(f"border-{side}-style" for side in _SIDES)
@@ -318,6 +358,22 @@ INITIAL_SPECIFIED: dict[str, object] = {
     **{prop: _MEDIUM_BORDER_WIDTH for prop in _BORDER_WIDTH_PROPS},
     **{prop: Keyword("none") for prop in _BORDER_STYLE_PROPS},
     **{prop: Keyword("currentcolor") for prop in _BORDER_COLOR_PROPS},
+    "white-space": Keyword("normal"),
+    # Symbolic, deliberately: see `values._parse_line_height`. The used value
+    # of `normal` is the font's own preferred spacing, which arrives with
+    # Task D's metrics.
+    "line-height": Keyword("normal"),
+    # The spec's initial value is "depends on user agent". The empty tuple
+    # says *no family was specified* rather than naming one, which is the
+    # honest encoding while this engine ships exactly one font: a concrete
+    # default here would be a guess that later reads as a declaration.
+    "font-family": _INITIAL_FONT_FAMILY,
+    "font-weight": 400,
+    "font-style": Keyword("normal"),
+    "text-align": Keyword("start"),
+    "vertical-align": Keyword("baseline"),
+    "box-sizing": Keyword("content-box"),
+    "list-style-type": Keyword("disc"),
 }
 
 # Which longhands each property governs -- *all* of them, not just the ones
@@ -432,6 +488,18 @@ class ComputedStyle:
     background_color: object = _TRANSPARENT
 
     font_size: object = Length(INITIAL_FONT_SIZE_PX, "px")
+
+    white_space: str = "normal"
+    # A `Keyword`, a `float`, a `Length` or a `Percent` -- see deviation 14
+    # for why `normal` is not collapsed to a number here.
+    line_height: object = Keyword("normal")
+    font_family: tuple[str, ...] = _INITIAL_FONT_FAMILY
+    font_weight: object = 400
+    font_style: str = "normal"
+    text_align: str = "start"
+    vertical_align: object = "baseline"
+    box_sizing: str = "content-box"
+    list_style_type: str = "disc"
 
     def get(self, prop: str) -> object:
         return getattr(self, _field_name(prop))
@@ -621,7 +689,24 @@ def _compute_rest(
 # needs resolving (`currentcolor`, handled above it) or a property added to
 # `values.py` without a computed-value decision being made here, and
 # stringifying that silently is how a property ends up half-implemented.
-_KEYWORD_VALUED = frozenset({"display"}) | frozenset(_BORDER_STYLE_PROPS)
+_KEYWORD_VALUED = frozenset({
+    "display",
+    "white-space",
+    "font-style",
+    "text-align",
+    "vertical-align",
+    "box-sizing",
+    "list-style-type",
+}) | frozenset(_BORDER_STYLE_PROPS)
+
+# Properties whose computed value keeps the `Keyword` wrapper rather than
+# being unwrapped to a `str`. Exactly one, and it is not an oversight:
+# `line-height` is a union of `normal`, a number, a length and a
+# percentage, so its consumer must type-check the value anyway, and a bare
+# `"normal"` string would be indistinguishable from a font-family entry if
+# the two were ever confused. Keeping `Keyword("normal")` also makes the
+# "still symbolic" decision visible in a `repr` rather than inferable.
+_KEYWORD_PRESERVED = frozenset({"line-height"})
 
 
 def _computed_value(
@@ -637,6 +722,8 @@ def _computed_value(
         if prop in _KEYWORD_VALUED:
             # See deviation 6: the computed value *is* the keyword.
             return value.name
+        if prop in _KEYWORD_PRESERVED:
+            return value
         raise ValueError(
             f"no computed-value rule for keyword {value.name!r} on {prop!r}; "
             f"add it to _KEYWORD_VALUED or resolve it explicitly"

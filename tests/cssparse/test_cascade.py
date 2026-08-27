@@ -485,10 +485,14 @@ def test_a_pseudo_element_rule_is_never_applied_to_the_element_itself():
 # --- inheritance --------------------------------------------------------
 
 
-def test_only_the_two_inherited_properties_inherit():
+def test_only_the_inherited_properties_inherit():
     """Injection: inheriting everything (a `copy` of the parent style
     instead of a fresh one) makes the child block and 100px wide."""
-    assert INHERITED == frozenset({"color", "font-size"})
+    assert "color" in INHERITED and "font-size" in INHERITED
+    assert not (INHERITED & {
+        "display", "width", "height", "background-color",
+        "vertical-align", "box-sizing",
+    })
     doc = styled(
         "<!DOCTYPE html><body><div><span></span></div></body>",
         "div { display: block; width: 100px; background-color: red;"
@@ -869,7 +873,7 @@ def test_computed_style_has_one_field_per_longhand():
     """Injection: dropping a longhand from `LONGHANDS` while leaving the
     dataclass field, so the property silently never cascades. The module's
     own module-level assert catches the reverse."""
-    assert len(LONGHANDS) == 26
+    assert len(LONGHANDS) == 35
     for prop in LONGHANDS:
         assert hasattr(ComputedStyle(), prop.replace("-", "_")), prop
     assert set(LONGHANDS) >= {
@@ -1620,3 +1624,155 @@ def test_border_longhands_survive_the_borderless_width_zeroing():
     )
     assert style.border_top_width == Length(0, "px")
     assert style.border_left_width == Length(7, "px")
+
+
+# --------------------------------------------------------------------------
+# Inheritance (Phase 3 Task A2, deliverables 3 and 4)
+# --------------------------------------------------------------------------
+
+NESTED = "<!DOCTYPE html><body><div><span></span></div></body>"
+
+# (property, parent value, expected inherited, child value, expected own).
+# One row per property in `INHERITED`, and every row asserts BOTH halves:
+# a child with no declaration takes the parent's value, and a child with one
+# takes its own. Either half alone passes for the wrong reason -- the first
+# for a property that never cascades at all, the second for a property that
+# never inherits.
+INHERITANCE_CASES = [
+    ("color", "green", Color(0, 128, 0, 1.0), "blue", Color(0, 0, 255, 1.0)),
+    ("font-size", "20px", Length(20, "px"), "10px", Length(10, "px")),
+    ("font-family", "Verdana, sans-serif", ("Verdana", "sans-serif"),
+     "monospace", ("monospace",)),
+    ("font-weight", "bold", 700, "normal", 400),
+    ("font-style", "italic", "italic", "normal", "normal"),
+    ("line-height", "1.5", 1.5, "2", 2.0),
+    ("white-space", "nowrap", "nowrap", "pre", "pre"),
+    ("text-align", "center", "center", "right", "right"),
+    ("list-style-type", "square", "square", "circle", "circle"),
+]
+
+
+@pytest.mark.parametrize(
+    "prop,parent_value,inherited,child_value,own", INHERITANCE_CASES,
+    ids=[case[0] for case in INHERITANCE_CASES],
+)
+def test_an_inherited_property_reaches_a_child_that_does_not_declare_it(
+    prop, parent_value, inherited, child_value, own
+):
+    """Injection: removing `prop` from `INHERITED` leaves the child at the
+    initial value, so the first assertion fails; making `_inherit_from`
+    copy the whole parent style makes the second fail for every property in
+    this table at once.
+
+    A property that silently fails to inherit renders a whole page that
+    looks right -- every box where a box could be, only the text the wrong
+    size or weight. That is why this is nine parametrised rows added in one
+    change rather than nine incidental assertions added as each property
+    found a consumer.
+    """
+    assert prop in INHERITED
+    field = prop.replace("-", "_")
+
+    child = find(
+        styled(NESTED, f"div {{ {prop}: {parent_value} }}"), "span"
+    ).computed_style
+    assert getattr(child, field) == inherited, f"{prop} did not inherit"
+
+    overridden = find(
+        styled(
+            NESTED,
+            f"div {{ {prop}: {parent_value} }} span {{ {prop}: {child_value} }}",
+        ),
+        "span",
+    ).computed_style
+    assert getattr(overridden, field) == own, f"{prop} did not override"
+    assert getattr(overridden, field) != inherited
+
+
+def test_inherited_names_and_computed_style_fields_cannot_drift():
+    """`INHERITED` is a set of property *names* and `_inherit_from` copies
+    them by attribute, so a name added to the frozenset without a matching
+    dataclass field raises `AttributeError` on every document rather than
+    failing a test.
+
+    Executed against the shape the Task A2 brief specified -- nine
+    `INHERITED` entries and eight `ComputedStyle` additions, `list-style-type`
+    named in the first list and absent from the second -- `style_document`
+    raised `AttributeError: 'ComputedStyle' object has no attribute
+    'list_style_type'` on `<!DOCTYPE html><body><p>hi</p></body>`.
+    """
+    style = ComputedStyle()
+    for prop in INHERITED:
+        assert hasattr(style, prop.replace("-", "_")), prop
+        assert prop in LONGHANDS, prop
+    assert len(INHERITED) == 9
+
+
+def test_vertical_align_and_box_sizing_do_not_inherit():
+    """The two of deliverable 3's nine that are not inherited properties.
+    Both halves asserted: the child keeps the initial value even though the
+    parent declared one, and the child's own declaration still works -- so
+    this cannot pass for a property that never cascades."""
+    child = find(
+        styled(NESTED, "div { vertical-align: middle; box-sizing: border-box }"),
+        "span",
+    ).computed_style
+    assert child.vertical_align == "baseline"
+    assert child.box_sizing == "content-box"
+
+    own = find(
+        styled(
+            NESTED,
+            "div { vertical-align: middle } span { vertical-align: super }",
+        ),
+        "span",
+    ).computed_style
+    assert own.vertical_align == "super"
+
+
+def test_line_height_normal_stays_symbolic():
+    """Its used value is the font's own preferred spacing, which needs
+    metrics that arrive with Task D. Resolving it to `1.2 x font-size` here
+    would be the computed-vs-used mistake `Percent` and `AUTO` exist to
+    prevent, and the wrong number would look entirely reasonable.
+
+    Injection: unwrapping it to the string `"normal"` (adding `line-height`
+    to `_KEYWORD_VALUED`) fails the first assertion; resolving it to a float
+    fails all three.
+    """
+    initial = style_of(BODY_P, "p").line_height
+    assert initial == Keyword("normal")
+    assert not isinstance(initial, (int, float))
+
+    declared = style_of(BODY_P, "p", "p { line-height: normal }").line_height
+    assert declared == Keyword("normal")
+
+    # ...while the other three forms do compute, so this is not a test of
+    # "line-height never resolves".
+    assert style_of(BODY_P, "p", "p { line-height: 1.5 }").line_height == 1.5
+    assert style_of(
+        BODY_P, "p", "p { font-size: 10px; line-height: 2em }"
+    ).line_height == Length(20, "px")
+    assert style_of(
+        BODY_P, "p", "p { line-height: 125% }"
+    ).line_height == Percent(125)
+
+
+def test_font_family_is_recorded_as_a_list_in_source_order():
+    """Nothing consumes the list this phase -- Phase 3 renders one vendored
+    font. Recording it is what makes the eventual fallback chain
+    implementable rather than a re-parse of the stylesheet.
+
+    Injection: keeping only the first family passes any test that reads
+    `[0]`, so the whole tuple and its length are asserted.
+    """
+    style = style_of(
+        BODY_P, "p", 'p { font-family: "Linux Libertine", Georgia, serif }'
+    )
+    assert style.font_family == ("Linux Libertine", "Georgia", "serif")
+    assert style_of(
+        BODY_P, "p", "p { font-family: Times New Roman, serif }"
+    ).font_family == ("Times New Roman", "serif")
+    # The initial value says "unspecified", and is distinguishable from any
+    # declared family.
+    assert ComputedStyle().font_family == ()
