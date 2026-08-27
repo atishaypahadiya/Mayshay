@@ -65,6 +65,49 @@ over-collapsing, which produces a plausible, slightly-too-tight page:
 * **`clear`** — a cleared box's top margin does not collapse with the
   preceding sibling's bottom margin.
 
+### Percentage margins and padding resolve against WIDTH
+
+Including the vertical ones. `margin-top: 10%` in a 400px-wide container is
+**40px**, not a percentage of the height. Same for `margin-bottom`,
+`padding-top`, `padding-bottom`.
+
+This is the first place Task A2's symbolic percentages actually get
+resolved, and resolving the vertical ones against height would be plausible,
+wrong, and invisible on any container whose width and height are close.
+
+**Verified against Chrome 151**, not taken from the spec text: a `10%` top
+margin in a 400x800 container measured 40px via `DOM.getBoxModel`.
+
+The test must use a container whose width and height differ enough that the
+two rules disagree obviously — 400x800 makes it 40 against 80. A 400x400
+container cannot distinguish them, which is the non-discriminating-test
+shape again.
+
+### A percentage margin still collapses through an empty block
+
+Also measured against Chrome, and the result corrects an assumption worth
+recording. Three things behave **identically** for collapse-through:
+no declared margin, `margin: 0`, and `margin: 0%`. All three collapse
+through, because §8.3.1's collapse-through condition names borders,
+padding, height and line boxes — **not** the box's own margins. A zero
+margin does not make a block "non-empty".
+
+What *does* interact with the chaining is a **non-zero** percentage margin
+on the empty block, and that is the test worth having, because it needs the
+percentage resolution and the collapse-through chain to be right at the
+same time. Between two siblings each with `margin: 30px 0`, in a 400px
+container:
+
+| middle block | gap | why |
+|---|---:|---|
+| empty, `margin: 10%` | **40px** | collapses through; its 40 beats the siblings' 30 |
+| empty, `margin: 0` | 30px | collapses through; 30 wins |
+| `margin: 10%; padding: 1px` | 82px | padding blocks collapse-through: 40 + 2 + 40 |
+| `margin: 10%; height: 1px` | 81px | height blocks it: 40 + 1 + 40 |
+
+All four measured. The last two are the negative cases and they are what
+catch an implementation that collapses through everything.
+
 ### The sign rules
 
 Two positive margins collapse to the **larger**. Two negative collapse to
@@ -76,6 +119,15 @@ while everything else looks right.
 Test both signs and the mixed case. A test using only positive margins
 passes under `max()`, under `sum()` when one operand is zero, and under
 several other wrong rules.
+
+**Why these tests are shaped this way.** The margin-sign requirement and
+the assert-margins-not-positions requirement below are both the
+non-discriminating-test failure caught *before* it happens rather than in
+review. At least ten tests on this project have asserted less than their
+names implied, and the only reliable detector has been injection. These two
+are cases where the shape of the wrong test is already known, so the brief
+specifies the discriminating shape instead of leaving it to be found later.
+Do not simplify them into single-case tests that happen to pass.
 
 ### Counters
 
