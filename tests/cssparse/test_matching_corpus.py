@@ -46,11 +46,12 @@ from mayshay.htmlparse.treebuilder import TreeBuilder
 
 from .test_selectors_corpus import _nested_preludes, _walk
 
-CORPUS = pathlib.Path(__file__).resolve().parents[2] / "data" / "corpus"
+from tests.support.corpus import CORPUS, page_paths
 
 # Floors, not exact counts. Actuals when written: 3 pages, 8596 elements,
 # 279 selectors, 2155 matches, and 2.89% of the brute-force product tested
-# (wikipedia.html alone: 7778 elements x 274 selectors, 2.89%; hn.html links
+# (the Wikipedia page alone: 7778 elements x 274 selectors, 2.89%; the
+# Hacker News page links
 # its stylesheet and contributes elements but no selectors).
 MIN_PAGES = 3
 MIN_ELEMENTS = 5000
@@ -66,7 +67,7 @@ def _pages():
     `<style>` rules are the ones written to match it, so this measures
     matching on the pairing that actually occurs.
     """
-    for path in sorted(CORPUS.glob("*.html")):
+    for path in page_paths():
         document = TreeBuilder(path.read_text(errors="replace")).build()
         annotate_positions(document)
         elements, selectors = [], []
@@ -94,7 +95,10 @@ def _pages():
                     # keeps one failure per cause.
                     continue
                 selectors.extend(parsed.selectors)
-        yield path.name, elements, selectors
+        # The slug, not path.name: every page's file is now `page.html`,
+        # so keying on the filename silently collapses the corpus to one
+        # entry. That is exactly what happened when this layout landed.
+        yield path.parent.name, elements, selectors
 
 
 PAGES = list(_pages())
@@ -122,7 +126,8 @@ def test_the_index_never_drops_a_rule_that_matches_a_real_page():
     matched = 0
     for name, elements, selectors in PAGES:
         if not selectors:
-            # hn.html links its stylesheet instead of inlining it, which is
+            # The Hacker News page links its stylesheet instead of
+            # inlining it, which is
             # normal and is not this test's failure.
             continue
         index = RuleIndex(selectors)

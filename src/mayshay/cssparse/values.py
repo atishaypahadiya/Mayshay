@@ -69,6 +69,7 @@ Task J or Phase 3 later:
    and its declaration is dropped; if Task J needs them it will have to
    intercept the keyword before calling into this module, not expect this
    module to pass it through.
+   (Task A2 reverses part of this -- see deviation 15.)
 4. **The named-color table is the full CSS Color Level 4 extended-keyword
    list -- 148 entries** (the 147-keyword CSS3 SVG-derived list plus
    `rebeccapurple`), transcribed and verified against the spec's hex values
@@ -136,24 +137,68 @@ Task J or Phase 3 later:
     normalisation is additionally exposed as `normalize_property_name` --
     see the note above the deviation list for the bug that made that
     necessary.
-13. **The nine supported properties include three shorthands
-    (`margin`, `padding`, `border`) but none of their longhands.**
-    `parse_declaration_value("margin-top", ...)`,
-    `("padding-right", ...)`, `("border-top", ...)`,
-    `("border-top-width", ...)`, `("border-width"/"-style"/"-color", ...)`
-    and `("background", ...)` all return `None`, so the only way to set
-    `ComputedStyle.margin_top` is to write the shorthand. This is a
-    consequence of the dispatch chain rather than a decision anyone made,
-    and it is recorded here because it is the largest slice of the corpus's
-    dropped declarations that no other deviation covers: executed over
-    `data/corpus/wikipedia.html`, 85 of the 313 dropped declarations are in
-    this family (15 `padding-right`, 14 `margin-top`, 12 `background`,
-    8 `margin-bottom`, 7 `border-left`, and a long tail). Adding them is
-    mechanical -- the component parsers the shorthands already use are the
-    same ones a longhand needs -- and is left to a phase that needs them.
-    `test_longhands_of_the_supported_shorthands_are_not_supported` pins the
-    current boundary so it cannot drift silently.
-14. **`display` is a closed keyword allow-list** (20 entries, above --
+13. **The box-model longhands are supported, and `background` is not.**
+    Through Phase 2 the table held three shorthands (`margin`, `padding`,
+    `border`) and none of their longhands, so the only way to set
+    `ComputedStyle.margin_top` was to write the shorthand. That was a
+    consequence of the old `if name == ...` dispatch chain rather than a
+    decision anyone made, and it was the largest slice of the corpus's
+    dropped declarations no other deviation covered -- 395 declarations,
+    with `margin-left: auto` centring unreachable. Phase 3 Task A2 added
+    **27** property names: the eight `margin-`/`padding-` longhands, the
+    twelve `border-{side}-{width,style,color}` longhands, the three
+    `border-width`/`-style`/`-color` four-value shorthands and the four
+    `border-{side}` shorthands. (27, not the 28 the Phase 3 plan quoted --
+    that figure counted `background` alongside them. Executed:
+    `len(SUPPORTED_PROPERTIES)` is 36, of which 9 predate Task A2.)
+
+    None of the 27 needed a new component parser: a longhand is its
+    shorthand's component grammar with the one-to-four rule removed, and
+    `border-width`/`-style`/`-color` are that rule over one component kind.
+    `_four_sided` is where the rule now lives, once.
+
+    `background` is still outside the table and still dropped --
+    `test_the_box_model_longhands_are_supported` asserts both halves so the
+    new boundary cannot drift any more quietly than the old one did.
+14. **Nine text and box-sizing properties were added by Phase 3 Task A2**:
+    `white-space`, `line-height`, `font-family`, `font-weight`,
+    `font-style`, `text-align`, `vertical-align`, `box-sizing` and
+    `list-style-type`. Three carry their own decisions:
+
+    * **`line-height: normal` stays `Keyword("normal")`**, not a number.
+      Its used value is the font's own preferred spacing, which needs
+      metrics that arrive with Task D; `1.2 x font-size` is what every
+      engine happens to use and is not what the spec says, so resolving it
+      here would bake a guess into a value nothing could later distinguish
+      from a declared one. A `<number>` stays a number for the opposite
+      reason -- CSS 2.1 10.8.1 says the computed value of a numeric
+      line-height *is* the number, and the number is what inherits.
+      A `<percentage>`, uniquely among this engine's percentages, is
+      **not** left symbolic: it refers to the element's own font-size,
+      which the cascade knows, so `cascade._PERCENT_OF_OWN_FONT_SIZE`
+      resolves it to a length there and that length inherits. A percentage
+      width refers to the containing block and must stay symbolic; same
+      token type, opposite rule, and the reason is which quantity it names.
+    * **`font-family` is a tuple of names, kept as parsed**, generics
+      included and not distinguished. Nothing consumes the list this phase
+      -- Phase 3 renders with one vendored font -- so a `serif`-vs-family
+      distinction would be a decision with no consumer to be right for.
+      Recording the list at all is what makes the eventual fallback chain
+      implementable rather than a re-parse.
+    * **`font-weight` resolves `normal`/`bold` to 400/700 here**, because
+      their computed values *are* those numbers. `bolder` and `lighter` are
+      not implemented: their computed value depends on the parent's weight
+      through a lookup table, which is a cascade-time fact this module does
+      not have. Neither appears anywhere in the corpus (executed).
+
+    `list-style-type` is a closed list of CSS Counter Styles 3's predefined
+    styles. The property also admits a `<custom-ident>` naming an
+    `@counter-style` rule, which this engine does not parse, so an
+    unrecognised identifier is `unsupported-value` rather than `invalid` --
+    Wikipedia uses six such names.
+15. **`inherit`, `initial` and `unset` are accepted; `revert` is not.**
+    See `WideKeyword`. Deviation 3 above described the Phase 2 state.
+16. **`display` is a closed keyword allow-list** (20 entries, above --
     counted by `len(_DISPLAY_KEYWORDS)`, not by eye). A `display` value
     outside it is invalid rather than passed through, for
     the same reason the color table had to be complete: a keyword this
@@ -169,6 +214,7 @@ from dataclasses import dataclass
 
 from mayshay.cssparse.tokenizer import (
     Comma,
+    String,
     CssToken,
     Dimension,
     EOFToken,
@@ -266,6 +312,30 @@ class _Auto:
 
 
 AUTO = _Auto()
+
+
+@dataclass(frozen=True)
+class WideKeyword:
+    """A CSS-wide keyword -- `inherit`, `initial` or `unset` -- surviving to
+    the cascade unresolved.
+
+    Deliberately *not* a `Keyword`. A `Keyword` is a property-specific value
+    this module recognised and chose not to resolve further; a `WideKeyword`
+    is valid on every property and cannot be resolved here at all, because
+    `inherit` needs the parent's computed value and `initial` needs the
+    property's initial-value table, neither of which this module has. A
+    caller that treats one as the other would silently store the string
+    `"inherit"` as a colour.
+
+    `revert` is not among them: it needs origin-level rollback the cascade
+    does not model, so it stays unsupported and counted rather than faked.
+    """
+
+    name: str
+
+
+# `revert` is absent on purpose -- see `WideKeyword`.
+_ACCEPTED_WIDE_KEYWORDS = frozenset({"inherit", "initial", "unset"})
 
 
 # --------------------------------------------------------------------------
@@ -641,6 +711,43 @@ def _sides_from_values(values: list[object]) -> dict[str, object]:
     return {"top": top, "right": right, "bottom": bottom, "left": left}
 
 
+def _four_sided(tokens: list[CssToken], parse_component) -> dict[str, object] | None:
+    """The one-to-four-value rule over any component parser.
+
+    `margin`, `padding`, `border-width`, `border-style` and `border-color`
+    are the same shorthand shape with five different component grammars, so
+    the rule lives here once. `parse_component` takes a *component* -- a
+    list of tokens, since a `<color>` component can be `rgb(0, 0, 0)` and is
+    not one token -- and returns its value or None.
+    """
+    groups = _split_top_level(tokens)
+    if not (1 <= len(groups) <= 4):
+        return None
+    values: list[object] = []
+    for group in groups:
+        value = parse_component(group)
+        if value is None:
+            return None
+        values.append(value)
+    return _sides_from_values(values)
+
+
+def _one_token(parse_token):
+    """Adapt a single-token parser to `_four_sided`'s component signature."""
+
+    def parse_component(group: list[CssToken]) -> object | None:
+        return parse_token(group[0]) if len(group) == 1 else None
+
+    return parse_component
+
+
+def _parse_border_style_component(group: list[CssToken]) -> Keyword | None:
+    if len(group) != 1 or not isinstance(group[0], Ident):
+        return None
+    keyword = _ascii_lower(group[0].value)
+    return Keyword(keyword) if keyword in _BORDER_STYLE_KEYWORDS else None
+
+
 def _parse_margin_or_padding(
     tokens: list[CssToken], *, allow_auto: bool
 ) -> dict[str, object] | None:
@@ -649,18 +756,10 @@ def _parse_margin_or_padding(
     hand `expand_shorthand` the same kind of thing. See `expand_shorthand`'s
     docstring for why that uniformity was made a deliberate decision here.
     """
-    groups = _split_top_level(tokens)
-    if not (1 <= len(groups) <= 4):
-        return None
-    values: list[object] = []
-    for group in groups:
-        if len(group) != 1:
-            return None
-        value = _parse_length_percentage(group[0], allow_auto=allow_auto)
-        if value is None:
-            return None
-        values.append(value)
-    return _sides_from_values(values)
+    return _four_sided(
+        tokens,
+        _one_token(lambda tok: _parse_length_percentage(tok, allow_auto=allow_auto)),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -706,13 +805,20 @@ def _parse_border(tokens: list[CssToken]) -> dict[str, object] | None:
     return {"width": width, "style": style, "color": color}
 
 
-def _expand_border(parsed: dict[str, object]) -> dict[str, object]:
+def _expand_border(parsed: dict[str, object], sides: tuple[str, ...]) -> dict[str, object]:
+    """`border`'s three components fanned out over `sides`.
+
+    `sides` is all four for the `border` shorthand and exactly one for
+    `border-top`/`-right`/`-bottom`/`-left`. Missing components stay missing
+    -- deviation 7 -- and the cascade fills them from the initial-value
+    table for *that side only*.
+    """
     result: dict[str, object] = {}
     for kind in ("width", "style", "color"):
         value = parsed.get(kind)
         if value is None:
             continue
-        for side in _SIDES:
+        for side in sides:
             result[f"border-{side}-{kind}"] = value
     return result
 
@@ -752,9 +858,392 @@ def expand_shorthand(name: str, parsed: dict[str, object]) -> dict[str, object]:
     """
     if name in ("margin", "padding"):
         return {f"{name}-{side}": parsed[side] for side in _SIDES}
+    if name in ("border-width", "border-style", "border-color"):
+        kind = name.split("-", 1)[1]
+        return {f"border-{side}-{kind}": parsed[side] for side in _SIDES}
     if name == "border":
-        return _expand_border(parsed)
+        return _expand_border(parsed, _SIDES)
+    if name in _BORDER_SIDE_SHORTHANDS:
+        return _expand_border(parsed, (name.split("-", 1)[1],))
     raise ValueError(f"{name!r} is not a shorthand this module expands")
+
+
+# --------------------------------------------------------------------------
+# Text and box-sizing properties (Phase 3 Task A2, deliverable 3)
+# --------------------------------------------------------------------------
+
+_WHITE_SPACE_KEYWORDS = frozenset({
+    "normal", "pre", "nowrap", "pre-wrap", "pre-line", "break-spaces",
+})
+
+_FONT_STYLE_KEYWORDS = frozenset({"normal", "italic", "oblique"})
+
+_TEXT_ALIGN_KEYWORDS = frozenset({
+    "start", "end", "left", "right", "center", "justify",
+    "justify-all", "match-parent",
+})
+
+_VERTICAL_ALIGN_KEYWORDS = frozenset({
+    "baseline", "sub", "super", "text-top", "text-bottom",
+    "middle", "top", "bottom",
+})
+
+_BOX_SIZING_KEYWORDS = frozenset({"content-box", "border-box"})
+
+# CSS Counter Styles 3's predefined counter styles, plus `none`. A closed
+# list, for the reason the colour table is closed: `list-style-type` also
+# accepts a `<custom-ident>` naming an `@counter-style` rule, and this engine
+# parses no `@counter-style` rules, so an identifier outside this list names
+# something real that we cannot render. That is `unsupported-value`, not
+# `invalid` -- see `_OPEN_IDENT_PROPERTIES`. Wikipedia alone uses six such
+# names (`meetei`, `santali`, `myanmar_with_period` among them).
+_LIST_STYLE_TYPE_KEYWORDS = frozenset({
+    "none",
+    "disc", "circle", "square",
+    "decimal", "decimal-leading-zero",
+    "lower-roman", "upper-roman",
+    "lower-greek", "lower-alpha", "lower-latin", "upper-alpha", "upper-latin",
+    "arabic-indic", "armenian", "bengali", "cambodian",
+    "cjk-decimal", "cjk-earthly-branch", "cjk-heavenly-stem",
+    "devanagari", "ethiopic-numeric", "georgian", "gujarati", "gurmukhi",
+    "hebrew", "hiragana", "hiragana-iroha",
+    "japanese-formal", "japanese-informal",
+    "kannada", "katakana", "katakana-iroha", "khmer",
+    "korean-hangul-formal", "korean-hanja-formal", "korean-hanja-informal",
+    "lao", "lower-armenian", "malayalam", "mongolian", "myanmar", "oriya",
+    "persian", "simp-chinese-formal", "simp-chinese-informal",
+    "tamil", "telugu", "thai", "tibetan",
+    "trad-chinese-formal", "trad-chinese-informal", "upper-armenian",
+    "disclosure-open", "disclosure-closed",
+})
+
+# `normal` and `bold` are the two keyword weights CSS Fonts 4 keeps; their
+# computed values are the numbers, so they are resolved here rather than
+# reaching the cascade as keywords. `bolder`/`lighter` are deliberately not
+# implemented -- their computed value depends on the *parent's* weight
+# through a lookup table, which is a cascade-time fact this module does not
+# have, and neither appears anywhere in the corpus (executed).
+_FONT_WEIGHT_KEYWORDS = {"normal": 400, "bold": 700}
+
+
+def _keyword_parser(keywords: frozenset[str]):
+    """A property whose whole grammar is one identifier from a closed set."""
+
+    def parse(tokens: list[CssToken]) -> Keyword | None:
+        tok = _single_token(tokens)
+        if isinstance(tok, Ident) and _ascii_lower(tok.value) in keywords:
+            return Keyword(_ascii_lower(tok.value))
+        return None
+
+    return parse
+
+
+def _parse_line_height(tokens: list[CssToken]) -> object | None:
+    """`normal | <number> | <length> | <percentage>`.
+
+    `normal` stays a `Keyword`, not a number. Its used value is the font's
+    own preferred line spacing, which needs font metrics that do not exist
+    until Task D; resolving it to `1.2 x font-size` here would be exactly
+    the computed-vs-used mistake `Percent` and `AUTO` exist to avoid, and
+    the wrong number would look entirely reasonable.
+
+    A `<number>` is kept as a number, not multiplied by anything: CSS 2.1
+    10.8.1 says the computed value of a numeric line-height *is* the number,
+    and the number is what inherits -- the multiplication is per element at
+    used-value time.
+
+    A `<percentage>` reaches the cascade as a `Percent` and is resolved
+    there, unlike every other percentage in this engine. See
+    `cascade._PERCENT_OF_OWN_FONT_SIZE` for why the two are opposite: a
+    percentage width refers to the containing block, which does not exist
+    yet; a percentage line-height refers to the element's own font-size,
+    which does.
+    """
+    tok = _single_token(tokens)
+    if tok is None:
+        return None
+    if isinstance(tok, Ident) and _ascii_lower(tok.value) == "normal":
+        return Keyword("normal")
+    if isinstance(tok, Number):
+        # A negative line-height is invalid CSS.
+        return None if tok.value < 0 else float(tok.value)
+    return _parse_length_percentage(tok, allow_auto=False)
+
+
+def _parse_font_weight(tokens: list[CssToken]) -> int | None:
+    tok = _single_token(tokens)
+    if isinstance(tok, Ident):
+        return _FONT_WEIGHT_KEYWORDS.get(_ascii_lower(tok.value))
+    if isinstance(tok, Number):
+        value = float(tok.value)
+        # CSS Fonts 4 widened the range from 100-900 to 1-1000 and made it
+        # continuous; anything outside it is invalid rather than clamped.
+        return int(value) if 1 <= value <= 1000 else None
+    return None
+
+
+def _parse_font_family(tokens: list[CssToken]) -> tuple[str, ...] | None:
+    """A comma-separated list of family names, kept as parsed.
+
+    `<family-name>` is either a `<string>` or a run of identifiers
+    (`Times New Roman` unquoted is three tokens and one family). Generic
+    families (`serif`, `monospace`) are ordinary entries: nothing consumes
+    the list this phase, so distinguishing them would be a decision with no
+    consumer to be right for. Recording the list at all is what makes the
+    eventual fallback chain implementable rather than a re-parse.
+    """
+    if not _trim(tokens):
+        return None
+    families: list[str] = []
+    for arg in _split_args(tokens):
+        arg = _trim(arg)
+        if not arg:
+            return None
+        if len(arg) == 1 and isinstance(arg[0], String):
+            families.append(arg[0].value)
+            continue
+        words = [tok.value for tok in arg if isinstance(tok, Ident)]
+        if len(words) != len([t for t in arg if not isinstance(t, Whitespace)]):
+            return None
+        families.append(" ".join(words))
+    return tuple(families)
+
+
+def _parse_vertical_align(tokens: list[CssToken]) -> object | None:
+    tok = _single_token(tokens)
+    if tok is None:
+        return None
+    if isinstance(tok, Ident) and _ascii_lower(tok.value) in _VERTICAL_ALIGN_KEYWORDS:
+        return Keyword(_ascii_lower(tok.value))
+    return _parse_length_percentage(tok, allow_auto=False)
+
+
+# --------------------------------------------------------------------------
+# The property table
+# --------------------------------------------------------------------------
+#
+# One entry per property this module accepts, each mapping a token list to
+# the longhand dict it sets (or None). Deliberately a table rather than the
+# `if name == ...` chain this used to be: `SUPPORTED_PROPERTIES` and
+# `LONGHANDS_OF` are both *derived* from it below, so a property added here
+# cannot be missing from either, and `classify_drop` cannot disagree with
+# `parse_declaration_value` about what "supported" means. The chain made
+# that agreement a matter of remembering.
+
+
+def _one(prop: str, parse):
+    """A property whose parser yields a single value for a single longhand."""
+
+    def parse_one(tokens: list[CssToken]) -> dict[str, object] | None:
+        value = parse(tokens)
+        return None if value is None else {prop: value}
+
+    return parse_one
+
+
+def _sides(name: str, *, allow_auto: bool):
+    """A `margin`/`padding` shorthand: the one-to-four-value rule."""
+
+    def parse_sides(tokens: list[CssToken]) -> dict[str, object] | None:
+        parsed = _parse_margin_or_padding(tokens, allow_auto=allow_auto)
+        return None if parsed is None else expand_shorthand(name, parsed)
+
+    return parse_sides
+
+
+def _border_shorthand(tokens: list[CssToken]) -> dict[str, object] | None:
+    parsed = _parse_border(tokens)
+    return None if parsed is None else expand_shorthand("border", parsed)
+
+
+def _border_side(side: str):
+    """`border-top` and friends: `<width> || <style> || <color>`, one side."""
+
+    def parse_side(tokens: list[CssToken]) -> dict[str, object] | None:
+        parsed = _parse_border(tokens)
+        return None if parsed is None else expand_shorthand(f"border-{side}", parsed)
+
+    return parse_side
+
+
+def _four(name: str, parse_component):
+    """`border-width`/`-style`/`-color`: the one-to-four rule over one kind."""
+
+    def parse_four(tokens: list[CssToken]) -> dict[str, object] | None:
+        parsed = _four_sided(tokens, parse_component)
+        return None if parsed is None else expand_shorthand(name, parsed)
+
+    return parse_four
+
+
+_BORDER_SIDE_SHORTHANDS: frozenset[str] = frozenset(f"border-{s}" for s in _SIDES)
+
+_PROPERTY_PARSERS: dict[str, object] = {
+    "display": _one("display", _parse_display),
+    "width": _one("width", _parse_width_height),
+    "height": _one("height", _parse_width_height),
+    "font-size": _one("font-size", _parse_font_size),
+    "color": _one("color", _parse_color),
+    "background-color": _one("background-color", _parse_color),
+    "margin": _sides("margin", allow_auto=True),
+    "padding": _sides("padding", allow_auto=False),
+    "border": _border_shorthand,
+    # The box-model longhands. Every one of them reuses the component parser
+    # its shorthand already used -- `margin-left` is `margin`'s component
+    # grammar with the one-to-four rule removed, not a second implementation
+    # of `<length-percentage> | auto`. Deviation 13 recorded their absence as
+    # a consequence of the old dispatch chain rather than a decision; 395
+    # declarations across the corpus depended on it, so the decision is now
+    # made the other way.
+    **{
+        f"margin-{side}": _one(
+            f"margin-{side}",
+            lambda tokens: (
+                None
+                if (tok := _single_token(tokens)) is None
+                else _parse_length_percentage(tok, allow_auto=True)
+            ),
+        )
+        for side in _SIDES
+    },
+    # `padding` does not take `auto`; `margin` does. Deviation 9, and the one
+    # asymmetry between the two families.
+    **{
+        f"padding-{side}": _one(
+            f"padding-{side}",
+            lambda tokens: (
+                None
+                if (tok := _single_token(tokens)) is None
+                else _parse_length_percentage(tok, allow_auto=False)
+            ),
+        )
+        for side in _SIDES
+    },
+    **{
+        f"border-{side}-width": _one(
+            f"border-{side}-width",
+            lambda tokens: (
+                None
+                if (tok := _single_token(tokens)) is None
+                else _parse_length(tok)
+            ),
+        )
+        for side in _SIDES
+    },
+    **{
+        f"border-{side}-style": _one(
+            f"border-{side}-style",
+            lambda tokens: _parse_border_style_component(_split_top_level(tokens)[0])
+            if len(_split_top_level(tokens)) == 1
+            else None,
+        )
+        for side in _SIDES
+    },
+    **{
+        f"border-{side}-color": _one(f"border-{side}-color", _parse_color)
+        for side in _SIDES
+    },
+    "border-width": _four("border-width", _one_token(_parse_length)),
+    "border-style": _four("border-style", _parse_border_style_component),
+    "border-color": _four("border-color", _parse_color),
+    **{f"border-{side}": _border_side(side) for side in _SIDES},
+    # Deliverable 3: the properties Task D cannot start without. Nothing in
+    # Phase 3 consumes `font-family` or `vertical-align` yet; they are
+    # parsed and recorded because a `ComputedStyle` with no `white-space`
+    # is not something line-box code can be written against, and because
+    # retrofitting `box-sizing` after Task C would mean revisiting every
+    # width in it.
+    "white-space": _one("white-space", _keyword_parser(_WHITE_SPACE_KEYWORDS)),
+    "font-style": _one("font-style", _keyword_parser(_FONT_STYLE_KEYWORDS)),
+    "text-align": _one("text-align", _keyword_parser(_TEXT_ALIGN_KEYWORDS)),
+    "box-sizing": _one("box-sizing", _keyword_parser(_BOX_SIZING_KEYWORDS)),
+    "list-style-type": _one(
+        "list-style-type", _keyword_parser(_LIST_STYLE_TYPE_KEYWORDS)
+    ),
+    "line-height": _one("line-height", _parse_line_height),
+    "font-weight": _one("font-weight", _parse_font_weight),
+    "font-family": _one("font-family", _parse_font_family),
+    "vertical-align": _one("vertical-align", _parse_vertical_align),
+}
+
+# Which longhands each supported property sets -- *all* of them, including
+# the ones a given declaration happens not to mention. A longhand maps to
+# itself. This is what the cascade's shorthand-reset needs, and it lives
+# here rather than there so it is derived from the same table the parser
+# dispatches on. (`values.py` still does not know what the *initial values*
+# are; that stays the cascade's, which is the half of the split
+# `expand_shorthand`'s deviation 7 describes.)
+LONGHANDS_OF: dict[str, tuple[str, ...]] = {
+    "display": ("display",),
+    "width": ("width",),
+    "height": ("height",),
+    "font-size": ("font-size",),
+    "color": ("color",),
+    "background-color": ("background-color",),
+    "margin": tuple(f"margin-{side}" for side in _SIDES),
+    "padding": tuple(f"padding-{side}" for side in _SIDES),
+    "border": tuple(
+        f"border-{side}-{kind}"
+        for kind in ("width", "style", "color")
+        for side in _SIDES
+    ),
+    # A longhand governs itself.
+    **{f"margin-{side}": (f"margin-{side}",) for side in _SIDES},
+    **{f"padding-{side}": (f"padding-{side}",) for side in _SIDES},
+    **{
+        f"border-{side}-{kind}": (f"border-{side}-{kind}",)
+        for side in _SIDES
+        for kind in ("width", "style", "color")
+    },
+    # The four-value shorthands: one kind, every side.
+    **{
+        f"border-{kind}": tuple(f"border-{side}-{kind}" for side in _SIDES)
+        for kind in ("width", "style", "color")
+    },
+    # `border-left` governs three longhands and **only its own side's**. The
+    # cascade's shorthand reset reads this table, and giving `border-left`
+    # all twelve here would make `p { border: 5px solid red }
+    # p { border-left: solid blue }` reset the *top* border's width too --
+    # the same family of bug as the one `_reset_omitted_longhands` was
+    # written to fix, arriving through the table instead of through the
+    # lookup.
+    **{
+        f"border-{side}": tuple(
+            f"border-{side}-{kind}" for kind in ("width", "style", "color")
+        )
+        for side in _SIDES
+    },
+    **{
+        prop: (prop,)
+        for prop in (
+            "white-space", "line-height", "font-family", "font-weight",
+            "font-style", "text-align", "vertical-align", "box-sizing",
+            "list-style-type",
+        )
+    },
+}
+
+# Every property `parse_declaration_value` can accept. Derived, never
+# written out twice.
+SUPPORTED_PROPERTIES: frozenset[str] = frozenset(_PROPERTY_PARSERS)
+
+assert set(LONGHANDS_OF) == SUPPORTED_PROPERTIES, (
+    "LONGHANDS_OF and the parser table disagree: "
+    f"{set(LONGHANDS_OF) ^ SUPPORTED_PROPERTIES}"
+)
+
+
+def bare_wide_keyword(tokens: list[CssToken]) -> str | None:
+    """The CSS-wide keyword this value consists of, or None.
+
+    All four are recognised, `revert` included, because a caller counting
+    what it refused needs to name it. `parse_declaration_value` accepts only
+    the three in `_ACCEPTED_WIDE_KEYWORDS`.
+    """
+    tok = _single_token([t for t in tokens if not isinstance(t, EOFToken)])
+    if isinstance(tok, Ident) and _ascii_lower(tok.value) in _WIDE_KEYWORDS:
+        return _ascii_lower(tok.value)
+    return None
 
 
 def parse_declaration_value(name: str, tokens: list[CssToken]) -> dict[str, object] | None:
@@ -763,53 +1252,341 @@ def parse_declaration_value(name: str, tokens: list[CssToken]) -> dict[str, obje
     Returns `None` when the value is invalid for `name` -- the caller (Task
     J's cascade) is expected to drop that one declaration and keep its
     siblings, exactly as an unsupported/malformed declaration behaves in a
-    real browser.
+    real browser. `classify_drop` says *why*, for the same arguments.
     """
     name = normalize_property_name(name)
+    parse = _PROPERTY_PARSERS.get(name)
+    if parse is None:
+        return None
+    # **The wide keywords are intercepted before the per-property parser
+    # sees them.** They are valid on every property, so no property's
+    # grammar should have to know about them, and none of them can be
+    # resolved without the cascade -- `inherit` needs the parent's computed
+    # value and `initial` needs the initial-value table. A shorthand's wide
+    # keyword sets every longhand it governs, which is why this reads
+    # `LONGHANDS_OF` rather than calling `expand_shorthand`: there are no
+    # components to expand.
+    keyword = bare_wide_keyword(tokens)
+    if keyword is not None:
+        if keyword not in _ACCEPTED_WIDE_KEYWORDS:
+            return None  # `revert`, deliberately
+        return {prop: WideKeyword(keyword) for prop in LONGHANDS_OF[name]}
     # EOFToken only ever appears here because a caller (this module's own
     # tests, most obviously) drove a `CssTokenizer` straight through to
     # completion rather than going through `cssparse.parser`, whose
     # `Declaration.value` never contains one. Stripping it up front means
     # both call shapes parse identically.
+    return parse([tok for tok in tokens if not isinstance(tok, EOFToken)])
+
+
+# --------------------------------------------------------------------------
+# Why a declaration was dropped
+# --------------------------------------------------------------------------
+#
+# A drop *rate* is ambiguous: it falls when the parser improves and it also
+# falls when validation loosens, and those are opposite outcomes. These four
+# reasons partition every drop so the two can be told apart. `invalid` is the
+# one that must never shrink -- everything in it is something a browser drops
+# too, so a smaller `invalid` means this module started accepting garbage.
+
+DROP_UNSUPPORTED_PROPERTY = "unsupported-property"
+DROP_UNSUPPORTED_VALUE = "unsupported-value"
+DROP_VAR_UNRESOLVED = "var-unresolved"
+DROP_INVALID = "invalid"
+
+DROP_REASONS: tuple[str, ...] = (
+    DROP_UNSUPPORTED_PROPERTY,
+    DROP_UNSUPPORTED_VALUE,
+    DROP_VAR_UNRESOLVED,
+    DROP_INVALID,
+)
+
+# The only functions any supported property's grammar accepts. `var()` is
+# excluded on purpose -- it is not a value function, it is a substitution,
+# and `classify_drop` reaches it before this set is consulted.
+_SUPPORTED_FUNCTIONS = frozenset({"rgb", "rgba"})
+
+# The CSS-wide keywords. All four are valid CSS on every property, so a
+# declaration this module rejects because of one is `unsupported-value`,
+# never `invalid`. After the cascade learned `inherit`/`initial`/`unset`,
+# only `revert` still reaches here in the bare single-keyword form -- it
+# needs origin-level rollback the cascade does not model.
+_WIDE_KEYWORDS = frozenset({"inherit", "initial", "unset", "revert"})
+
+# Valid CSS keywords this module deliberately does not implement, per
+# property. Membership here is what separates `unsupported-value` from
+# `invalid`: `display: flow-root` is real CSS we do not do, while
+# `display: bloc<U+212A>` is not real CSS at all and a browser drops it too.
+_KNOWN_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
+    # Real `display` values outside `_DISPLAY_KEYWORDS`.
+    "display": frozenset({
+        "flow", "flow-root", "run-in", "math",
+        "ruby", "ruby-base", "ruby-text",
+        "ruby-base-container", "ruby-text-container",
+    }),
+    # The intrinsic sizing keywords (CSS Sizing 3), which need a layout pass
+    # to mean anything.
+    "width": frozenset({
+        "min-content", "max-content", "fit-content", "stretch", "content",
+    }),
+    "height": frozenset({
+        "min-content", "max-content", "fit-content", "stretch", "content",
+    }),
+    # Deviation 8: border widths take only `<length>` here, not the spec's
+    # `thin | medium | thick` trio -- on every property that can carry one.
+    **{
+        prop: frozenset({"thin", "medium", "thick"})
+        for prop in (
+            ("border", "border-width")
+            + tuple(f"border-{side}" for side in _SIDES)
+            + tuple(f"border-{side}-width" for side in _SIDES)
+        )
+    },
+}
+
+# Properties whose grammar admits an open-ended `<custom-ident>` or
+# `<string>`, so an identifier this module does not recognise names
+# something real (an `@counter-style` rule, a font on the user's machine)
+# rather than being malformed.
+_OPEN_IDENT_PROPERTIES: frozenset[str] = frozenset({"list-style-type"})
+
+
+def _has_unsupported_construct(name: str, tokens: list[CssToken]) -> bool:
+    """Does this value use valid CSS that this module documents as out of
+    scope? See `_KNOWN_UNSUPPORTED_KEYWORDS` for the separation this draws.
+    """
+    known = _KNOWN_UNSUPPORTED_KEYWORDS.get(name, frozenset())
+    for tok in tokens:
+        if isinstance(tok, Function):
+            fn = _ascii_lower(tok.value)
+            # `var` is the caller's business, checked before this function
+            # runs; a malformed one belongs in `invalid`.
+            if fn != "var" and fn not in _SUPPORTED_FUNCTIONS:
+                return True
+        elif isinstance(tok, Ident):
+            keyword = _ascii_lower(tok.value)
+            if keyword in _WIDE_KEYWORDS or keyword in known:
+                return True
+            if name in _OPEN_IDENT_PROPERTIES:
+                return True
+    return False
+
+
+# --------------------------------------------------------------------------
+# Custom properties and var() substitution
+# --------------------------------------------------------------------------
+#
+# The trap this shape exists to avoid: declarations are parsed **once per
+# sheet** and the resulting objects are shared by every element the rule
+# matches, but `color: var(--accent)` computes to a different value per
+# element, because `--accent` is itself cascaded and inherited. Substituting
+# at sheet-parse time is wrong and would produce entirely plausible output
+# on a test page with one element. So this module supplies only the textual
+# substitution; *when* to run it is the cascade's decision, and the cascade
+# runs it per element after that element's custom properties are known.
+
+# Depth cap rather than real cycle detection, deliberately. Custom Properties
+# 1 section 3 defines cycle detection over the whole dependency graph, which
+# is a phase and not a task. A cap is O(1) and cannot be wrong in the
+# dangerous direction: the worst it does is refuse a legal eight-deep chain,
+# which is a counted refusal rather than a hang or a wrong value.
+VAR_SUBSTITUTION_DEPTH_CAP = 8
+
+# Why a substitution was refused. Each is a counter name in the cascade, so
+# every out-of-scope case is a number rather than an absence.
+VAR_UNKNOWN_NO_FALLBACK = "var_unknown_no_fallback"
+VAR_NESTED_FALLBACK_SKIPPED = "var_nested_fallback_skipped"
+VAR_DEPTH_EXCEEDED = "var_depth_exceeded"
+VAR_MALFORMED = "var_malformed"
+
+
+def is_custom_property(name: str) -> bool:
+    """Is this declaration a custom property?
+
+    **Not normalised.** Custom property names are case-*sensitive*
+    (Custom Properties 1 section 2), unlike every other property name this
+    module sees, so `--Accent` and `--accent` are two different properties.
+    Running `normalize_property_name` over one would silently merge them.
+    """
+    return name.startswith("--")
+
+
+def contains_var_reference(tokens: list[CssToken]) -> bool:
+    """Does this value contain a well-formed `var()` reference?
+
+    Well-formed means `var(` followed by an identifier starting with `--`.
+    A `var()` with anything else first is a syntax error a browser drops
+    too, so it deliberately does not count here: crediting the `var()` work
+    with a case `var()` can never recover would make its counter move for
+    the wrong reason.
+    """
+    for i, tok in enumerate(tokens):
+        if not isinstance(tok, Function) or _ascii_lower(tok.value) != "var":
+            continue
+        rest = _trim(tokens[i + 1:])
+        if rest and isinstance(rest[0], Ident) and rest[0].value.startswith("--"):
+            return True
+    return False
+
+
+def _matching_rparen(tokens: list[CssToken], start: int) -> int | None:
+    """Index of the `)` closing the `Function` at `start`, or None."""
+    depth = 0
+    for i in range(start, len(tokens)):
+        tok = tokens[i]
+        if isinstance(tok, Function):
+            depth += 1
+        elif isinstance(tok, RParen):
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _split_var_arguments(
+    inner: list[CssToken],
+) -> tuple[list[CssToken], list[CssToken] | None]:
+    """`var()`'s inner tokens as (name, fallback-or-None).
+
+    Split at the **first** top-level comma, not on every comma: the fallback
+    is an arbitrary declaration value and may contain commas of its own
+    (`var(--font, Georgia, serif)` has one fallback, not two).
+    """
+    depth = 0
+    for i, tok in enumerate(inner):
+        if isinstance(tok, Function):
+            depth += 1
+        elif isinstance(tok, RParen):
+            depth -= 1
+        elif isinstance(tok, Comma) and depth == 0:
+            return inner[:i], inner[i + 1:]
+    return inner, None
+
+
+def substitute_var(
+    tokens: list[CssToken],
+    custom_properties: dict[str, tuple[CssToken, ...]],
+    _depth: int = 0,
+) -> tuple[list[CssToken] | None, str | None]:
+    """Replace every `var()` in `tokens` with what it names.
+
+    Returns `(substituted_tokens, None)` or `(None, reason)`, where `reason`
+    is one of the `VAR_*` constants above. Returning the reason rather than
+    incrementing a counter keeps this module free of the metrics object; the
+    cascade owns counting, as it owns every other counter.
+
+    Substitution is textual at the token level, which is what the spec says
+    it is: the `var()` function is replaced by the custom property's token
+    list and the result is then parsed as if it had been written that way.
+    That is also why an invalid result is a *drop* and not an error --
+    `width: var(--x)` with `--x: red` is a declaration a browser discards at
+    computed-value time.
+
+    Deliberately out of scope, each with its own reason so it is a number:
+
+    * `var()` inside another `var()`'s fallback, when the fallback is the
+      branch actually taken -- `VAR_NESTED_FALLBACK_SKIPPED`. When the
+      custom property *is* set the fallback is never looked at, matching the
+      spec (a fallback need not even be valid), so `var(--x, var(--y))` with
+      `--x` set resolves normally rather than being refused.
+    * a chain deeper than `VAR_SUBSTITUTION_DEPTH_CAP` -- `VAR_DEPTH_EXCEEDED`.
+    * an unset custom property with no fallback -- `VAR_UNKNOWN_NO_FALLBACK`.
+      (Per spec this makes the declaration invalid at computed-value time,
+      which is what dropping it amounts to.)
+    * the guaranteed-invalid-value rules of Custom Properties 1 section 3,
+      in their generality.
+    """
+    if _depth > VAR_SUBSTITUTION_DEPTH_CAP:
+        return None, VAR_DEPTH_EXCEEDED
+    out: list[CssToken] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if not (isinstance(tok, Function) and _ascii_lower(tok.value) == "var"):
+            out.append(tok)
+            i += 1
+            continue
+        end = _matching_rparen(tokens, i)
+        if end is None:
+            return None, VAR_MALFORMED
+        name_tokens, fallback = _split_var_arguments(tokens[i + 1:end])
+        name_tokens = _trim(name_tokens)
+        if (
+            len(name_tokens) != 1
+            or not isinstance(name_tokens[0], Ident)
+            or not name_tokens[0].value.startswith("--")
+        ):
+            return None, VAR_MALFORMED
+        declared = custom_properties.get(name_tokens[0].value)
+        if declared is not None:
+            replacement, reason = substitute_var(
+                list(declared), custom_properties, _depth + 1
+            )
+            if replacement is None:
+                return None, reason
+        elif fallback is not None:
+            if contains_var_reference(fallback):
+                return None, VAR_NESTED_FALLBACK_SKIPPED
+            replacement = _trim(fallback)
+        else:
+            return None, VAR_UNKNOWN_NO_FALLBACK
+        out.extend(replacement)
+        i = end + 1
+    return out, None
+
+
+def classify_drop(name: str, tokens: list[CssToken]) -> str:
+    """Why `parse_declaration_value(name, tokens)` returned `None`.
+
+    Call only when it did; the result is meaningless otherwise. The order of
+    the four tests is itself a decision:
+
+    * **property before value.** `background: var(--x)` is
+      `unsupported-property` whether or not `var()` is substituted, because
+      `background` is not a property this module has. Testing `var()` first
+      would move that declaration between two buckets when `var()` landed
+      and say nothing about either.
+    * **`var()` before the value grammar**, because a value containing one
+      has no grammar to check until it is substituted.
+    * **`invalid` last**, and only for values that survived every "we know
+      this and chose not to" test. That is what makes a shrinking `invalid`
+      a signal rather than noise.
+    """
+    name = normalize_property_name(name)
+    if name not in SUPPORTED_PROPERTIES:
+        return DROP_UNSUPPORTED_PROPERTY
     tokens = [tok for tok in tokens if not isinstance(tok, EOFToken)]
-
-    if name == "display":
-        value = _parse_display(tokens)
-        return None if value is None else {"display": value}
-
-    if name in ("width", "height"):
-        value = _parse_width_height(tokens)
-        return None if value is None else {name: value}
-
-    if name == "font-size":
-        value = _parse_font_size(tokens)
-        return None if value is None else {"font-size": value}
-
-    if name in ("color", "background-color"):
-        value = _parse_color(tokens)
-        return None if value is None else {name: value}
-
-    if name == "margin":
-        sides = _parse_margin_or_padding(tokens, allow_auto=True)
-        return None if sides is None else expand_shorthand("margin", sides)
-
-    if name == "padding":
-        sides = _parse_margin_or_padding(tokens, allow_auto=False)
-        return None if sides is None else expand_shorthand("padding", sides)
-
-    if name == "border":
-        parsed = _parse_border(tokens)
-        return None if parsed is None else expand_shorthand("border", parsed)
-
-    return None  # not one of the nine properties this module handles
+    if contains_var_reference(tokens):
+        return DROP_VAR_UNRESOLVED
+    if _has_unsupported_construct(name, tokens):
+        return DROP_UNSUPPORTED_VALUE
+    return DROP_INVALID
 
 
 __all__ = [
     "AUTO",
+    "DROP_INVALID",
+    "DROP_REASONS",
+    "DROP_UNSUPPORTED_PROPERTY",
+    "DROP_UNSUPPORTED_VALUE",
+    "DROP_VAR_UNRESOLVED",
+    "LONGHANDS_OF",
+    "SUPPORTED_PROPERTIES",
     "Color",
     "Keyword",
     "Length",
     "Percent",
+    "VAR_DEPTH_EXCEEDED",
+    "VAR_MALFORMED",
+    "VAR_NESTED_FALLBACK_SKIPPED",
+    "VAR_SUBSTITUTION_DEPTH_CAP",
+    "VAR_UNKNOWN_NO_FALLBACK",
+    "WideKeyword",
+    "bare_wide_keyword",
+    "contains_var_reference",
+    "is_custom_property",
+    "substitute_var",
+    "classify_drop",
     "expand_shorthand",
     "normalize_property_name",
     "parse_declaration_value",

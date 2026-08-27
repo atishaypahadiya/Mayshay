@@ -518,6 +518,23 @@ class CssParser:
         self.metrics["tokenizer_parse_errors"] = self.tokenizer.metrics["parse_errors"]
         return rules
 
+    def parse_rules(self, tokens: list[CssToken]) -> list[QualifiedRule | AtRule]:
+        """Consume an already-tokenized run as a list of rules (5.3.4).
+
+        This is how the contents of an at-rule's block become rules:
+        `AtRule.block` is a raw token list, and a caller that wants the
+        style rules inside a `@media` needs the same "consume a list of
+        rules" algorithm run over them -- with the top-level flag *unset*,
+        so a stray `<!--` inside the block is an error rather than being
+        silently dropped the way it is at the top of a stylesheet.
+
+        Errors and metrics accumulate onto this parser, so a sheet's totals
+        still cover everything parsed from it however deeply nested.
+        """
+        return _consume_list_of_rules(
+            _Cursor(list(tokens)), self.errors, self.metrics, top_level=False
+        )
+
     def parse_declarations(self, tokens: list[CssToken]) -> list[Declaration]:
         """The "parse a list of declarations" entry point (5.3.6), given an
         already-tokenized run rather than a string -- see the module

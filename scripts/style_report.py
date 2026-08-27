@@ -3,7 +3,7 @@
 
     .venv/bin/python scripts/style_report.py
     .venv/bin/python scripts/style_report.py --out /tmp/stages.csv
-    .venv/bin/python scripts/style_report.py data/corpus/hn.html --dry-run
+    .venv/bin/python scripts/style_report.py news.ycombinator.com --dry-run
 
 This is `mayshay.metrics`'s first real caller, and the thing that makes
 CLAUDE.md's "every stage emits timing + size metrics to data/metrics/" true
@@ -18,8 +18,14 @@ can join them:
 
     tokenize   -- the HTML tokenizer's own counters, plus the source size
     treebuild  -- the tree builder's counters, including its parse errors
-    cssparse   -- `style_document`'s counters, including cascade timing and
-                  `link_stylesheets_skipped`
+    cssparse   -- `style_document`'s counters, including cascade timing,
+                  plus the external CSS byte total from the manifest
+
+Pages and their stylesheets come from `scripts/corpus.py`, which reads each
+page's `manifest.json`. Before `scripts/collect.py` existed this script ran
+on bare `.html` files with `author_css=[]`, so every external sheet was
+missing; see docs/corpus.md for what changed and why the older figures must
+not be mixed with these.
 
 `--out` is passed through to `metrics.emit` explicitly. That is not
 politeness: `metrics.METRICS_DIR` is derived from `__file__` and is only
@@ -37,8 +43,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from corpus import CorpusPage, load_pages  # noqa: E402
 from mayshay import metrics as metrics_module  # noqa: E402
 from mayshay.cssparse.cascade import style_document  # noqa: E402
+from mayshay.cssparse.media import Viewport  # noqa: E402
 from mayshay.htmlparse.treebuilder import TreeBuilder  # noqa: E402
 
 CORPUS = ROOT / "data" / "corpus"
@@ -55,27 +65,46 @@ HEADLINE = (
     ("cssparse", "rules_total"),
     ("cssparse", "declarations_kept"),
     ("cssparse", "declarations_dropped"),
+    # The breakdown, not just the rate: a drop rate falls when the parser
+    # improves and also when validation loosens, and only these four tell
+    # the two apart. `invalid` is the one that must never shrink.
+    ("cssparse", "declarations_dropped_unsupported_property"),
+    ("cssparse", "declarations_dropped_unsupported_value"),
+    ("cssparse", "declarations_dropped_var_unresolved"),
+    ("cssparse", "declarations_dropped_invalid"),
+    ("cssparse", "declarations_pending_var"),
+    ("cssparse", "custom_properties_declared"),
+    ("cssparse", "var_substitutions"),
+    ("cssparse", "var_declarations_resolved"),
+    ("cssparse", "var_declarations_refused"),
+    ("cssparse", "var_declarations_unmatched"),
     ("cssparse", "style_elements"),
     ("cssparse", "inline_style_attributes"),
+    ("cssparse", "author_stylesheets"),
     ("cssparse", "link_stylesheets_skipped"),
+    ("cssparse", "external_css_bytes"),
+    ("cssparse", "at_rules_skipped"),
+    ("cssparse", "media_blocks_matched"),
+    ("cssparse", "media_queries_unsupported"),
     ("cssparse", "cascade_time_ms"),
 )
 
 
-def corpus_pages() -> list[Path]:
-    """Every saved page, smallest first, so a failure on the 791KB one is
-    not the first thing that happens."""
-    return sorted(CORPUS.glob("*.html"), key=lambda p: p.stat().st_size)
+def run_page(page: CorpusPage, viewport: Viewport | None) -> dict[str, dict]:
+    """Parse and style one collected page. Returns {stage: counters}.
 
+    The page's external stylesheets come from its manifest via
+    `corpus.load_pages` and are passed in as `author_css`.
 
-def run_page(path: Path) -> dict[str, dict]:
-    """Parse and style one page. Returns {stage: counters}.
-
-    Read with `errors="replace"`: a saved page can carry bytes that are not
-    valid UTF-8, and the tokenizer's own U+FFFD handling is the right place
-    for that to surface, not a traceback here.
+    `link_stylesheets_skipped` does NOT drop to zero as a result, and that
+    is correct: it counts `<link rel=stylesheet>` elements that
+    `style_document` itself did not fetch, and `style_document` still
+    fetches nothing -- the driver supplies the sheets instead. Read it
+    against `author_stylesheets`: when the two agree, every linked sheet
+    was supplied from disk. When `author_stylesheets` is lower, something
+    in `missing_sheets` says why.
     """
-    source = path.read_text(encoding="utf-8", errors="replace")
+    source = page.html()
 
     builder = TreeBuilder(source)
     document = builder.build()
@@ -84,10 +113,21 @@ def run_page(path: Path) -> dict[str, dict]:
     # The size half of "timing + size". Bytes on disk, not len(source):
     # the two differ on any page with non-ASCII, and bytes is what a
     # network stage will eventually report.
-    tokenize["source_bytes"] = path.stat().st_size
+    tokenize["source_bytes"] = page.html_bytes
     tokenize["source_chars"] = len(source)
 
-    cssparse = style_document(document, [])
+    cssparse = style_document(document, [], viewport,
+                              external_css=page.external_css())
+    # Recorded alongside the cascade's own counters because "how much CSS
+    # does this page ship" is a headline number for the analysis half, and
+    # it is not derivable from anything else in the row set.
+    cssparse["external_css_bytes"] = page.css_bytes
+    cssparse["external_stylesheets_missing"] = len(page.missing_sheets)
+    # The viewport goes into the row set because `@media` evaluation makes
+    # every cssparse counter viewport-dependent. A `flex` count with no
+    # viewport beside it is not a reproducible number.
+    cssparse["viewport_width_px"] = viewport.width_px if viewport else 0
+    cssparse["viewport_height_px"] = viewport.height_px if viewport else 0
 
     return {
         "tokenize": tokenize,
@@ -96,8 +136,13 @@ def run_page(path: Path) -> dict[str, dict]:
     }
 
 
-def report(path: Path, stages: dict[str, dict]) -> str:
-    lines = [f"{path.name}  ({path.stat().st_size:,} bytes)"]
+def report(page: CorpusPage, stages: dict[str, dict]) -> str:
+    lines = [
+        f"{page.slug}  ({page.html_bytes:,} bytes html, "
+        f"{page.css_bytes:,} bytes css in {len(page.sheets)} sheet(s))"
+    ]
+    for sheet in page.missing_sheets:
+        lines.append(f"    ! sheet not fetched ({sheet['status']}): {sheet['href'][:70]}")
     for stage, key in HEADLINE:
         lines.append(f"    {stage:<10} {key:<26} {stages[stage].get(key, 0)}")
     return "\n".join(lines)
@@ -106,8 +151,8 @@ def report(path: Path, stages: dict[str, dict]) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "pages", nargs="*", type=Path,
-        help="pages to run; defaults to every .html in data/corpus/",
+        "pages", nargs="*",
+        help="page slugs to run; defaults to every collected page",
     )
     parser.add_argument(
         "--out", type=Path, default=DEFAULT_OUT,
@@ -117,30 +162,49 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true",
         help="print the report but write nothing",
     )
+    parser.add_argument(
+        "--viewport", default="1280x1024",
+        help="viewport for @media evaluation, or 'none' to skip at-rules "
+             "the way Phase 2 did (default: 1280x1024)",
+    )
     args = parser.parse_args(argv)
 
-    pages = args.pages or corpus_pages()
+    if args.viewport.lower() == "none":
+        viewport = None
+    else:
+        width, _, height = args.viewport.lower().partition("x")
+        viewport = Viewport(float(width), float(height))
+
+    pages = load_pages()
+    if args.pages:
+        wanted = set(args.pages)
+        pages = [p for p in pages if p.slug in wanted]
     if not pages:
-        print(f"no pages found in {CORPUS}", file=sys.stderr)
+        print(
+            f"no collected pages in {CORPUS} -- run scripts/collect.py first "
+            f"(see docs/corpus.md)",
+            file=sys.stderr,
+        )
         return 1
 
     # One run_id for the whole sweep: the rows for tokenize, treebuild and
     # cssparse across all three pages belong to one execution of the
     # pipeline, and joining them later is the point of having it.
     run_id = metrics_module.new_run_id()
-    print(f"run_id {run_id}")
+    print(f"run_id {run_id}   viewport "
+          f"{args.viewport if viewport else 'none (at-rules skipped)'}")
 
     rows = 0
-    for path in pages:
-        stages = run_page(path)
-        print(report(path, stages))
+    for page in pages:
+        stages = run_page(page, viewport)
+        print(report(page, stages))
         if args.dry_run:
             continue
         for stage, counters in stages.items():
             rows += metrics_module.emit(
                 stage,
                 counters,
-                source=str(path.relative_to(ROOT)),
+                source=str(page.html_path.relative_to(ROOT)),
                 run_id=run_id,
                 path=args.out,
             )

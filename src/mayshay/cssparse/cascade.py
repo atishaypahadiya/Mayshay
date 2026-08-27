@@ -105,16 +105,42 @@ for the first one to lose to -- where a browser resets it to `medium`. See
 Deliberate deviations and omissions
 -----------------------------------
 
-1. **`inherit`, `initial`, `unset`, `revert` are not supported.** `values.py`
-   rejects them (its deviation 3), so a declaration using one is dropped and
-   counted in `declarations_dropped`. Implementing them means intercepting
-   the keyword before the value parser sees it; it is a listed Phase 3 gap.
-2. **`@media`, `@supports` and `@import` are counted and skipped**, not
-   evaluated -- `at_rules_skipped`. Every rule inside a `@media` block is
-   therefore absent from the cascade, not applied unconditionally. Applying
-   them would be worse: `@media print` would repaint the screen.
+1. **`inherit`, `initial` and `unset` are supported; `revert` is not.**
+   `values.py` intercepts the three before any per-property parser sees
+   them and hands back a `WideKeyword`; `_resolve_wide_keywords` decides
+   what each names, which is the earliest point either the parent's
+   computed value or `INITIAL_SPECIFIED` exists. A shorthand's wide keyword
+   sets every longhand it governs.
+
+   `revert` needs origin-level rollback this cascade does not model -- it
+   would have to re-run the cascade with the declaration's own origin and
+   everything above it removed, and the cascade keeps no per-origin
+   history. Faking it as `unset` is wrong in the common case (an author
+   `revert` should fall back to the UA rule, not to the initial value), so
+   it stays dropped, classified `unsupported-value`, and counted in
+   `wide_keyword_revert`.
+2. **`@media` is evaluated when a `viewport` is passed; every other at-rule
+   is counted and skipped** -- `at_rules_skipped`, and `at_rule_<name>` per
+   name. Rules inside a non-matching `@media` are absent from the cascade
+   rather than applied unconditionally, which is the right direction to
+   fail: applying `@media print` would repaint the screen.
+
+   Passing no viewport keeps Phase 2's behaviour exactly -- every at-rule
+   skipped -- so figures measured before `cssparse/media.py` existed stay
+   reproducible instead of being silently restated. What evaluating `@media`
+   recovered, measured on the corpus at 1280x1024: Wikipedia's `flex`
+   element count went from 4 to 204, and `grid` from 0 to 2. Before it, 51%
+   of the Hacker News page's CSS and 46% of Wikipedia's never reached the
+   cascade at all.
+
+   `@supports` is still skipped, and so is any `@media` whose query names a
+   feature outside `media.py`'s scope; both are counted rather than dropped
+   silently. See that module for the full list.
 3. **`<link rel=stylesheet>` is counted, never fetched** -- `net/` is Phase
-   5. See `_count_link_stylesheets` for why the count is worth having.
+   5. The count turns "no styles applied" from a blank render into a
+   number, and the fraction of real pages depending entirely on external
+   CSS is itself a finding. Supply the sheets via `external_css` and the
+   counter reports only what is still missing.
 4. **`:hover`, `:focus`, `:visited` and friends never match** (matching.py's
    own deviation): there is no interaction and no history. `:link` matches
    any `a[href]`, so link colouring is at least approximately right.
@@ -165,7 +191,50 @@ Deliberate deviations and omissions
     until the counter was corrected, so any `declarations_applied` figure in
     a CSV written before this commit is low by the number of `font-size`
     declarations that page applied.
-12. **Every declaration and error counter is a whole-document total** --
+12. **Every dropped declaration is classified into exactly one of four
+    reasons**, emitted as `declarations_dropped_<reason>` alongside the
+    total: `unsupported_property` (the name is not in `values.py`'s table),
+    `unsupported_value` (the name is known, the value grammar is not),
+    `var_unresolved` (a `var()` reference this module did not substitute)
+    and `invalid` (genuinely malformed; a browser drops it too). They sum
+    to `declarations_dropped`, which keeps its Phase 2 meaning.
+
+    The reason a rate alone is not enough: it falls when the parser
+    improves and it also falls when validation loosens, and those are
+    opposite outcomes. `invalid` is the tripwire -- everything in it is
+    something a browser drops too, so a shrinking `invalid` means this
+    engine started accepting garbage. `values.classify_drop` decides;
+    `_cascade_declarations` is the single place that calls it, for both
+    `<style>` bodies and `style=` attributes.
+13. **`var()` resolves per element, at computed-value time, and every
+    refusal is a counter.** Custom properties cascade and inherit like any
+    other declaration but keep their value as raw tokens; a declaration
+    containing a `var()` on a supported property is *deferred* rather than
+    dropped (`declarations_pending_var`) and resolved once per element
+    against that element's custom-property map.
+
+    Substituting at sheet-parse time would be wrong and would look right:
+    declarations are parsed once per sheet and shared by every element the
+    rule matches, so one `color: var(--accent)` would give every matching
+    element the same colour -- entirely plausible output, and correct on any
+    test page with one element. `_PendingValue` is what keeps the decision
+    where it belongs.
+
+    Out of scope, each a number: `var_nested_fallback_skipped` (a `var()`
+    inside another's fallback, on the branch actually taken),
+    `var_depth_exceeded` (an eight-deep substitution cap standing in for
+    real cycle detection -- O(1), and wrong only in the safe direction),
+    `var_unknown_no_fallback`, `var_malformed`, and
+    `var_substituted_value_invalid` for a substitution that succeeded and
+    produced a value the property does not accept.
+    `var_declarations_attempted` / `_resolved` / `_refused` bridge back to
+    the parse-time `declarations_pending_var`, and `_unmatched` accounts
+    for the rest. The split is not cosmetic: measured as one number,
+    Wikipedia's 353 deferred declarations reported 288 unresolved, of which
+    281 had simply never been asked for by any element -- their rules match
+    nothing on that page, which is ordinary for a large sheet. Seven were
+    attempted and refused.
+14. **Every declaration and error counter is a whole-document total** --
     `<style>` bodies, `style=` attributes and the UA sheet summed
     together. `tokenizer_parse_errors`
     and `css_parse_errors` include the inline path -- which they did not
@@ -184,20 +253,34 @@ from dataclasses import dataclass, field, fields
 
 from mayshay.cssparse.matching import RuleIndex, matches
 from mayshay.cssparse.parser import AtRule, CssParser, QualifiedRule
+from mayshay.cssparse.media import (
+    Viewport,
+    matches as media_matches,
+    parse_media_query_list,
+)
 from mayshay.cssparse.selectors import (
     Complex,
     SelectorParseError,
     parse_selector_list,
     specificity,
 )
-from mayshay.cssparse.tokenizer import CssTokenizer
+from mayshay.cssparse.tokenizer import CssTokenizer, EOFToken
 from mayshay.cssparse.ua import UA_CSS
 from mayshay.cssparse.values import (
     AUTO,
+    DROP_REASONS,
+    LONGHANDS_OF,
     Color,
     Keyword,
     Length,
     Percent,
+    SUPPORTED_PROPERTIES,
+    WideKeyword,
+    bare_wide_keyword,
+    classify_drop,
+    contains_var_reference,
+    is_custom_property,
+    substitute_var,
     normalize_property_name,
     parse_declaration_value,
 )
@@ -225,13 +308,47 @@ LONGHANDS: tuple[str, ...] = (
     "color",
     "background-color",
     "font-size",
+    # Phase 3 Task A2, deliverable 3. Task D cannot be written against a
+    # `ComputedStyle` with no `white-space` or `line-height`, and
+    # `box-sizing` changes what every width in Task C means -- cheaper to
+    # add now than to retrofit. `font-family` and `vertical-align` have no
+    # consumer this phase and are recorded anyway: a value nobody reads is
+    # a smaller problem than a value nobody recorded.
+    "white-space",
+    "line-height",
+    "font-family",
+    "font-weight",
+    "font-style",
+    "text-align",
+    "vertical-align",
+    "box-sizing",
+    "list-style-type",
 )
 
-# Of the nine, exactly these two inherit. `display`, the box-model
-# properties and `background-color` do not -- a `<p>` inside a bordered
-# `<div>` does not get its own border, and that is not an oversight in the
-# table, it is what the CSS property definitions say.
-INHERITED: frozenset[str] = frozenset({"color", "font-size"})
+# The inherited properties, per the CSS property definitions. `display`, the
+# box-model properties and `background-color` do not inherit -- a `<p>`
+# inside a bordered `<div>` does not get its own border, and that is not an
+# oversight in the table, it is what the specs say. Neither do
+# `vertical-align` or `box-sizing`, which is why deliverable 3 added nine
+# fields and this set gained only seven of them.
+#
+# This went from two entries to nine in one deliberate change, with a test
+# per property, rather than one at a time as each was needed. A property
+# that silently fails to inherit produces plausible-looking wrong output --
+# the whole page renders, every box is where a box could be, and only the
+# text is the wrong size or the wrong weight. That is the hardest kind of
+# defect to notice and the reason for the batch.
+INHERITED: frozenset[str] = frozenset({
+    "color",
+    "font-size",
+    "font-family",
+    "font-weight",
+    "font-style",
+    "line-height",
+    "white-space",
+    "text-align",
+    "list-style-type",
+})
 
 # `medium`. The one number in this module that is a convention rather than a
 # derivation; every `em`, `rem` and `%` font-size on a page with no explicit
@@ -249,6 +366,12 @@ _TRANSPARENT = Color(0, 0, 0, 0.0)
 # specifies a style and a colour and leaves the width to it. See
 # `_zero_widths_of_borderless_sides` for the other half of the rule.
 _MEDIUM_BORDER_WIDTH = Length(3, "px")
+
+# `font-family`'s initial value is UA-defined. Empty means "unspecified",
+# not "no fonts": Phase 3 renders with one vendored font whatever this says,
+# and recording a concrete family would put a guess where a declaration
+# would later be read.
+_INITIAL_FONT_FAMILY: tuple[str, ...] = ()
 
 _SIDES = ("top", "right", "bottom", "left")
 _BORDER_STYLE_PROPS = tuple(f"border-{side}-style" for side in _SIDES)
@@ -279,15 +402,30 @@ INITIAL_SPECIFIED: dict[str, object] = {
     **{prop: _MEDIUM_BORDER_WIDTH for prop in _BORDER_WIDTH_PROPS},
     **{prop: Keyword("none") for prop in _BORDER_STYLE_PROPS},
     **{prop: Keyword("currentcolor") for prop in _BORDER_COLOR_PROPS},
+    "white-space": Keyword("normal"),
+    # Symbolic, deliberately: see `values._parse_line_height`. The used value
+    # of `normal` is the font's own preferred spacing, which arrives with
+    # Task D's metrics.
+    "line-height": Keyword("normal"),
+    # The spec's initial value is "depends on user agent". The empty tuple
+    # says *no family was specified* rather than naming one, which is the
+    # honest encoding while this engine ships exactly one font: a concrete
+    # default here would be a guess that later reads as a declaration.
+    "font-family": _INITIAL_FONT_FAMILY,
+    "font-weight": 400,
+    "font-style": Keyword("normal"),
+    "text-align": Keyword("start"),
+    "vertical-align": Keyword("baseline"),
+    "box-sizing": Keyword("content-box"),
+    "list-style-type": Keyword("disc"),
 }
 
-# Which longhands each shorthand governs -- *all* of them, not just the ones
-# a given declaration happened to mention. See `_reset_omitted_longhands`.
-_SHORTHAND_LONGHANDS: dict[str, tuple[str, ...]] = {
-    "margin": tuple(f"margin-{side}" for side in _SIDES),
-    "padding": tuple(f"padding-{side}" for side in _SIDES),
-    "border": _BORDER_WIDTH_PROPS + _BORDER_STYLE_PROPS + _BORDER_COLOR_PROPS,
-}
+# Which longhands each property governs -- *all* of them, not just the ones
+# a given declaration happened to mention -- comes from `values.LONGHANDS_OF`,
+# which is derived from the same table the value parser dispatches on. It used
+# to be a second hand-written table here (`_SHORTHAND_LONGHANDS`), listing only
+# `margin`, `padding` and `border`; a shorthand added to `values.py` and
+# forgotten here silently skipped its reset. See `_reset_omitted_longhands`.
 
 
 def _reset_omitted_longhands(name: str, longhands: dict[str, object]) -> dict[str, object]:
@@ -320,7 +458,7 @@ def _reset_omitted_longhands(name: str, longhands: dict[str, object]) -> dict[st
     give 3px. Normalising inside the function rather than at the two call
     sites is deliberate: a third call site cannot reintroduce the bug.
     """
-    governed = _SHORTHAND_LONGHANDS.get(normalize_property_name(name))
+    governed = LONGHANDS_OF.get(normalize_property_name(name))
     if governed is None:
         return longhands
     for prop in governed:
@@ -395,6 +533,27 @@ class ComputedStyle:
 
     font_size: object = Length(INITIAL_FONT_SIZE_PX, "px")
 
+    white_space: str = "normal"
+    # A `Keyword`, a `float`, a `Length` or a `Percent` -- see deviation 14
+    # for why `normal` is not collapsed to a number here.
+    line_height: object = Keyword("normal")
+    font_family: tuple[str, ...] = _INITIAL_FONT_FAMILY
+    font_weight: object = 400
+    font_style: str = "normal"
+    text_align: str = "start"
+    vertical_align: object = "baseline"
+    box_sizing: str = "content-box"
+    list_style_type: str = "disc"
+
+    # This element's custom properties, name -> raw token tuple. Not a
+    # longhand and deliberately exempted from the drift assert below: it is
+    # a *map* of properties rather than one, its keys are open-ended, and it
+    # is never parsed until substituted. It inherits, which is what makes
+    # `var()` resolve per element rather than per rule; the dict is shared
+    # with the parent whenever the child declares none of its own, so an
+    # inheriting subtree costs one reference per node and not one dict.
+    custom_properties: dict = field(default_factory=dict)
+
     def get(self, prop: str) -> object:
         return getattr(self, _field_name(prop))
 
@@ -418,7 +577,7 @@ class ComputedStyle:
 # A sanity check that the dataclass and the property list cannot drift: a
 # longhand added to one and forgotten in the other is a property that
 # silently never cascades.
-_STYLE_FIELDS = {f.name for f in fields(ComputedStyle)}
+_STYLE_FIELDS = {f.name for f in fields(ComputedStyle)} - {"custom_properties"}
 assert _STYLE_FIELDS == {_field_name(p) for p in LONGHANDS}, (
     "ComputedStyle fields and LONGHANDS disagree: "
     f"{_STYLE_FIELDS ^ {_field_name(p) for p in LONGHANDS}}"
@@ -583,7 +742,53 @@ def _compute_rest(
 # needs resolving (`currentcolor`, handled above it) or a property added to
 # `values.py` without a computed-value decision being made here, and
 # stringifying that silently is how a property ends up half-implemented.
-_KEYWORD_VALUED = frozenset({"display"}) | frozenset(_BORDER_STYLE_PROPS)
+_KEYWORD_VALUED = frozenset({
+    "display",
+    "white-space",
+    "font-style",
+    "text-align",
+    "vertical-align",
+    "box-sizing",
+    "list-style-type",
+}) | frozenset(_BORDER_STYLE_PROPS)
+
+# Properties whose computed value keeps the `Keyword` wrapper rather than
+# being unwrapped to a `str`. Exactly one, and it is not an oversight:
+# `line-height` is a union of `normal`, a number, a length and a
+# percentage, so its consumer must type-check the value anyway, and a bare
+# `"normal"` string would be indistinguishable from a font-family entry if
+# the two were ever confused. Keeping `Keyword("normal")` also makes the
+# "still symbolic" decision visible in a `repr` rather than inferable.
+_KEYWORD_PRESERVED = frozenset({"line-height"})
+
+
+# The percentages that resolve here rather than staying symbolic. The full
+# three-category rule is `docs/percentage-resolution.md`; the short form:
+#
+#   * `width: 50%` resolves against the CONTAINING BLOCK, which does not
+#     exist until layout. It stays `Percent(50)`.
+#   * `line-height: 150%` resolves against the element's OWN font-size
+#     (CSS 2.1 10.8.1), which is known right here -- and it is the resulting
+#     *length* that inherits, not the percentage.
+#
+# Same token type, opposite handling, and the reason is which quantity the
+# percentage refers to. Leaving it symbolic is not a conservative choice: a
+# child with a smaller font-size would resolve the inherited `Percent(150)`
+# against its own size and get a correctly-proportioned, subtly wrong number
+# that nothing downstream could distinguish from the right one.
+#
+# A `<number>` line-height is the opposite case and is correctly left alone:
+# CSS 2.1 10.8.1 says its computed value *is* the number, and the number is
+# what inherits -- the multiplication happens per element at used-value time,
+# which is Task D's.
+#
+# `vertical-align: <percentage>` is a third case and is NOT in this set: it
+# resolves against the element's own *used* line-height, which is known when
+# `line-height` is a number or a px length and unknown when it is `normal`.
+# It is handled after `_compute_rest`, by
+# `_resolve_vertical_align_percentage`, because it needs a value this
+# function does not have.
+_PERCENT_OF_OWN_FONT_SIZE = frozenset({"line-height"})
 
 
 def _computed_value(
@@ -591,7 +796,9 @@ def _computed_value(
 ) -> object:
     """One specified value -> its computed value.
 
-    `Percent` and `AUTO` fall through untouched, which is the point.
+    `AUTO` falls through untouched, and so does `Percent` on every property
+    but the one in `_PERCENT_OF_OWN_FONT_SIZE` -- which is the point, and
+    the exception is the point too.
     """
     if isinstance(value, Keyword):
         if value.name == "currentcolor":
@@ -599,6 +806,8 @@ def _computed_value(
         if prop in _KEYWORD_VALUED:
             # See deviation 6: the computed value *is* the keyword.
             return value.name
+        if prop in _KEYWORD_PRESERVED:
+            return value
         raise ValueError(
             f"no computed-value rule for keyword {value.name!r} on {prop!r}; "
             f"add it to _KEYWORD_VALUED or resolve it explicitly"
@@ -606,6 +815,8 @@ def _computed_value(
     if isinstance(value, Length):
         px = _length_to_px(value, font_px=font_px, root_px=root_px)
         return value if px is None else Length(px, "px")
+    if isinstance(value, Percent) and prop in _PERCENT_OF_OWN_FONT_SIZE:
+        return Length(round(value.value / 100.0 * font_px, 6), "px")
     return value
 
 
@@ -624,6 +835,45 @@ _RANK_UA_IMPORTANT = 5
 
 _NORMAL_RANK = {"ua": _RANK_UA_NORMAL, "author": _RANK_AUTHOR_NORMAL}
 _IMPORTANT_RANK = {"ua": _RANK_UA_IMPORTANT, "author": _RANK_AUTHOR_IMPORTANT}
+
+
+@dataclass
+class _PendingValue:
+    """A declaration whose value contains `var()`, kept unparsed.
+
+    **The architectural point of Task A2's largest item.** Declarations are
+    parsed once per sheet and the resulting objects are shared by every
+    element the rule matches; `color: var(--accent)` computes to a different
+    value per element, because `--accent` is itself cascaded and inherited.
+    So the value cannot be parsed at sheet time at all, and this object is
+    what a `_Declaration` carries instead: the property name and the raw
+    tokens, resolved per element in `_compute_style`.
+
+    One `_PendingValue` is shared by every longhand its property governs
+    (`border: 1px solid var(--x)` produces twelve `_Declaration`s and one of
+    these), so the cascade can pick a winner per longhand as usual while the
+    substitution still runs once per element rather than twelve times.
+
+    `attempted` and `resolved` are what turn "353 declarations were
+    deferred" into three numbers instead of one. The single number was
+    measured first and was wrong in the usual way -- 288 of 353 "never
+    resolved" alongside a `var_unknown_no_fallback` of zero, which is
+    internally inconsistent and reads as a catastrophic failure rate. A
+    second derivation (instrumenting `_resolve_pending` from outside)
+    found 281 of the 288 had never been *attempted*: their rules match no
+    element on that page, which is an ordinary property of a real
+    stylesheet and not a var() failure at all. Only 7 were attempted and
+    refused.
+
+    Hence two flags, not one: `var_declarations_refused` is the number that
+    means something went wrong, and `var_declarations_unmatched` is the
+    number that does not.
+    """
+
+    prop_name: str
+    tokens: tuple
+    attempted: bool = False
+    resolved: bool = False
 
 
 @dataclass
@@ -664,7 +914,11 @@ def _selector_of(rule: object) -> Complex:
 
 
 def _parse_sheet(
-    source: str, origin: str, order: object, metrics: Counter[str]
+    source: str,
+    origin: str,
+    order: object,
+    metrics: Counter[str],
+    viewport: object | None = None,
 ) -> list[_StyleRule]:
     """Parse one stylesheet into `_StyleRule`s.
 
@@ -672,40 +926,202 @@ def _parse_sheet(
     `__next__`) so declaration numbers keep increasing across every sheet in
     the document, which is what makes later sheets win ties against earlier
     ones.
+
+    `viewport` is optional. Without one, at-rules are counted and skipped
+    (Phase 2 deviation 2). With one, `@media` preludes are evaluated against
+    it and matching blocks contribute their rules.
     """
     parser = CssParser(source)
     rules: list[_StyleRule] = []
-    for rule in parser.parse_stylesheet():
-        if isinstance(rule, AtRule):
-            # Deviation 2: counted, not evaluated, and its block's rules are
-            # therefore not in the cascade at all.
-            metrics["at_rules_skipped"] += 1
-            continue
-        assert isinstance(rule, QualifiedRule)
-        if rule.block is None:
-            continue
-        try:
-            selector_list = parse_selector_list(rule.prelude)
-        except SelectorParseError:
-            # An unparseable prelude invalidates the whole rule, block
-            # included -- CSS Syntax 3 section 5.4.1. Not the declarations
-            # one at a time; the rule.
-            metrics["selectors_invalid"] += 1
-            continue
-        declarations = _parse_block(parser, rule.block, origin, order, metrics)
-        if not declarations:
-            continue
-        for selector in selector_list.selectors:
-            rules.append(
-                _StyleRule(
-                    selector=selector,
-                    specificity=specificity(selector),
-                    declarations=declarations,
-                )
-            )
+    _collect_rules(parser, parser.parse_stylesheet(), origin, order, metrics,
+                   rules, viewport, depth=0)
     metrics["tokenizer_parse_errors"] += parser.tokenizer.metrics["parse_errors"]
     metrics["css_parse_errors"] += len(parser.errors)
     return rules
+
+
+def _ascii_lower(text: str) -> str:
+    """ASCII-only case fold, for at-rule names.
+
+    A third copy, for the reason `tokenizer.py` and `values.py` each state
+    for theirs: importing another module's private name is the worse
+    coupling. `str.lower()` is wrong here too -- it folds U+212A KELVIN SIGN
+    to `k`, so `@\u212aeyframes` would be taken for `@keyframes` and its
+    block descended into.
+    """
+    return "".join(chr(ord(ch) + 0x20) if "A" <= ch <= "Z" else ch for ch in text)
+
+
+# How deep to descend through nested at-rules. `@media` inside `@media` is
+# common; five levels is far past anything real, and the cap is here so a
+# pathological sheet cannot turn parsing into a recursion.
+_MAX_AT_RULE_DEPTH = 5
+
+
+def _collect_rules(
+    parser: CssParser,
+    rule_list: list,
+    origin: str,
+    order: object,
+    metrics: Counter[str],
+    out: list[_StyleRule],
+    viewport: object | None,
+    depth: int,
+) -> None:
+    """Flatten a rule list into `out`, descending into matching `@media`.
+
+    With no viewport this is Phase 2's behaviour exactly: every at-rule is
+    counted and skipped, and nothing inside one reaches the cascade. With a
+    viewport, `@media` preludes are evaluated and the rules inside a
+    matching block are spliced in at the point the block appeared -- which
+    is what preserves source order between a `@media` block and the rules
+    around it.
+    """
+    for rule in rule_list:
+        if isinstance(rule, AtRule):
+            name = _ascii_lower(rule.name)
+            metrics[f"at_rule_{name}"] += 1
+            if viewport is None or name != "media" or rule.block is None:
+                # Deviation 2: counted, not evaluated, and its block's rules
+                # are therefore not in the cascade at all.
+                metrics["at_rules_skipped"] += 1
+                continue
+            if depth >= _MAX_AT_RULE_DEPTH:
+                metrics["at_rules_too_deep"] += 1
+                metrics["at_rules_skipped"] += 1
+                continue
+            queries = parse_media_query_list(rule.prelude)
+            if not media_matches(queries, viewport, metrics):
+                metrics["media_blocks_not_matched"] += 1
+                continue
+            metrics["media_blocks_matched"] += 1
+            _collect_rules(
+                parser, parser.parse_rules(rule.block), origin, order,
+                metrics, out, viewport, depth + 1,
+            )
+            continue
+        _append_qualified_rule(rule, parser, origin, order, metrics, out)
+
+
+def _append_qualified_rule(
+    rule: object,
+    parser: CssParser,
+    origin: str,
+    order: object,
+    metrics: Counter[str],
+    out: list[_StyleRule],
+) -> None:
+    """Turn one QualifiedRule into zero or more `_StyleRule`s on `out`."""
+    assert isinstance(rule, QualifiedRule)
+    if rule.block is None:
+        return
+    try:
+        selector_list = parse_selector_list(rule.prelude)
+    except SelectorParseError:
+        # An unparseable prelude invalidates the whole rule, block
+        # included -- CSS Syntax 3 section 5.4.1. Not the declarations
+        # one at a time; the rule.
+        metrics["selectors_invalid"] += 1
+        return
+    declarations = _parse_block(parser, rule.block, origin, order, metrics)
+    if not declarations:
+        return
+    for selector in selector_list.selectors:
+        out.append(
+            _StyleRule(
+                selector=selector,
+                specificity=specificity(selector),
+                declarations=declarations,
+            )
+        )
+
+
+def _cascade_declarations(
+    declarations: list,
+    *,
+    normal_rank: int,
+    important_rank: int,
+    order: object,
+    metrics: Counter[str],
+) -> list[_Declaration]:
+    """Turn parsed declarations into `_Declaration`s, counting what is kept
+    and *why* anything dropped was dropped.
+
+    **The one place a declaration enters or fails to enter the cascade.**
+    This body used to exist twice -- once in `_parse_block` for `<style>`
+    bodies and again in `_parse_inline_style` for `style=` attributes -- and
+    the two drifted: a Phase 2 fix landed in one and silently not the other,
+    so identical malformed CSS was counted differently depending on where it
+    was written. The only difference between the two call sites is which
+    cascade ranks the declarations get, so that is the only thing they still
+    pass in.
+
+    `declarations_dropped` keeps its Phase 2 meaning -- the total -- and the
+    four `declarations_dropped_<reason>` counters partition it exactly. That
+    exactness is the point: a total alone cannot say whether the parser
+    improved or validation loosened. See `values.classify_drop`.
+    """
+    out: list[_Declaration] = []
+    for decl in declarations:
+        metrics["declarations_seen"] += 1
+        rank = important_rank if decl.important else normal_rank
+
+        if is_custom_property(decl.name):
+            # A custom property is an ordinary declaration that cascades and
+            # inherits like any other -- but its value is almost-anything and
+            # is not parsed until it is substituted, so it is kept as raw
+            # tokens. The name is NOT normalised: custom property names are
+            # case-sensitive.
+            metrics["custom_properties_declared"] += 1
+            metrics["declarations_kept"] += 1
+            out.append(_Declaration(
+                decl.name,
+                tuple(tok for tok in decl.value if not isinstance(tok, EOFToken)),
+                rank,
+                next(order),
+            ))
+            continue
+
+        longhands = parse_declaration_value(decl.name, decl.value)
+        if longhands is None and contains_var_reference(decl.value):
+            name = normalize_property_name(decl.name)
+            if name in SUPPORTED_PROPERTIES:
+                # Deferred, not dropped: the value has no grammar to check
+                # until it is substituted, and substitution is per element.
+                # The longhands it *will* set are known from the property
+                # name alone, which is what lets the cascade pick a winner
+                # per longhand without knowing the value yet.
+                pending = _PendingValue(name, tuple(
+                    tok for tok in decl.value if not isinstance(tok, EOFToken)
+                ))
+                metrics["declarations_pending_var"] += 1
+                metrics["declarations_kept"] += 1
+                index = next(order)
+                for prop in LONGHANDS_OF[name]:
+                    out.append(_Declaration(prop, pending, rank, index))
+                continue
+
+        if longhands is None:
+            # Either a property outside our table, or a value whose grammar
+            # is wrong. Both drop the declaration and keep its siblings,
+            # which is what a browser does.
+            metrics["declarations_dropped"] += 1
+            reason = classify_drop(decl.name, decl.value)
+            metrics[f"declarations_dropped_{reason.replace('-', '_')}"] += 1
+            if bare_wide_keyword(decl.value) == "revert":
+                # Named rather than merely counted: `revert` is the one
+                # wide keyword this cascade refuses, and it refuses it for a
+                # reason (origin-level rollback it does not model) rather
+                # than for want of a branch. A number is how that stays a
+                # decision instead of becoming an absence.
+                metrics["wide_keyword_revert"] += 1
+            continue
+        longhands = _reset_omitted_longhands(decl.name, longhands)
+        index = next(order)
+        for prop, value in longhands.items():
+            out.append(_Declaration(prop, value, rank, index))
+        metrics["declarations_kept"] += 1
+    return out
 
 
 def _parse_block(
@@ -715,23 +1131,13 @@ def _parse_block(
     order: object,
     metrics: Counter[str],
 ) -> list[_Declaration]:
-    out: list[_Declaration] = []
-    for decl in parser.parse_declarations(block):
-        metrics["declarations_seen"] += 1
-        longhands = parse_declaration_value(decl.name, decl.value)
-        if longhands is None:
-            # Either a property outside our nine, or a value whose grammar
-            # is wrong. Both drop the declaration and keep its siblings,
-            # which is what a browser does.
-            metrics["declarations_dropped"] += 1
-            continue
-        longhands = _reset_omitted_longhands(decl.name, longhands)
-        rank = (_IMPORTANT_RANK if decl.important else _NORMAL_RANK)[origin]
-        index = next(order)
-        for prop, value in longhands.items():
-            out.append(_Declaration(prop, value, rank, index))
-        metrics["declarations_kept"] += 1
-    return out
+    return _cascade_declarations(
+        parser.parse_declarations(block),
+        normal_rank=_NORMAL_RANK[origin],
+        important_rank=_IMPORTANT_RANK[origin],
+        order=order,
+        metrics=metrics,
+    )
 
 
 def _parse_inline_style(
@@ -754,21 +1160,13 @@ def _parse_inline_style(
     tokenizer = CssTokenizer(source)
     tokens = list(tokenizer.tokenize())
     metrics["tokenizer_parse_errors"] += tokenizer.metrics["parse_errors"]
-    out: list[_Declaration] = []
-    for decl in parser.parse_declarations(tokens):
-        metrics["declarations_seen"] += 1
-        longhands = parse_declaration_value(decl.name, decl.value)
-        if longhands is None:
-            metrics["declarations_dropped"] += 1
-            continue
-        longhands = _reset_omitted_longhands(decl.name, longhands)
-        rank = (
-            _RANK_INLINE_IMPORTANT if decl.important else _RANK_INLINE_NORMAL
-        )
-        index = next(order)
-        for prop, value in longhands.items():
-            out.append(_Declaration(prop, value, rank, index))
-        metrics["declarations_kept"] += 1
+    out = _cascade_declarations(
+        parser.parse_declarations(tokens),
+        normal_rank=_RANK_INLINE_NORMAL,
+        important_rank=_RANK_INLINE_IMPORTANT,
+        order=order,
+        metrics=metrics,
+    )
     metrics["css_parse_errors"] += len(parser.errors)
     return out
 
@@ -792,33 +1190,6 @@ def _iter_nodes(root: Node):
 def _rel_tokens(element: Element) -> set[str]:
     """`rel` is a space-separated token list, ASCII case-insensitive."""
     return {token.lower() for token in element.attrs.get("rel", "").split()}
-
-
-def _count_link_stylesheets(elements: list[Element], metrics: Counter[str]) -> None:
-    """Count `<link rel=stylesheet>`, do not fetch it.
-
-    `net/` arrives in Phase 5. Counting turns "no styles applied" from a
-    blank render into a number, and the fraction of real pages that depend
-    entirely on external CSS is itself a finding for the analysis half of
-    this project -- hn.html has exactly one stylesheet link and no `<style>`
-    element at all, so the count is the difference between "we styled it"
-    and "we styled the UA sheet".
-
-    `rel=icon`, `rel=preconnect`, `rel=canonical` and the rest do not count:
-    they are not stylesheets. A `rel=stylesheet` with no `href` does not
-    count either -- there is nothing that would have been fetched.
-    `rel="alternate stylesheet"` does count; it is a stylesheet the user
-    could select, and treating it as one over-counts by a rounding error on
-    the corpus while under-counting would hide whole sheets.
-    """
-    for element in elements:
-        if element.tag_name != "link":
-            continue
-        if "stylesheet" not in _rel_tokens(element):
-            continue
-        if not element.attrs.get("href", "").strip():
-            continue
-        metrics["link_stylesheets_skipped"] += 1
 
 
 def _style_element_source(element: Element) -> str | None:
@@ -905,6 +1276,28 @@ def _compute_style(
     the whole subject of this module."""
     style = _inherit_from(parent)
 
+    # 0. Custom properties, before anything that could reference one. They
+    #    cascade like ordinary declarations and inherit, so this element's
+    #    map is the parent's with its own winners layered on top -- and the
+    #    parent's dict is reused unchanged when there are none, so an
+    #    inheriting subtree does not allocate a dict per node.
+    own_custom = {k: v for k, v in declared.items() if is_custom_property(k)}
+    if own_custom:
+        style.custom_properties = {**parent.custom_properties, **own_custom}
+        declared = {
+            k: v for k, v in declared.items() if not is_custom_property(k)
+        }
+    else:
+        style.custom_properties = parent.custom_properties
+
+    # 0b. `var()` substitution, now that this element's custom properties
+    #     are known and before the value parser or the wide keywords see
+    #     anything. This is the whole reason `_PendingValue` exists: the
+    #     same `_Declaration` object is shared by every element the rule
+    #     matched, and the answer differs per element.
+    declared = _resolve_pending_values(declared, style.custom_properties, metrics)
+    declared = _resolve_wide_keywords(declared, parent)
+
     # 1. font-size, against the PARENT's. Nothing else may be computed
     #    first, because everything else needs the answer.
     font_size = _compute_font_size(
@@ -961,7 +1354,63 @@ def _compute_style(
 
     # 4. A border with no style has no width, whatever the width said.
     _zero_widths_of_borderless_sides(style)
+
+    # 5. `vertical-align: <percentage>`, which needs the computed
+    #    `line-height` step 3 just wrote. See
+    #    `_resolve_vertical_align_percentage`.
+    _resolve_vertical_align_percentage(style, metrics, own_font_px)
     return style
+
+
+def _used_line_height_px(line_height: object, own_font_px: float) -> float | None:
+    """This element's used `line-height` in px, or None if it is not known
+    until Task D.
+
+    * a `<number>` is the number times the element's OWN font-size, which
+      is why the number and not a product is what inherits;
+    * a computed `<length>` is itself, when it is in px -- a viewport-unit
+      line-height is still symbolic and is as unknown here as `normal`;
+    * `normal` is the font's own preferred spacing, from `hhea`/`OS/2`
+      metrics that arrive with Task D.
+    """
+    if isinstance(line_height, Length):
+        return float(line_height.value) if line_height.unit == "px" else None
+    if isinstance(line_height, (int, float)) and not isinstance(line_height, bool):
+        return float(line_height) * own_font_px
+    return None
+
+
+def _resolve_vertical_align_percentage(
+    style: ComputedStyle, metrics: Counter[str], own_font_px: float
+) -> None:
+    """`vertical-align: <percentage>` against the element's own *used*
+    `line-height` -- the third percentage category, and the honest one.
+
+    See `docs/percentage-resolution.md`. A percentage width resolves against
+    the containing block and cannot be known here; a percentage line-height
+    resolves against the element's own font-size and always can. This one is
+    neither: it is known when `line-height` is a number or a px length and
+    not when `line-height` is `normal`, so it is resolved in the first two
+    cases and left symbolic in the third.
+
+    Deferring it wholesale would throw away two thirds of the answers;
+    resolving the third case against a guessed `1.2 x font-size` would
+    produce a plausible number nothing downstream could distinguish from a
+    real one. `vertical_align_percent_deferred` is what makes the remainder
+    a figure Task D can look for rather than an absence -- the same
+    discipline as `link_stylesheets_skipped`.
+
+    Runs after `_compute_rest`, because it needs this element's computed
+    `line-height`, which `_compute_rest` is what writes.
+    """
+    value = style.vertical_align
+    if not isinstance(value, Percent):
+        return
+    used = _used_line_height_px(style.line_height, own_font_px)
+    if used is None:
+        metrics["vertical_align_percent_deferred"] += 1
+        return
+    style.vertical_align = Length(round(value.value / 100.0 * used, 6), "px")
 
 
 def _zero_widths_of_borderless_sides(style: ComputedStyle) -> None:
@@ -980,6 +1429,108 @@ def _zero_widths_of_borderless_sides(style: ComputedStyle) -> None:
             style.set(width_prop, _ZERO_LENGTH)
 
 
+def _resolve_pending(
+    pending: _PendingValue,
+    custom_properties: dict,
+    metrics: Counter[str],
+) -> dict[str, object] | None:
+    """Substitute one deferred declaration's `var()`s and parse the result.
+
+    Every refusal is a counter, never a silence: `var_substitutions` for the
+    ones that worked, one of the four `VAR_*` reasons for a substitution
+    this engine declined, and `var_substituted_value_invalid` when the
+    substitution succeeded and the *result* was not valid for the property
+    (`width: var(--x)` with `--x: red` -- a declaration a browser also
+    discards at computed-value time).
+    """
+    if not pending.attempted:
+        pending.attempted = True
+        metrics["var_declarations_attempted"] += 1
+    substituted, reason = substitute_var(list(pending.tokens), custom_properties)
+    if substituted is None:
+        metrics[reason] += 1
+        return None
+    longhands = parse_declaration_value(pending.prop_name, substituted)
+    if longhands is None:
+        metrics["var_substituted_value_invalid"] += 1
+        return None
+    metrics["var_substitutions"] += 1
+    if not pending.resolved:
+        # Once per declaration, not once per element: this is the
+        # declaration-level counterpart of `declarations_pending_var`.
+        metrics["var_declarations_resolved"] += 1
+        pending.resolved = True
+    return _reset_omitted_longhands(pending.prop_name, longhands)
+
+
+def _resolve_pending_values(
+    declared: dict[str, object],
+    custom_properties: dict,
+    metrics: Counter[str],
+) -> dict[str, object]:
+    """Replace every winning `_PendingValue` with the longhand it produced.
+
+    One substitution per `_PendingValue` per element, not one per longhand:
+    `border: 1px solid var(--x)` won twelve longhands with the same object,
+    and substituting twelve times would multiply every `var_*` counter by
+    twelve while changing no value.
+    """
+    if not any(isinstance(v, _PendingValue) for v in declared.values()):
+        return declared
+    cache: dict[int, dict[str, object] | None] = {}
+    out: dict[str, object] = {}
+    for prop, value in declared.items():
+        if not isinstance(value, _PendingValue):
+            out[prop] = value
+            continue
+        key = id(value)
+        if key not in cache:
+            cache[key] = _resolve_pending(value, custom_properties, metrics)
+        longhands = cache[key]
+        if longhands is not None and prop in longhands:
+            out[prop] = longhands[prop]
+        # Otherwise the longhand is simply not declared on this element and
+        # falls back to inheritance or its initial value -- which is what a
+        # browser does with a declaration that is invalid at computed-value
+        # time.
+    return out
+
+
+def _resolve_wide_keywords(
+    declared: dict[str, object], parent: ComputedStyle
+) -> dict[str, object]:
+    """Replace every `WideKeyword` with the value it names.
+
+    `values.py` cannot do this -- `inherit` needs the parent's computed
+    value and `initial` needs `INITIAL_SPECIFIED`, and it has neither -- so
+    it hands the keyword through and this is where the three are decided:
+
+        initial   the property's initial *specified* value, which then
+                  computes normally (`border-*-color: initial` is
+                  `currentcolor`, and resolves to this element's colour).
+        inherit   the parent's *computed* value, taken as-is.
+        unset     `inherit` for an inherited property, `initial` otherwise.
+
+    Running the parent's already-computed value back through
+    `_computed_value` is harmless -- a px `Length` resolves to itself, and
+    every other computed shape falls through untouched -- so the two paths
+    do not need to be kept apart the way the two `em` bases do.
+    """
+    if not any(isinstance(v, WideKeyword) for v in declared.values()):
+        return declared
+    out: dict[str, object] = {}
+    for prop, value in declared.items():
+        if not isinstance(value, WideKeyword):
+            out[prop] = value
+        elif value.name == "inherit" or (
+            value.name == "unset" and prop in INHERITED
+        ):
+            out[prop] = parent.get(prop)
+        else:
+            out[prop] = INITIAL_SPECIFIED[prop]
+    return out
+
+
 def _inherit_from(parent: ComputedStyle) -> ComputedStyle:
     """A fresh style: initial everywhere, inherited where INHERITED says."""
     style = ComputedStyle()
@@ -988,13 +1539,34 @@ def _inherit_from(parent: ComputedStyle) -> ComputedStyle:
     return style
 
 
-def style_document(document: Node, author_css: list[str]) -> Counter[str]:
+def style_document(
+    document: Node,
+    author_css: list[str],
+    viewport: Viewport | None = None,
+    external_css: dict[str, str] | None = None,
+) -> Counter[str]:
     """Attach a `ComputedStyle` to every node of `document`.
 
     `author_css` is a list of stylesheet sources -- what a driver got from
     somewhere other than the document itself. In-document `<style>` elements
     are found and cascaded automatically; `<link rel=stylesheet>` is counted
     and not fetched.
+
+    `external_css` maps a `<link rel=stylesheet>`'s `href` -- exactly as
+    written in the document -- to that sheet's source. Supplying it is how
+    an external sheet enters the cascade *at the position its `<link>`
+    occupies*, which is what source order requires; `author_css` is for
+    sheets with no position in the document and still cascades before it.
+    A `<link>` with no entry here is counted in `link_stylesheets_skipped`
+    exactly as it was before external sheets could be supplied at all.
+    `scripts/corpus.py` builds this mapping from a page's manifest.
+
+    `viewport` is optional and opt-in. Without one, at-rules are counted and
+    skipped exactly as they were through Phase 2 -- which keeps every figure
+    measured before `@media` support reproducible, so the two can be
+    compared rather than conflated. With one, `@media` blocks whose queries
+    match contribute their rules to the cascade; see `cssparse/media.py` for
+    what is evaluated and what is merely recorded.
 
     Returns this stage's metrics, ready for `metrics.emit("cssparse", ...)`.
     Writing them is the driver's job, not this function's.
@@ -1015,26 +1587,77 @@ def style_document(document: Node, author_css: list[str]) -> Counter[str]:
     # writing one CSV row per key would otherwise emit no row at all for a
     # page with no external stylesheets, and "no row" and "zero" are
     # different findings for the analysis half.
+    # Seeded so the key is present at zero rather than absent: a driver
+    # writing one CSV row per key would otherwise emit no row at all for a
+    # page with no external stylesheets, and "no row" and "zero" are
+    # different findings for the analysis half. The counting itself happens
+    # in the document-order walk below, which is the only place that knows
+    # whether a given link was supplied.
     metrics["link_stylesheets_skipped"] = 0
-    _count_link_stylesheets(elements, metrics)
+    metrics["link_stylesheets_total"] = 0
+    # Same reason: the four drop reasons partition `declarations_dropped`,
+    # and a partition with a missing part is not one. A page that drops
+    # nothing for a given reason must say `0`, not say nothing.
+    for reason in DROP_REASONS:
+        metrics[f"declarations_dropped_{reason.replace('-', '_')}"] = 0
+    # Seeded for the same reason: Task D goes looking for this number, and
+    # "no row" and "zero" are different findings.
+    metrics["vertical_align_percent_deferred"] = 0
 
     order = _Counter()
-    rules = _parse_sheet(UA_CSS, "ua", order, metrics)
+    rules = _parse_sheet(UA_CSS, "ua", order, metrics, viewport)
     metrics["ua_rules"] = len(rules)
 
+    # Sheets with no position in the document -- a UA-supplied user sheet, or
+    # a caller passing raw CSS -- cascade before it. Anything attributable to
+    # a `<link>` belongs in `external_css` instead, so it lands in the right
+    # place in source order.
     for source in author_css:
         metrics["author_stylesheets"] += 1
-        rules.extend(_parse_sheet(source, "author", order, metrics))
+        rules.extend(_parse_sheet(source, "author", order, metrics, viewport))
 
+    # ONE pass, in document order, over both `<style>` and `<link>`.
+    #
+    # These used to be two passes: every external sheet cascaded before every
+    # in-document `<style>`, whatever the markup said. Source order is the
+    # last tiebreak in the cascade, so that silently changed the winner for
+    # any two declarations of equal origin, importance and specificity --
+    # which in real CSS is common, not a corner case. Wikipedia links two
+    # sheets and then ships 18 `<style>` blocks; under the old order every
+    # one of those blocks won ties it should sometimes have lost.
+    external = external_css or {}
     for element in elements:
-        if element.tag_name != "style":
+        if element.tag_name == "style":
+            source = _style_element_source(element)
+            if source is None:
+                metrics["style_elements_skipped"] += 1
+                continue
+            metrics["style_elements"] += 1
+            rules.extend(_parse_sheet(source, "author", order, metrics, viewport))
             continue
-        source = _style_element_source(element)
+
+        if element.tag_name != "link" or "stylesheet" not in _rel_tokens(element):
+            continue
+        href = element.attrs.get("href", "").strip()
+        if not href:
+            # Nothing that would have been fetched; not a skipped sheet.
+            continue
+        # `rel=icon`, `rel=preconnect`, `rel=canonical` and the rest are not
+        # stylesheets and never reach here. `rel="alternate stylesheet"`
+        # does: it IS a stylesheet, just one the user would have to select,
+        # so it is counted. It is not applied unless a caller puts it in
+        # `external_css`, and `scripts/corpus.py` deliberately does not.
+        metrics["link_stylesheets_total"] += 1
+        source = external.get(href)
         if source is None:
-            metrics["style_elements_skipped"] += 1
+            # Still the Phase 2 meaning: a linked sheet the cascade did not
+            # get. With no `external_css` that is every link, so the counter
+            # is unchanged for every caller that supplies nothing.
+            metrics["link_stylesheets_skipped"] += 1
             continue
-        metrics["style_elements"] += 1
-        rules.extend(_parse_sheet(source, "author", order, metrics))
+        metrics["link_stylesheets_supplied"] += 1
+        metrics["author_stylesheets"] += 1
+        rules.extend(_parse_sheet(source, "author", order, metrics, viewport))
 
     metrics["rules_total"] = len(rules)
     index = RuleIndex(rules, selector_of=_selector_of)
@@ -1080,6 +1703,21 @@ def style_document(document: Node, author_css: list[str]) -> Counter[str]:
             # than carrying a special case up to its parent element.
             node.computed_style = _inherit_from(parent_style)
         metrics["nodes_styled"] += 1
+
+    # The bridge between the parse-time count and the runtime one, in three
+    # parts rather than one. `refused` is the residue of the old
+    # `var-unresolved` drop bucket -- declarations an element asked for and
+    # this engine could not produce. `unmatched` is not a failure of any
+    # kind: the rule matched no element on this page, which is true of most
+    # of a large stylesheet's rules and would be equally true of the same
+    # declarations without any `var()` in them. Reporting the two as one
+    # number said 288 where the real figure is 7.
+    metrics["var_declarations_refused"] = (
+        metrics["var_declarations_attempted"] - metrics["var_declarations_resolved"]
+    )
+    metrics["var_declarations_unmatched"] = (
+        metrics["declarations_pending_var"] - metrics["var_declarations_attempted"]
+    )
 
     metrics["cascade_time_ms"] = round((time.perf_counter() - started) * 1000, 3)
     return metrics

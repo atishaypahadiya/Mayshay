@@ -12,13 +12,21 @@ from pathlib import Path
 import pytest
 
 from mayshay.cssparse import cascade as cascade_module
+from mayshay.dom.node import Element
 from mayshay.cssparse.cascade import (
     INHERITED,
     LONGHANDS,
     ComputedStyle,
     style_document,
 )
-from mayshay.cssparse.values import AUTO, Color, Keyword, Length, Percent
+from mayshay.cssparse.values import (
+    AUTO,
+    DROP_REASONS,
+    Color,
+    Keyword,
+    Length,
+    Percent,
+)
 from mayshay.htmlparse.treebuilder import parse
 
 
@@ -478,10 +486,14 @@ def test_a_pseudo_element_rule_is_never_applied_to_the_element_itself():
 # --- inheritance --------------------------------------------------------
 
 
-def test_only_the_two_inherited_properties_inherit():
+def test_only_the_inherited_properties_inherit():
     """Injection: inheriting everything (a `copy` of the parent style
     instead of a fresh one) makes the child block and 100px wide."""
-    assert INHERITED == frozenset({"color", "font-size"})
+    assert "color" in INHERITED and "font-size" in INHERITED
+    assert not (INHERITED & {
+        "display", "width", "height", "background-color",
+        "vertical-align", "box-sizing",
+    })
     doc = styled(
         "<!DOCTYPE html><body><div><span></span></div></body>",
         "div { display: block; width: 100px; background-color: red;"
@@ -862,7 +874,7 @@ def test_computed_style_has_one_field_per_longhand():
     """Injection: dropping a longhand from `LONGHANDS` while leaving the
     dataclass field, so the property silently never cascades. The module's
     own module-level assert catches the reverse."""
-    assert len(LONGHANDS) == 26
+    assert len(LONGHANDS) == 35
     for prop in LONGHANDS:
         assert hasattr(ComputedStyle(), prop.replace("-", "_")), prop
     assert set(LONGHANDS) >= {
@@ -1371,3 +1383,868 @@ def test_parse_errors_in_a_style_attribute_are_recorded():
     assert sheet["css_parse_errors"] == 1
     assert inline["tokenizer_parse_errors"] == sheet["tokenizer_parse_errors"]
     assert inline["css_parse_errors"] == sheet["css_parse_errors"]
+
+
+# --------------------------------------------------------------------------
+# External stylesheets interleave with <style> by document position
+# --------------------------------------------------------------------------
+#
+# These used to be two passes: every sheet in `author_css` cascaded before
+# every in-document `<style>`, whatever the markup said. Source order is the
+# cascade's last tiebreak, so that silently picked the winner for any two
+# declarations of equal origin, importance and specificity.
+#
+# The corpus does NOT exercise this -- all three pages happen to put every
+# `<link>` before every `<style>`, so the old and new orders coincide there.
+# These tests are the only thing standing behind the fix.
+
+
+def _color_of(html, **kwargs):
+    document = parse(html)
+    style_document(document, [], **kwargs)
+    return find(document, "p").computed_style.color
+
+
+RED, GREEN, BLUE = Color(255, 0, 0), Color(0, 128, 0), Color(0, 0, 255)
+
+
+def test_a_style_element_beats_a_link_that_precedes_it():
+    html = '<link rel=stylesheet href="a.css"><style>p{color:red}</style><p>x'
+    assert _color_of(html, external_css={"a.css": "p{color:green}"}) == RED
+
+
+def test_a_link_beats_a_style_element_that_precedes_it():
+    """The case the old flat ordering got wrong: an external sheet later in
+    the document must win a tie against an earlier `<style>`."""
+    html = '<style>p{color:red}</style><link rel=stylesheet href="a.css"><p>x'
+    assert _color_of(html, external_css={"a.css": "p{color:green}"}) == GREEN
+
+
+def test_three_way_interleave_resolves_to_the_last_in_document_order():
+    html = (
+        '<link rel=stylesheet href="a.css">'
+        "<style>p{color:red}</style>"
+        '<link rel=stylesheet href="b.css">'
+        "<p>x"
+    )
+    sheets = {"a.css": "p{color:green}", "b.css": "p{color:blue}"}
+    assert _color_of(html, external_css=sheets) == BLUE
+
+
+def test_author_css_still_cascades_before_the_document():
+    """`author_css` is for sheets with no position in the document, so an
+    in-document `<style>` outranks them on a tie."""
+    html = "<style>p{color:red}</style><p>x"
+    document = parse(html)
+    style_document(document, ["p{color:green}"])
+    assert find(document, "p").computed_style.color == RED
+
+
+def test_specificity_still_beats_source_order():
+    """Order is the LAST tiebreak. A later sheet must not overturn a more
+    specific rule -- otherwise this suite would pass on a cascade that only
+    looked at position."""
+    html = '<style>p#x{color:red}</style><link rel=stylesheet href="a.css"><p id=x>y'
+    assert _color_of(html, external_css={"a.css": "p{color:green}"}) == RED
+
+
+def test_a_supplied_link_is_counted_as_supplied_not_skipped():
+    html = '<link rel=stylesheet href="a.css"><link rel=stylesheet href="b.css"><p>x'
+    document = parse(html)
+    metrics = style_document(document, [], external_css={"a.css": "p{color:green}"})
+    assert metrics["link_stylesheets_total"] == 2
+    assert metrics["link_stylesheets_supplied"] == 1
+    assert metrics["link_stylesheets_skipped"] == 1  # b.css was not supplied
+
+
+def test_two_links_sharing_an_href_both_apply_from_one_entry():
+    html = '<link rel=stylesheet href="a.css"><link rel=stylesheet href="a.css"><p>x'
+    document = parse(html)
+    metrics = style_document(document, [], external_css={"a.css": "p{color:green}"})
+    assert metrics["link_stylesheets_supplied"] == 2
+    assert find(document, "p").computed_style.color == GREEN
+
+
+def test_an_href_with_no_entry_does_not_crash_and_is_counted():
+    html = '<link rel=stylesheet href="missing.css"><style>p{color:red}</style><p>x'
+    document = parse(html)
+    metrics = style_document(document, [], external_css={"a.css": "p{color:green}"})
+    assert metrics["link_stylesheets_skipped"] == 1
+    assert find(document, "p").computed_style.color == RED
+
+
+# --------------------------------------------------------------------------
+# Drop reasons (Phase 3 Task A2, deliverable 1)
+# --------------------------------------------------------------------------
+
+
+def _reason_key(reason):
+    return f"declarations_dropped_{reason.replace('-', '_')}"
+
+
+def _reasons(m):
+    return {r: m[_reason_key(r)] for r in DROP_REASONS}
+
+
+def test_the_four_drop_reasons_partition_declarations_dropped():
+    """Injection: incrementing only `declarations_dropped` and forgetting the
+    reason counter (the shape the code had before this task) leaves the parts
+    summing to less than the total.
+
+    Both sides asserted: a document that drops nothing must have every
+    counter at zero *and present*, because a partition with a missing part is
+    not a partition.
+    """
+    css = (
+        "p { mask-image: none; display: flow-root; color: var(5px);"
+        " width: banana; color: blue }"
+    )
+    m = metrics_for(BODY_P, css)
+    assert sum(_reasons(m).values()) == m["declarations_dropped"]
+    assert _reasons(m) == {
+        "unsupported-property": 1,
+        "unsupported-value": 1,
+        # `var(5px)` is a syntax error, not a substitution we declined --
+        # see `test_a_malformed_var_is_invalid_not_var_unresolved`.
+        "var-unresolved": 0,
+        "invalid": 2,
+    }
+    # And the whole document still balances.
+    assert m["declarations_seen"] == m["declarations_kept"] + m["declarations_dropped"]
+
+    clean = metrics_for(BODY_P, "p { color: blue }")
+    assert clean["declarations_dropped"] == 0
+    assert _reasons(clean) == dict.fromkeys(DROP_REASONS, 0)
+    for reason in DROP_REASONS:
+        assert _reason_key(reason) in clean, reason
+
+
+def test_drop_reasons_are_counted_for_the_style_attribute_too():
+    """**The chokepoint test.** `<style>` bodies and `style=` attributes ran
+    through two near-identical copies of the same loop, and a Phase 2 fix
+    landed in one and silently not the other. The two now share
+    `_cascade_declarations`, and this asserts the same four declarations are
+    classified identically whichever way they are written.
+
+    Injection: reverting `_parse_inline_style` to its own copy of the loop
+    without the `classify_drop` call zeroes the right-hand side.
+    """
+    decls = (
+        "mask-image: none; display: flow-root; color: var(5px); width: banana"
+    )
+    from_sheet = _reasons(metrics_for(BODY_P, f"p {{ {decls} }}"))
+    from_attr = _reasons(
+        style_document(parse(f'<!DOCTYPE html><body><p style="{decls}">hi</p>'), [])
+    )
+    assert from_sheet == from_attr
+    assert sum(from_attr.values()) == 4
+
+
+def test_an_unsupported_property_and_a_malformed_value_are_counted_apart():
+    """The distinction the whole instrumentation exists for: a drop rate
+    falls when the parser improves *and* when validation loosens, and only
+    the breakdown tells them apart. Injection: collapsing both branches into
+    one counter makes the two dicts equal."""
+    unsupported = _reasons(metrics_for(BODY_P, "p { mask-image: none }"))
+    malformed = _reasons(metrics_for(BODY_P, "p { width: banana }"))
+    assert unsupported["unsupported-property"] == 1
+    assert unsupported["invalid"] == 0
+    assert malformed["invalid"] == 1
+    assert malformed["unsupported-property"] == 0
+
+
+# --------------------------------------------------------------------------
+# Box-model longhands (Phase 3 Task A2, deliverable 2)
+# --------------------------------------------------------------------------
+
+
+def test_a_one_sided_border_shorthand_resets_only_its_own_sides_omissions():
+    """The bug the brief warned about. `border-left: solid blue` sets three
+    longhands and leaves the width omitted, so `border-left-width` must fall
+    back to `medium` (3px) -- and the *other three* sides must keep the 5px
+    the earlier `border` shorthand gave them.
+
+    Injection: giving `border-left` all twelve longhands in `LONGHANDS_OF`
+    (the shape `border` has) resets every side to 3px, which reads as
+    correct on any assertion that only inspects the left edge. That is why
+    all four sides are asserted here and not just the one that changed.
+    """
+    style = style_of(
+        BODY_P, "p", "p { border: 5px solid red } p { border-left: solid blue }"
+    )
+    assert style.border_left_width == Length(3, "px")
+    assert style.border_left_color == Color(0, 0, 255, 1.0)
+    for side in ("top", "right", "bottom"):
+        assert style.get(f"border-{side}-width") == Length(5, "px"), side
+        assert style.get(f"border-{side}-color") == Color(255, 0, 0, 1.0), side
+
+
+def test_a_four_value_border_shorthand_resets_only_its_own_kind():
+    """`border-style` governs the four style longhands and nothing else, so
+    it must not disturb widths or colours the previous rule set."""
+    style = style_of(
+        BODY_P, "p", "p { border: 5px solid red } p { border-style: dotted }"
+    )
+    assert style.border_top_style == "dotted"
+    assert style.border_top_width == Length(5, "px")
+    assert style.border_top_color == Color(255, 0, 0, 1.0)
+
+
+def test_a_longhand_beats_an_earlier_shorthand_and_loses_to_a_later_one():
+    """Source order between a shorthand and one of its longhands. Both
+    directions asserted: a longhand that always won, or always lost, would
+    pass a one-direction test."""
+    later_longhand = style_of(
+        BODY_P, "p", "p { margin: 1px } p { margin-left: 9px }"
+    )
+    assert later_longhand.margin_left == Length(9, "px")
+    assert later_longhand.margin_top == Length(1, "px")
+
+    later_shorthand = style_of(
+        BODY_P, "p", "p { margin-left: 9px } p { margin: 1px }"
+    )
+    assert later_shorthand.margin_left == Length(1, "px")
+
+
+def test_margin_left_auto_centring_is_reachable():
+    """`margin-left: auto` was unreachable before the longhands existed, and
+    centring is not optional for the corpus pages."""
+    style = style_of(BODY_P, "p", "p { margin-left: auto; margin-right: auto }")
+    assert style.margin_left is AUTO
+    assert style.margin_right is AUTO
+    # The UA sheet's `p { margin: 1em 0 }` still owns the block axis, which
+    # is what makes this a test of two longhands rather than of a shorthand
+    # that happened to set everything.
+    assert style.margin_top == Length(16, "px")
+
+
+def test_border_longhands_survive_the_borderless_width_zeroing():
+    """CSS 2.1 8.5.1 applies per side: a side whose style stayed `none` has
+    width 0 however wide its own `border-*-width` declaration was, and a
+    side with a style keeps it. Both sides of the rule asserted."""
+    style = style_of(
+        BODY_P, "p",
+        "p { border-top-width: 7px; border-left-width: 7px;"
+        " border-left-style: solid }",
+    )
+    assert style.border_top_width == Length(0, "px")
+    assert style.border_left_width == Length(7, "px")
+
+
+# --------------------------------------------------------------------------
+# Inheritance (Phase 3 Task A2, deliverables 3 and 4)
+# --------------------------------------------------------------------------
+
+NESTED = "<!DOCTYPE html><body><div><span></span></div></body>"
+
+# (property, parent value, expected inherited, child value, expected own).
+# One row per property in `INHERITED`, and every row asserts BOTH halves:
+# a child with no declaration takes the parent's value, and a child with one
+# takes its own. Either half alone passes for the wrong reason -- the first
+# for a property that never cascades at all, the second for a property that
+# never inherits.
+INHERITANCE_CASES = [
+    ("color", "green", Color(0, 128, 0, 1.0), "blue", Color(0, 0, 255, 1.0)),
+    ("font-size", "20px", Length(20, "px"), "10px", Length(10, "px")),
+    ("font-family", "Verdana, sans-serif", ("Verdana", "sans-serif"),
+     "monospace", ("monospace",)),
+    ("font-weight", "bold", 700, "normal", 400),
+    ("font-style", "italic", "italic", "normal", "normal"),
+    ("line-height", "1.5", 1.5, "2", 2.0),
+    ("white-space", "nowrap", "nowrap", "pre", "pre"),
+    ("text-align", "center", "center", "right", "right"),
+    ("list-style-type", "square", "square", "circle", "circle"),
+]
+
+
+@pytest.mark.parametrize(
+    "prop,parent_value,inherited,child_value,own", INHERITANCE_CASES,
+    ids=[case[0] for case in INHERITANCE_CASES],
+)
+def test_an_inherited_property_reaches_a_child_that_does_not_declare_it(
+    prop, parent_value, inherited, child_value, own
+):
+    """Injection: removing `prop` from `INHERITED` leaves the child at the
+    initial value, so the first assertion fails; making `_inherit_from`
+    copy the whole parent style makes the second fail for every property in
+    this table at once.
+
+    A property that silently fails to inherit renders a whole page that
+    looks right -- every box where a box could be, only the text the wrong
+    size or weight. That is why this is nine parametrised rows added in one
+    change rather than nine incidental assertions added as each property
+    found a consumer.
+    """
+    assert prop in INHERITED
+    field = prop.replace("-", "_")
+
+    child = find(
+        styled(NESTED, f"div {{ {prop}: {parent_value} }}"), "span"
+    ).computed_style
+    assert getattr(child, field) == inherited, f"{prop} did not inherit"
+
+    overridden = find(
+        styled(
+            NESTED,
+            f"div {{ {prop}: {parent_value} }} span {{ {prop}: {child_value} }}",
+        ),
+        "span",
+    ).computed_style
+    assert getattr(overridden, field) == own, f"{prop} did not override"
+    assert getattr(overridden, field) != inherited
+
+
+def test_inherited_names_and_computed_style_fields_cannot_drift():
+    """`INHERITED` is a set of property *names* and `_inherit_from` copies
+    them by attribute, so a name added to the frozenset without a matching
+    dataclass field raises `AttributeError` on every document rather than
+    failing a test.
+
+    Executed against the shape the Task A2 brief specified -- nine
+    `INHERITED` entries and eight `ComputedStyle` additions, `list-style-type`
+    named in the first list and absent from the second -- `style_document`
+    raised `AttributeError: 'ComputedStyle' object has no attribute
+    'list_style_type'` on `<!DOCTYPE html><body><p>hi</p></body>`.
+    """
+    style = ComputedStyle()
+    for prop in INHERITED:
+        assert hasattr(style, prop.replace("-", "_")), prop
+        assert prop in LONGHANDS, prop
+    assert len(INHERITED) == 9
+
+
+def test_vertical_align_and_box_sizing_do_not_inherit():
+    """The two of deliverable 3's nine that are not inherited properties.
+    Both halves asserted: the child keeps the initial value even though the
+    parent declared one, and the child's own declaration still works -- so
+    this cannot pass for a property that never cascades."""
+    child = find(
+        styled(NESTED, "div { vertical-align: middle; box-sizing: border-box }"),
+        "span",
+    ).computed_style
+    assert child.vertical_align == "baseline"
+    assert child.box_sizing == "content-box"
+
+    own = find(
+        styled(
+            NESTED,
+            "div { vertical-align: middle } span { vertical-align: super }",
+        ),
+        "span",
+    ).computed_style
+    assert own.vertical_align == "super"
+
+
+def test_line_height_normal_stays_symbolic():
+    """Its used value is the font's own preferred spacing, which needs
+    metrics that arrive with Task D. Resolving it to `1.2 x font-size` here
+    would be the computed-vs-used mistake `Percent` and `AUTO` exist to
+    prevent, and the wrong number would look entirely reasonable.
+
+    Injection: unwrapping it to the string `"normal"` (adding `line-height`
+    to `_KEYWORD_VALUED`) fails the first assertion; resolving it to a float
+    fails all three.
+    """
+    initial = style_of(BODY_P, "p").line_height
+    assert initial == Keyword("normal")
+    assert not isinstance(initial, (int, float))
+
+    declared = style_of(BODY_P, "p", "p { line-height: normal }").line_height
+    assert declared == Keyword("normal")
+
+    # ...while the other three forms do compute, so this is not a test of
+    # "line-height never resolves".
+    assert style_of(BODY_P, "p", "p { line-height: 1.5 }").line_height == 1.5
+    assert style_of(
+        BODY_P, "p", "p { font-size: 10px; line-height: 2em }"
+    ).line_height == Length(20, "px")
+    # A percentage does NOT stay symbolic -- it is the one percentage in
+    # this engine that resolves at computed-value time. See
+    # `test_percentage_and_number_line_heights_inherit_by_opposite_rules`.
+    assert style_of(
+        BODY_P, "p", "p { line-height: 125% }"
+    ).line_height == Length(20, "px")
+
+
+def test_font_family_is_recorded_as_a_list_in_source_order():
+    """Nothing consumes the list this phase -- Phase 3 renders one vendored
+    font. Recording it is what makes the eventual fallback chain
+    implementable rather than a re-parse of the stylesheet.
+
+    Injection: keeping only the first family passes any test that reads
+    `[0]`, so the whole tuple and its length are asserted.
+    """
+    style = style_of(
+        BODY_P, "p", 'p { font-family: "Linux Libertine", Georgia, serif }'
+    )
+    assert style.font_family == ("Linux Libertine", "Georgia", "serif")
+    assert style_of(
+        BODY_P, "p", "p { font-family: Times New Roman, serif }"
+    ).font_family == ("Times New Roman", "serif")
+    # The initial value says "unspecified", and is distinguishable from any
+    # declared family.
+    assert ComputedStyle().font_family == ()
+
+
+# --------------------------------------------------------------------------
+# The CSS-wide keywords (Phase 3 Task A2, deliverable 5)
+# --------------------------------------------------------------------------
+
+
+def test_inherit_takes_the_parents_computed_value_on_a_non_inherited_property():
+    """`width` does not inherit, so `width: inherit` is the only way a child
+    gets its parent's. Injection: treating `inherit` as `initial` leaves the
+    child `auto`; treating it as "do nothing" leaves it `auto` too, which is
+    why the parent's value is a concrete 100px rather than the initial."""
+    doc = styled(NESTED, "div { width: 100px } span { width: inherit }")
+    assert find(doc, "span").computed_style.width == Length(100, "px")
+    # ...and without the declaration the child is back at the initial value,
+    # so this is a test of `inherit` and not of `width` inheriting.
+    plain = styled(NESTED, "div { width: 100px }")
+    assert find(plain, "span").computed_style.width is AUTO
+
+
+def test_initial_beats_an_inherited_value_and_an_earlier_declaration():
+    """Both the paths `initial` has to cut through: inheritance, and a
+    winning declaration on the element itself."""
+    doc = styled(NESTED, "div { color: red } span { color: initial }")
+    assert find(doc, "span").computed_style.color == Color(0, 0, 0, 1.0)
+
+    style = style_of(BODY_P, "p", "p { color: red } p { color: initial }")
+    assert style.color == Color(0, 0, 0, 1.0)
+
+
+def test_unset_is_inherit_for_an_inherited_property_and_initial_otherwise():
+    """The whole definition of `unset`, and it needs both halves in one
+    document: a single property cannot distinguish it from either of the
+    other two keywords."""
+    doc = styled(
+        NESTED,
+        "div { color: red; width: 100px }"
+        " span { color: unset; width: unset }",
+    )
+    span = find(doc, "span").computed_style
+    assert span.color == Color(255, 0, 0, 1.0)   # inherited -> inherit
+    assert span.width is AUTO                    # not inherited -> initial
+
+
+def test_a_shorthands_wide_keyword_sets_every_longhand_it_governs():
+    """`border: initial` is twelve longhands, not zero. Injection: returning
+    `{name: WideKeyword(...)}` keyed on the shorthand itself sets nothing at
+    all, because no `ComputedStyle` field is called `border`."""
+    style = style_of(
+        BODY_P, "p", "p { border: 5px solid red } p { border: initial }"
+    )
+    for side in ("top", "right", "bottom", "left"):
+        assert style.get(f"border-{side}-style") == "none", side
+        assert style.get(f"border-{side}-width") == Length(0, "px"), side
+
+    inherited = find(
+        styled(NESTED, "div { margin: 7px } span { margin: inherit }"), "span"
+    ).computed_style
+    assert inherited.margin_top == Length(7, "px")
+    assert inherited.margin_left == Length(7, "px")
+
+
+def test_font_size_inherit_and_initial_resolve_against_the_right_base():
+    """`font-size` is the one property with its own computed-value path, so
+    the wide keywords have to work there too and not only in
+    `_compute_rest`."""
+    doc = styled(NESTED, "div { font-size: 20px } span { font-size: inherit }")
+    assert find(doc, "span").computed_style.font_size == Length(20, "px")
+
+    doc = styled(NESTED, "div { font-size: 20px } span { font-size: initial }")
+    assert find(doc, "span").computed_style.font_size == Length(16, "px")
+
+
+def test_revert_is_still_dropped_and_named():
+    """It needs origin-level rollback the cascade does not model, and faking
+    it as `unset` is wrong in the common case -- an author `revert` should
+    fall back to the UA rule, not to the initial value. Dropped, classified,
+    and counted rather than silently absent.
+
+    Both sides asserted: `revert` leaves the earlier declaration standing
+    where `initial` would not.
+    """
+    m = metrics_for(BODY_P, "p { color: revert }")
+    assert m["wide_keyword_revert"] == 1
+    assert m["declarations_dropped_unsupported_value"] == 1
+
+    reverted = style_of(BODY_P, "p", "p { color: red } p { color: revert }")
+    assert reverted.color == Color(255, 0, 0, 1.0)
+    initialled = style_of(BODY_P, "p", "p { color: red } p { color: initial }")
+    assert initialled.color == Color(0, 0, 0, 1.0)
+    assert metrics_for(BODY_P, "p { color: initial }")["wide_keyword_revert"] == 0
+
+
+def test_a_wide_keyword_on_the_root_element_falls_back_to_the_initial_value():
+    """The root has no parent to inherit from, so `inherit` there is the
+    initial value -- and must not raise looking for one."""
+    doc = styled("<!DOCTYPE html><html><body></body></html>",
+                 "html { color: inherit; font-size: inherit }")
+    html = find(doc, "html").computed_style
+    assert html.color == Color(0, 0, 0, 1.0)
+    assert html.font_size == Length(16, "px")
+
+
+# --------------------------------------------------------------------------
+# var() and custom properties (Phase 3 Task A2, deliverable 6)
+# --------------------------------------------------------------------------
+
+TWO_DIVS = (
+    "<!DOCTYPE html><body>"
+    "<div class=a><p>one</p></div><div class=b><p>two</p></div>"
+    "</body>"
+)
+
+
+def test_the_same_var_declaration_computes_differently_per_element():
+    """**The architectural test.** Declarations are parsed once per sheet and
+    the resulting objects are shared by every element the rule matches, so a
+    `var()` substituted at sheet-parse time would give both paragraphs the
+    same colour -- and would look entirely correct on a page with one
+    element.
+
+    Injection: substituting in `_cascade_declarations` instead of
+    `_compute_style` (or caching the resolved value on the `_PendingValue`
+    across elements) makes both paragraphs the same colour. The two are
+    asserted to differ as well as to each be right, so a cache that returned
+    the *first* answer everywhere cannot pass.
+    """
+    doc = styled(
+        TWO_DIVS,
+        ".a { --accent: red } .b { --accent: blue } p { color: var(--accent) }",
+    )
+    colours = [
+        n.computed_style.color
+        for n in _all_elements(doc)
+        if n.tag_name == "p"
+    ]
+    assert colours == [Color(255, 0, 0, 1.0), Color(0, 0, 255, 1.0)]
+
+
+def _all_elements(doc):
+    stack, out = [doc], []
+    while stack:
+        node = stack.pop()
+        if isinstance(node, Element):
+            out.append(node)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def test_custom_properties_inherit():
+    """A custom property set on an ancestor is visible to a `var()` several
+    levels down. Both halves: the grandchild sees it, and a sibling subtree
+    that redeclares it sees its own."""
+    doc = styled(
+        "<!DOCTYPE html><body><div><section><p>x</p></section></div></body>",
+        "div { --accent: green } p { color: var(--accent) }",
+    )
+    assert find(doc, "p").computed_style.color == Color(0, 128, 0, 1.0)
+
+    shadowed = styled(
+        "<!DOCTYPE html><body><div><section><p>x</p></section></div></body>",
+        "div { --accent: green } section { --accent: blue }"
+        " p { color: var(--accent) }",
+    )
+    assert find(shadowed, "p").computed_style.color == Color(0, 0, 255, 1.0)
+
+
+def test_a_custom_property_cascades_like_any_other_declaration():
+    """Specificity and source order decide the winner, exactly as for
+    `color`. Injection: last-writer-wins regardless of specificity makes the
+    low-specificity rule win."""
+    doc = styled(
+        BODY_P,
+        "#i { --accent: green } p { --accent: red } p { color: var(--accent) }",
+    )
+    assert find(doc, "p").computed_style.color == Color(255, 0, 0, 1.0)
+
+    with_id = styled(
+        '<!DOCTYPE html><body><p id="i">hi</p></body>',
+        "#i { --accent: green } p { --accent: red } p { color: var(--accent) }",
+    )
+    assert find(with_id, "p").computed_style.color == Color(0, 128, 0, 1.0)
+
+
+def test_custom_property_names_are_case_sensitive():
+    """Unlike every other property name in CSS. Normalising one would
+    silently merge `--Accent` and `--accent` into a single property, and the
+    page would still render."""
+    doc = styled(
+        BODY_P, "p { --Accent: red; --accent: blue; color: var(--accent) }"
+    )
+    assert find(doc, "p").computed_style.color == Color(0, 0, 255, 1.0)
+    upper = styled(
+        BODY_P, "p { --Accent: red; --accent: blue; color: var(--Accent) }"
+    )
+    assert find(upper, "p").computed_style.color == Color(255, 0, 0, 1.0)
+
+
+def test_a_fallback_is_used_only_when_the_custom_property_is_unset():
+    """Both branches, in one test: the fallback is not a default."""
+    unset = style_of(BODY_P, "p", "p { color: var(--missing, green) }")
+    assert unset.color == Color(0, 128, 0, 1.0)
+    setted = style_of(
+        BODY_P, "p", "p { --accent: red; color: var(--accent, green) }"
+    )
+    assert setted.color == Color(255, 0, 0, 1.0)
+
+
+def test_an_unset_var_with_no_fallback_drops_only_that_longhand():
+    """Per spec the declaration is invalid at computed-value time, so its
+    siblings survive and the property falls back to inheritance."""
+    m = metrics_for(BODY_P, "p { color: var(--missing); width: 10px }")
+    assert m["var_unknown_no_fallback"] == 1
+    style = style_of(BODY_P, "p", "p { color: var(--missing); width: 10px }")
+    assert style.color == Color(0, 0, 0, 1.0)
+    assert style.width == Length(10, "px")
+
+
+def test_a_substitution_that_produces_an_invalid_value_is_counted():
+    """`width: var(--x)` with `--x: red` substitutes fine and then does not
+    parse. That is a drop a browser also makes, and it is a different number
+    from a substitution we declined to attempt."""
+    m = metrics_for(BODY_P, "p { --x: red; width: var(--x) }")
+    assert m["var_substituted_value_invalid"] == 1
+    assert m["var_unknown_no_fallback"] == 0
+    assert style_of(BODY_P, "p", "p { --x: red; width: var(--x) }").width is AUTO
+    # ...and the same shape with a usable value does substitute.
+    ok = metrics_for(BODY_P, "p { --x: 10px; width: var(--x) }")
+    assert ok["var_substitutions"] == 1
+    assert ok["var_substituted_value_invalid"] == 0
+
+
+def test_a_reference_cycle_is_stopped_by_the_depth_cap():
+    """A depth cap rather than real cycle detection: O(1), and it cannot be
+    wrong in the dangerous direction -- the worst it does is refuse a legal
+    deep chain, counted.
+
+    The self-referential case is not hypothetical. Wikipedia's own CSS
+    ships `--font-size-medium:var(--font-size-medium,1rem)`, which is 59 of
+    the corpus's `var_depth_exceeded` (executed, grepped out of
+    `data/corpus/`).
+    """
+    m = metrics_for(BODY_P, "p { --loop: var(--loop); color: var(--loop) }")
+    assert m["var_depth_exceeded"] == 1
+    assert style_of(
+        BODY_P, "p", "p { --loop: var(--loop); color: var(--loop) }"
+    ).color == Color(0, 0, 0, 1.0)
+
+    # A chain shorter than the cap resolves, so the cap is a limit and not a
+    # blanket refusal of indirection.
+    chained = style_of(
+        BODY_P, "p",
+        "p { --a: var(--b); --b: var(--c); --c: red; color: var(--a) }",
+    )
+    assert chained.color == Color(255, 0, 0, 1.0)
+
+
+def test_a_var_inside_a_fallback_is_skipped_only_on_the_branch_taken():
+    """Out of scope, and counted -- but only when the fallback is the branch
+    actually used. When the custom property is set the fallback is never
+    looked at, which is what the spec says (a fallback need not even be
+    valid), so refusing it there would lose a resolvable declaration."""
+    skipped = metrics_for(BODY_P, "p { color: var(--missing, var(--other)) }")
+    assert skipped["var_nested_fallback_skipped"] == 1
+
+    taken = metrics_for(BODY_P, "p { --x: red; color: var(--x, var(--other)) }")
+    assert taken["var_nested_fallback_skipped"] == 0
+    assert taken["var_substitutions"] == 1
+    assert style_of(
+        BODY_P, "p", "p { --x: red; color: var(--x, var(--other)) }"
+    ).color == Color(255, 0, 0, 1.0)
+
+
+def test_a_shorthand_with_a_var_sets_every_longhand_from_one_substitution():
+    """`border: 1px solid var(--x)` wins twelve longhands with one shared
+    `_PendingValue`. Substituting per longhand would multiply every `var_*`
+    counter by twelve while changing no value.
+
+    Injection: dropping the per-element resolution cache makes
+    `var_substitutions` twelve instead of one.
+    """
+    m = metrics_for(BODY_P, "p { --x: red; border: 1px solid var(--x) }")
+    assert m["var_substitutions"] == 1
+    style = style_of(BODY_P, "p", "p { --x: red; border: 1px solid var(--x) }")
+    for side in ("top", "right", "bottom", "left"):
+        assert style.get(f"border-{side}-width") == Length(1, "px"), side
+        assert style.get(f"border-{side}-style") == "solid", side
+        assert style.get(f"border-{side}-color") == Color(255, 0, 0, 1.0), side
+
+
+def test_a_var_declaration_is_deferred_not_dropped_and_the_totals_balance():
+    """The accounting the drop-reason table depends on: a `var()` on a
+    supported property is *kept* at parse time and resolved per element, so
+    it is no longer a drop for any reason -- and `declarations_seen` still
+    equals kept plus dropped."""
+    m = metrics_for(BODY_P, "p { --x: red; color: var(--x) }")
+    assert m["declarations_pending_var"] == 1
+    assert m["custom_properties_declared"] == 1
+    assert m["declarations_dropped_var_unresolved"] == 0
+    assert m["declarations_seen"] == m["declarations_kept"] + m["declarations_dropped"]
+    assert m["var_declarations_resolved"] == 1
+    assert m["var_declarations_refused"] == 0
+    assert m["var_declarations_unmatched"] == 0
+
+    # A declaration an element asked for and this engine could not produce
+    # is `refused` -- the residue of the old `var-unresolved` drop bucket.
+    refused = metrics_for(BODY_P, "p { color: var(--missing) }")
+    assert refused["var_declarations_refused"] == 1
+    assert refused["var_declarations_unmatched"] == 0
+
+    # A declaration no element ever asked for is NOT a failure, and
+    # collapsing the two into one number is what made Wikipedia report 288
+    # unresolved where the real figure is 7. Both asserted, because a single
+    # counter passes either test alone.
+    unmatched = metrics_for(BODY_P, "q { color: var(--missing) }")
+    assert unmatched["declarations_pending_var"] == 1
+    assert unmatched["var_declarations_attempted"] == 0
+    assert unmatched["var_declarations_refused"] == 0
+    assert unmatched["var_declarations_unmatched"] == 1
+
+
+def test_a_var_on_an_unsupported_property_stays_an_unsupported_property():
+    """`background: var(--x)` would be dropped even with substitution
+    working, so calling it `var-unresolved` would make the var() counter
+    move for a reason var() cannot fix."""
+    m = metrics_for(BODY_P, "p { --x: red; background: var(--x) }")
+    assert m["declarations_dropped_unsupported_property"] == 1
+    assert m["declarations_pending_var"] == 0
+
+
+def test_percentage_and_number_line_heights_inherit_by_opposite_rules():
+    """CSS 2.1 10.8.1 gives `line-height` two computed-value rules, and the
+    value type picks. This is the one property in `INHERITED` where uniform
+    handling is wrong.
+
+    * A `<number>` computes to the number, and the *number* inherits. The
+      child multiplies by its OWN font-size, so a child at 10px gets 15px
+      from `line-height: 1.5` on a 20px parent -- not the parent's 30px.
+    * A `<percentage>` computes to a LENGTH against the element's own
+      font-size, and that *length* inherits. So `line-height: 150%` on the
+      same 20px parent gives the 10px child 30px -- not 15px.
+
+    The child's font-size differs from the parent's on purpose: with one
+    font-size the two rules produce the same answer and neither test
+    discriminates. The two assertions must disagree with each other, and a
+    single mechanism that made both pass would be the wrong mechanism.
+
+    Injection: leaving `Percent` symbolic (removing `line-height` from
+    `_PERCENT_OF_OWN_FONT_SIZE`) fails the percentage half; resolving the
+    number at cascade time -- `Length(1.5 * font_px)` -- fails the numeric
+    half.
+    """
+    numeric = styled(
+        NESTED,
+        "div { font-size: 20px; line-height: 1.5 } span { font-size: 10px }",
+    )
+    parent = find(numeric, "div").computed_style
+    child = find(numeric, "span").computed_style
+    assert parent.line_height == 1.5
+    assert child.line_height == 1.5
+    # The used value the number implies, stated so the point of keeping it a
+    # number is visible: it is 15px on the child, not the parent's 30px.
+    assert child.line_height * child.font_size_px == 15.0
+    assert parent.line_height * parent.font_size_px == 30.0
+
+    percent = styled(
+        NESTED,
+        "div { font-size: 20px; line-height: 150% } span { font-size: 10px }",
+    )
+    parent = find(percent, "div").computed_style
+    child = find(percent, "span").computed_style
+    assert parent.line_height == Length(30, "px")
+    assert child.line_height == Length(30, "px")
+    assert child.line_height != Length(15, "px")
+    assert not isinstance(child.line_height, Percent)
+
+
+def test_a_percentage_width_still_stays_symbolic():
+    """The other half of the same rule, and the reason the two differ: a
+    percentage width refers to the containing block, which does not exist
+    until layout, while a percentage line-height refers to the element's own
+    font-size, which the cascade has.
+
+    Injection: resolving every `Percent` against `font_px` makes this
+    `Length(8, "px")`.
+    """
+    assert style_of(BODY_P, "p", "p { width: 50% }").width == Percent(50)
+    assert style_of(BODY_P, "p", "p { line-height: 50% }").line_height == Length(
+        8, "px"
+    )
+
+
+def test_a_vertical_align_percentage_resolves_when_line_height_is_known():
+    """`docs/percentage-resolution.md` category 3. `vertical-align: 50%`
+    resolves against the element's own *used* `line-height`, so whether it
+    is knowable at cascade time depends on what `line-height` is.
+
+    The three branches must disagree with each other -- a single
+    `line-height` cannot tell them apart, and a mechanism that made all
+    three pass the same way would be the wrong mechanism.
+
+    Injection: resolving the `normal` case against a guessed
+    `1.2 x font-size` gives `Length(12, "px")` and fails the third; leaving
+    the numeric case symbolic fails the first.
+    """
+    numeric = style_of(
+        BODY_P, "p", "p { font-size: 20px; line-height: 2; vertical-align: 50% }"
+    )
+    assert numeric.vertical_align == Length(20, "px")
+
+    lengthy = style_of(
+        BODY_P, "p", "p { font-size: 20px; line-height: 24px; vertical-align: 50% }"
+    )
+    assert lengthy.vertical_align == Length(12, "px")
+    assert lengthy.vertical_align != numeric.vertical_align
+
+    unknown = style_of(
+        BODY_P, "p",
+        "p { font-size: 20px; line-height: normal; vertical-align: 50% }",
+    )
+    assert unknown.vertical_align == Percent(50)
+
+
+def test_the_deferred_vertical_align_percentages_are_counted():
+    """The `link_stylesheets_skipped` discipline one layer down: the
+    remainder Task D has to finish is a number it can look for, not an
+    absence. Present at zero when nothing is deferred, because "no row" and
+    "zero" are different findings."""
+    deferred = metrics_for(
+        BODY_P, "p { line-height: normal; vertical-align: 50% }"
+    )
+    assert deferred["vertical_align_percent_deferred"] == 1
+
+    resolved = metrics_for(BODY_P, "p { line-height: 2; vertical-align: 50% }")
+    assert resolved["vertical_align_percent_deferred"] == 0
+    assert "vertical_align_percent_deferred" in resolved
+
+    # A keyword `vertical-align` is not a percentage and defers nothing.
+    keyword = metrics_for(BODY_P, "p { line-height: normal; vertical-align: top }")
+    assert keyword["vertical_align_percent_deferred"] == 0
+
+
+def test_a_viewport_relative_line_height_defers_the_percentage_too():
+    """`line-height: 2vw` is as unknown here as `normal` -- the viewport
+    arrives with layout. Counting it as resolvable would multiply a
+    percentage by the number 2."""
+    style = style_of(BODY_P, "p", "p { line-height: 2vw; vertical-align: 50% }")
+    assert style.vertical_align == Percent(50)
+    m = metrics_for(BODY_P, "p { line-height: 2vw; vertical-align: 50% }")
+    assert m["vertical_align_percent_deferred"] == 1
+
+
+def test_an_inherited_line_height_still_resolves_the_childs_vertical_align():
+    """`vertical-align` does not inherit and `line-height` does, so the
+    child's percentage resolves against a `line-height` it never declared --
+    and against its OWN font-size, not the parent's."""
+    doc = styled(
+        NESTED,
+        "div { font-size: 20px; line-height: 2 }"
+        " span { font-size: 10px; vertical-align: 50% }",
+    )
+    span = find(doc, "span").computed_style
+    assert span.line_height == 2.0
+    assert span.vertical_align == Length(10, "px")   # 50% of 2 x 10px

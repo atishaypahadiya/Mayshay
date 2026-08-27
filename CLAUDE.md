@@ -19,6 +19,19 @@ Package root is `src/mayshay/`. Imports look like:
   `cssselect` are forbidden in `src/mayshay/`. The same rule as the HTML
   parser, for the same reason: the point is to write it.
 - BeautifulSoup allowed ONLY in scripts/ for corpus collection, never in src/mayshay/.
+- `fontTools` is permitted in `src/mayshay/layout/` for reading font metrics
+  -- glyph advances from `hmtx`, vertical metrics from `hhea` and `OS/2`. It
+  is a binary format reader over vendored data, in the same category as
+  `html.entities.html5`. It must not make layout decisions: text measurement
+  is the only thing it is asked for, behind a single `measure()` interface.
+  Line breaking, white-space collapsing, baseline alignment and every box
+  position stay hand-rolled. Pillow is permitted in `paint/` for
+  rasterization only. Neither may be imported by `htmlparse` or `cssparse`.
+  The font is pinned: Liberation Sans 2.1.5, vendored at
+  `data/fonts/LiberationSans-Regular.ttf` with its SHA-256 and the exact
+  derivation of every metric recorded in `docs/fonts.md`. Every layout
+  number depends on that file; changing it changes them.
+
 - Every stage emits timing + size metrics to data/metrics/. Stages populate
   `self.metrics`; `src/mayshay/metrics.py` writes them, and entry points call
   the writer — never a parse method. `htmlparse` emits TWO stage values,
@@ -38,6 +51,32 @@ Package root is `src/mayshay/`. Imports look like:
   running is one line.
   This applies to decisions as well as claims: a test deferred as
   "correct by inspection" is an unexecuted claim wearing a decision's clothes.
+- Never `git add -A` (or `git add .`) while a subagent is live. Always stage
+  explicit paths. The working tree is shared: a blanket add sweeps an
+  agent's in-progress work into whatever commit you are making, and three
+  docs commits on the Phase 3 branch ended up carrying engine deliverables
+  whose messages described none of it. Nothing was lost and the tests stayed
+  green, which is what makes it easy to miss -- the damage is to bisect and
+  to review, not to content. This sits beside the one-committing-agent rule
+  from Phase 1 for the same reason: a shared tree needs one writer at a time
+  or explicit boundaries.
+- Every cross-stage comparison must distinguish wrong output from wrong
+  input, and report upstream divergence separately from the thing being
+  measured. Carry two identifiers, not one: when they agree the comparison
+  is valid, and when they disagree the stage above diverged. Attributing an
+  `htmlparse` defect to layout is the same failure as attributing a cascade
+  defect to layout -- which is why Phase 3 repairs the cascade before it
+  builds a box tree, at a 70% declaration drop rate a layout bug and a
+  cascade bug are indistinguishable.
+- A measurement is verified by a second measurement obtained a different
+  way, never by inspection and never by internal consistency. Three
+  figures on this project were wrong while looking right: the display
+  census before `@media` evaluation, `PIL.getlength`'s integer advances,
+  and `DOM.getBoxModel`'s union box for wrapping inlines. Each had the
+  right type and a plausible magnitude. See `docs/measurement-hazards.md`.
+  A suspiciously clean result -- exactly zero, exactly integral, exactly
+  unchanged -- is a claim about the instrument until a probe proves
+  otherwise.
 - Non-ASCII in test data is written as an escape (\u212a), never as a literal.
   Kelvin sign vs ASCII K, NBSP vs space, and combining marks all read
   identically in a terminal.

@@ -2,14 +2,32 @@ import pytest
 
 from mayshay.cssparse.values import (
     AUTO,
+    DROP_INVALID,
+    DROP_REASONS,
+    DROP_UNSUPPORTED_PROPERTY,
+    DROP_UNSUPPORTED_VALUE,
+    DROP_VAR_UNRESOLVED,
+    LONGHANDS_OF,
+    SUPPORTED_PROPERTIES,
+    VAR_DEPTH_EXCEEDED,
+    VAR_MALFORMED,
+    VAR_NESTED_FALLBACK_SKIPPED,
+    VAR_SUBSTITUTION_DEPTH_CAP,
+    VAR_UNKNOWN_NO_FALLBACK,
     Color,
     Keyword,
     Length,
     Percent,
+    WideKeyword,
+    bare_wide_keyword,
+    classify_drop,
+    contains_var_reference,
     expand_shorthand,
+    is_custom_property,
+    substitute_var,
     parse_declaration_value as pv,
 )
-from mayshay.cssparse.tokenizer import CssTokenizer
+from mayshay.cssparse.tokenizer import CssTokenizer, EOFToken
 
 
 def val(name, src):
@@ -267,40 +285,103 @@ def test_color_keyword_table_is_complete():
 # --------------------------------------------------------------------------
 
 
-def test_longhands_of_the_supported_shorthands_are_not_supported():
-    """Deviation 13. The nine properties include `margin`, `padding` and
-    `border` but none of their longhands, so the *only* way to set
-    `ComputedStyle.margin_top` is to write the shorthand.
+def test_the_box_model_longhands_are_supported():
+    """Deviation 13, reversed. `margin-top`, `padding-right`,
+    `border-left-width` and the other 24 were dropped purely because the old
+    dispatch chain had no branch for them -- 395 declarations across the
+    corpus, and `margin-left: auto` centring unreachable.
 
-    This is a consequence of the dispatch chain rather than a decision, and
-    it was undocumented and untested until the deviation was written. It is
-    the largest slice of the corpus's dropped declarations that no other
-    deviation covers: executed over `data/corpus/wikipedia.html`, 85 of the
-    313 dropped declarations are in this family. Widening the set is a
-    deliberate act; this test is what makes it one.
+    Executed: 27 property names were added, not 28. The plan's "28 distinct
+    properties" counted `background` alongside them, which is a background
+    shorthand rather than a box-model longhand and is deliberately still
+    unsupported -- asserted below so the boundary stays where it was drawn.
     """
-    for name, src in [
-        ("margin-top", "5px"),
-        ("margin-right", "5px"),
-        ("margin-bottom", "5px"),
-        ("margin-left", "5px"),
-        ("padding-top", "5px"),
-        ("padding-right", "5px"),
-        ("border-top", "1px solid red"),
-        ("border-top-width", "5px"),
-        ("border-top-style", "solid"),
-        ("border-top-color", "red"),
-        ("border-width", "5px"),
-        ("border-style", "solid"),
-        ("border-color", "red"),
-        ("background", "red"),
-    ]:
-        assert val(name, src) is None, f"{name} is now supported -- update deviation 13"
+    supported = {
+        "margin-top": "5px", "margin-right": "5px",
+        "margin-bottom": "5px", "margin-left": "auto",
+        "padding-top": "5px", "padding-right": "5px",
+        "padding-bottom": "5px", "padding-left": "5px",
+        "border-top-width": "5px", "border-right-style": "solid",
+        "border-bottom-color": "red", "border-left-width": "0",
+        "border-width": "1px 2px", "border-style": "solid dotted",
+        "border-color": "red blue",
+        "border-top": "1px solid red", "border-right": "solid",
+        "border-bottom": "0", "border-left": "10px solid #b32424",
+    }
+    for name, src in supported.items():
+        assert val(name, src) is not None, name
 
-    # ...while the shorthands themselves still work, so this test fails for
-    # the right reason if the dispatch table is broken outright.
-    assert val("margin", "5px")["margin-top"] == Length(5, "px")
-    assert val("border", "1px solid red")["border-top-width"] == Length(1, "px")
+    assert len(SUPPORTED_PROPERTIES) == 45
+    box_model = SUPPORTED_PROPERTIES - {
+        "display", "width", "height", "font-size", "color",
+        "background-color", "margin", "padding", "border",
+        # deliverable 3's nine, counted separately
+        "white-space", "line-height", "font-family", "font-weight",
+        "font-style", "text-align", "vertical-align", "box-sizing",
+        "list-style-type",
+    }
+    assert len(box_model) == 27, sorted(box_model)
+
+    # `background` is still outside the table, so a value that is perfectly
+    # good CSS is still dropped for the property's sake.
+    assert val("background", "red") is None
+    assert "background" not in SUPPORTED_PROPERTIES
+
+
+def test_padding_longhands_reject_auto_and_margin_longhands_accept_it():
+    """Deviation 9 holds per-side, not only for the shorthands. Both sides
+    asserted: the same token is accepted on one family and rejected on the
+    other, so this cannot pass with `allow_auto` wired to a constant."""
+    for side in ("top", "right", "bottom", "left"):
+        assert val(f"margin-{side}", "auto")[f"margin-{side}"] is AUTO
+        assert val(f"padding-{side}", "auto") is None
+        # ...and both take a length, so the difference is `auto` alone.
+        assert val(f"margin-{side}", "5px")[f"margin-{side}"] == Length(5, "px")
+        assert val(f"padding-{side}", "5px")[f"padding-{side}"] == Length(5, "px")
+
+
+def test_a_one_sided_border_shorthand_expands_to_that_side_only():
+    """`border-left: 10px solid red` sets three longhands, all of them
+    `border-left-*`. Injection: reusing `border`'s four-side fan-out here
+    sets all twelve, which reads correctly on any test that only inspects
+    the left side."""
+    parsed = val("border-left", "10px solid red")
+    assert set(parsed) == {
+        "border-left-width", "border-left-style", "border-left-color",
+    }
+    assert parsed["border-left-width"] == Length(10, "px")
+    assert parsed["border-left-style"] == Keyword("solid")
+    assert parsed["border-left-color"] == Color(255, 0, 0, 1.0)
+    # The four-side shorthand still fans out to all twelve, so the
+    # difference above is the side restriction and not a broken expander.
+    assert len(val("border", "10px solid red")) == 12
+
+
+def test_the_four_value_border_shorthands_use_the_one_to_four_rule():
+    """`border-width: 1px 2px` is top/bottom 1px, right/left 2px -- the same
+    rule `margin` uses, over a different component grammar."""
+    widths = val("border-width", "1px 2px")
+    assert widths["border-top-width"] == Length(1, "px")
+    assert widths["border-right-width"] == Length(2, "px")
+    assert widths["border-bottom-width"] == Length(1, "px")
+    assert widths["border-left-width"] == Length(2, "px")
+
+    styles = val("border-style", "solid dotted dashed")
+    assert styles["border-top-style"] == Keyword("solid")
+    assert styles["border-right-style"] == Keyword("dotted")
+    assert styles["border-bottom-style"] == Keyword("dashed")
+    assert styles["border-left-style"] == Keyword("dotted")
+
+    colors = val("border-color", "red")
+    assert set(colors.values()) == {Color(255, 0, 0, 1.0)}
+    assert len(colors) == 4
+
+    # Each rejects the other's components, so the three are not one parser
+    # that accepts anything.
+    assert val("border-width", "solid") is None
+    assert val("border-style", "1px") is None
+    assert val("border-color", "solid") is None
+    assert val("border-width", "1px 2px 3px 4px 5px") is None
 
 
 def test_display_is_a_closed_keyword_allow_list():
@@ -355,3 +436,336 @@ def test_property_names_are_normalised_and_the_rule_is_exported():
 
     assert val("BORDER", "1px solid red") == val("border", "1px solid red")
     assert val("Display", "block") == val("display", "block")
+
+
+# --------------------------------------------------------------------------
+# Drop reasons (Phase 3 Task A2, deliverable 1)
+# --------------------------------------------------------------------------
+
+
+def why(name, src):
+    return classify_drop(name, list(CssTokenizer(src).tokenize()))
+
+
+def test_the_property_table_and_its_derived_sets_agree():
+    """`SUPPORTED_PROPERTIES` and `LONGHANDS_OF` are derived from the parser
+    table, so a property in one is in all three. Injection: adding a name to
+    `LONGHANDS_OF` alone trips the module-level assert; adding a parser
+    without a `LONGHANDS_OF` entry trips it the other way.
+
+    The second half is the one that discriminates: `LONGHANDS_OF[name]` must
+    be exactly the keys `parse_declaration_value` produces, not a superset
+    someone wrote out by hand.
+    """
+    assert SUPPORTED_PROPERTIES == set(LONGHANDS_OF)
+    samples = {
+        "display": "block", "width": "10px", "height": "10px",
+        "font-size": "12px", "color": "red", "background-color": "red",
+        "margin": "1px", "padding": "1px", "border": "1px solid red",
+        "border-width": "1px", "border-style": "solid", "border-color": "red",
+    }
+    for side in ("top", "right", "bottom", "left"):
+        samples[f"margin-{side}"] = "1px"
+        samples[f"padding-{side}"] = "1px"
+        samples[f"border-{side}"] = "1px solid red"
+        samples[f"border-{side}-width"] = "1px"
+        samples[f"border-{side}-style"] = "solid"
+        samples[f"border-{side}-color"] = "red"
+    samples.update({
+        "white-space": "nowrap", "line-height": "1.2",
+        "font-family": "serif", "font-weight": "bold",
+        "font-style": "italic", "text-align": "center",
+        "vertical-align": "middle", "box-sizing": "border-box",
+        "list-style-type": "square",
+    })
+    assert set(samples) == SUPPORTED_PROPERTIES, (
+        "a property was added to the table without a sample here: "
+        f"{set(samples) ^ set(SUPPORTED_PROPERTIES)}"
+    )
+    for name, src in samples.items():
+        parsed = val(name, src)
+        assert parsed is not None, name
+        assert set(parsed) == set(LONGHANDS_OF[name]), name
+
+
+def test_an_unknown_property_name_is_unsupported_property_not_invalid():
+    """The value is impeccable CSS; only the name is outside the table.
+    Both sides asserted: the same value under a known name parses."""
+    assert why("mask-image", "none") == DROP_UNSUPPORTED_PROPERTY
+    assert why("background", "red") == DROP_UNSUPPORTED_PROPERTY
+    assert val("width", "4px") is not None
+
+
+def test_valid_css_this_module_does_not_implement_is_unsupported_value():
+    """`flow-root` and `max-content` are real CSS; `calc()` and `hsl()` are
+    real functions; `thin` is a real border width. None of them is malformed,
+    so none may land in `invalid`."""
+    assert why("display", "flow-root") == DROP_UNSUPPORTED_VALUE
+    assert why("width", "max-content") == DROP_UNSUPPORTED_VALUE
+    assert why("width", "calc(100% - 4px)") == DROP_UNSUPPORTED_VALUE
+    assert why("color", "hsl(0, 0%, 0%)") == DROP_UNSUPPORTED_VALUE
+    assert why("border", "thin solid red") == DROP_UNSUPPORTED_VALUE
+    # ...and the supported spellings of the same properties still parse, so
+    # this is not a test of "everything is unsupported-value".
+    assert val("display", "block") is not None
+    assert val("width", "4px") is not None
+    assert val("color", "rgb(0, 0, 0)") is not None
+    assert val("border", "1px solid red") is not None
+
+
+def test_a_wide_keyword_is_unsupported_value_on_every_property():
+    for keyword in ("inherit", "initial", "unset", "revert"):
+        for prop in ("color", "width", "display", "margin"):
+            assert why(prop, keyword) == DROP_UNSUPPORTED_VALUE, (prop, keyword)
+
+
+def test_a_var_reference_is_var_unresolved():
+    assert why("color", "var(--accent)") == DROP_VAR_UNRESOLVED
+    assert why("color", "var(--accent, #fff)") == DROP_VAR_UNRESOLVED
+    assert why("width", "calc(var(--x) + 4px)") == DROP_VAR_UNRESOLVED
+    # A `var()` on a property outside the table is still the property's
+    # fault: it would be dropped even with substitution working, so calling
+    # it `var-unresolved` would make the var() counter move for a reason
+    # var() cannot fix.
+    assert why("background", "var(--accent)") == DROP_UNSUPPORTED_PROPERTY
+
+
+def test_a_malformed_var_is_invalid_not_var_unresolved():
+    """`var(` must be followed by a `--` identifier. Anything else is a
+    syntax error a browser drops too, and putting it in `var-unresolved`
+    would credit the var() work with a case var() can never recover."""
+    assert why("color", "var(5px)") == DROP_INVALID
+    assert why("color", "var(accent)") == DROP_INVALID
+    assert why("color", "var()") == DROP_INVALID
+
+
+def test_genuinely_malformed_values_are_invalid():
+    """The bucket that must never shrink. Each of these is something a
+    browser drops too."""
+    assert why("width", "banana") == DROP_INVALID
+    assert why("color", "#gg0000") == DROP_INVALID
+    assert why("font-size", "10foo") == DROP_INVALID
+    assert why("margin", "1px 2px 3px 4px 5px") == DROP_INVALID
+    assert why("width", "") == DROP_INVALID
+    assert why("border", "1px 2px solid") == DROP_INVALID
+
+
+def test_a_kelvin_sign_keyword_is_invalid_not_unsupported_value():
+    """Deviation 12's pair, classified. `bloc<U+212A>` and `pin<U+212A>` are
+    not CSS at all -- `str.lower()` would fold U+212A KELVIN SIGN to `k` and
+    accept both -- so they are dropped, and the drop belongs in `invalid`
+    rather than in a bucket that says "valid CSS we chose not to do".
+
+    The sign is built from an escape, never written as a literal: U+212A and
+    ASCII K are indistinguishable in a terminal, and a literal here would
+    silently become the ASCII spelling on any copy-paste -- at which point
+    `val(...)` would return a parsed value, `classify_drop` would be being
+    called outside its contract, and both halves would still pass.
+    """
+    kelvin = "\u212a"
+    assert kelvin != "K" and kelvin.lower() == "k"
+    assert val("display", "bloc" + kelvin) is None
+    assert val("color", "pin" + kelvin) is None
+    assert why("display", "bloc" + kelvin) == DROP_INVALID
+    assert why("color", "pin" + kelvin) == DROP_INVALID
+    # The ASCII spellings parse, so this is a test of the fold and not of
+    # `classify_drop` returning a constant.
+    assert val("display", "block") is not None
+    assert val("color", "pink") is not None
+
+
+def test_every_reason_is_one_of_the_four_and_they_are_distinct():
+    """A partition, not a label: `classify_drop` must return a member of
+    `DROP_REASONS`, and the four must be distinguishable from one another on
+    real inputs -- a classifier that returned the same constant for
+    everything would pass a one-input test."""
+    seen = {
+        why(name, src)
+        for name, src in [
+            ("mask-image", "none"),
+            ("display", "flow-root"),
+            ("color", "var(--x)"),
+            ("width", "banana"),
+        ]
+    }
+    assert seen == set(DROP_REASONS)
+    assert len(DROP_REASONS) == 4
+
+
+def test_the_three_accepted_wide_keywords_parse_and_revert_does_not():
+    """`inherit`/`initial`/`unset` reach the cascade as `WideKeyword`s;
+    `revert` is dropped. All four asserted, since accepting three and
+    rejecting one cannot be told from accepting all four by a test that
+    only checks the three."""
+    for keyword in ("inherit", "initial", "unset"):
+        assert val("color", keyword) == {"color": WideKeyword(keyword)}
+    assert val("color", "revert") is None
+    assert why("color", "revert") == DROP_UNSUPPORTED_VALUE
+
+
+def test_a_wide_keyword_is_not_a_property_keyword():
+    """`WideKeyword` is deliberately a separate type from `Keyword`. A
+    caller that confused them would store the string `"inherit"` as a
+    colour, which is exactly the shape of value the cascade's
+    `_KEYWORD_VALUED` allow-list exists to prevent."""
+    assert WideKeyword("inherit") != Keyword("inherit")
+    assert not isinstance(val("color", "inherit")["color"], Keyword)
+
+
+def test_a_shorthands_wide_keyword_expands_to_every_longhand_it_governs():
+    assert val("margin", "initial") == {
+        f"margin-{side}": WideKeyword("initial")
+        for side in ("top", "right", "bottom", "left")
+    }
+    assert len(val("border", "inherit")) == 12
+    assert set(val("border-left", "unset")) == {
+        "border-left-width", "border-left-style", "border-left-color",
+    }
+
+
+def test_wide_keywords_are_matched_case_insensitively_but_only_as_ascii():
+    """`INHERIT` is the same keyword; `inheri<U+212A>` is not a keyword at
+    all. Written as an escape -- see the fold test above."""
+    assert val("color", "INHERIT") == {"color": WideKeyword("inherit")}
+    assert val("color", "inheri" + "\u212a") is None
+    assert val("color", "inheri" + "\u212a") != val("color", "inherit")
+    assert bare_wide_keyword(list(CssTokenizer("INITIAL").tokenize())) == "initial"
+    assert bare_wide_keyword(list(CssTokenizer("red").tokenize())) is None
+
+
+def test_a_wide_keyword_must_be_the_whole_value():
+    """`margin: inherit 5px` is not a wide keyword and is not valid margin
+    either, so it is dropped rather than half-interpreted."""
+    assert val("margin", "inherit 5px") is None
+    assert val("border", "1px solid inherit") is None
+
+
+# --------------------------------------------------------------------------
+# var() substitution (Phase 3 Task A2, deliverable 6)
+# --------------------------------------------------------------------------
+
+
+def sub(src, custom):
+    """`substitute_var` over source text, returning (text, reason)."""
+    tokens = [t for t in CssTokenizer(src).tokenize() if not isinstance(t, EOFToken)]
+    table = {
+        name: tuple(
+            t for t in CssTokenizer(value).tokenize() if not isinstance(t, EOFToken)
+        )
+        for name, value in custom.items()
+    }
+    out, reason = substitute_var(tokens, table)
+    if out is None:
+        return None, reason
+    return "".join(_token_text(t) for t in out).strip(), reason
+
+
+def _token_text(tok):
+    name = type(tok).__name__
+    if name == "Function":
+        return f"{tok.value}("
+    if name == "RParen":
+        return ")"
+    if name == "Comma":
+        return ","
+    if name == "Whitespace":
+        return " "
+    if name == "Dimension":
+        return f"{tok.value}{tok.unit}"
+    if name == "Hash":
+        return f"#{tok.value}"
+    if name == "Percentage":
+        return f"{tok.value}%"
+    return str(getattr(tok, "value", ""))
+
+
+def test_substitution_is_textual_and_keeps_the_surrounding_tokens():
+    """`var()` is replaced in place, not evaluated: the tokens either side
+    survive, which is what makes `1px solid var(--x)` still a border."""
+    assert sub("1px solid var(--x)", {"--x": "red"}) == ("1px solid red", None)
+    assert sub("var(--x)", {"--x": "1px 2px"}) == ("1px 2px", None)
+
+
+def test_a_fallback_may_contain_commas_of_its_own():
+    """The split is at the *first* top-level comma. `var(--f, Georgia,
+    serif)` is one fallback, not two -- splitting on every comma would keep
+    only `Georgia`."""
+    assert sub("var(--f, Georgia, serif)", {}) == ("Georgia, serif", None)
+
+
+def test_one_level_of_indirection_resolves_and_a_cycle_hits_the_cap():
+    assert sub("var(--a)", {"--a": "var(--b)", "--b": "red"}) == ("red", None)
+    assert sub("var(--a)", {"--a": "var(--a)"}) == (None, VAR_DEPTH_EXCEEDED)
+    assert sub("var(--a)", {"--a": "var(--b)", "--b": "var(--a)"}) == (
+        None, VAR_DEPTH_EXCEEDED,
+    )
+
+
+def test_the_depth_cap_refuses_only_past_its_limit():
+    """A cap that refused everything, or nothing, would pass a one-input
+    test. Both sides of the boundary asserted, built from the constant so
+    the test cannot drift away from it."""
+    def chain(links):
+        """`--v0 -> --v1 -> ... -> --v{links}: red`."""
+        table = {f"--v{i}": f"var(--v{i + 1})" for i in range(links)}
+        table[f"--v{links}"] = "red"
+        return table
+
+    # Resolving `--vk`'s own value happens at depth k+1, so a chain whose
+    # last link is `--v{CAP-1}` is the deepest one that fits.
+    cap = VAR_SUBSTITUTION_DEPTH_CAP
+    assert sub("var(--v0)", chain(cap - 1)) == ("red", None)
+    assert sub("var(--v0)", chain(cap)) == (None, VAR_DEPTH_EXCEEDED)
+
+
+def test_each_refusal_has_its_own_reason():
+    """Four distinct outcomes, and they must be distinguishable: a single
+    "could not substitute" reason would make every counter in the cascade
+    report the same thing."""
+    assert sub("var(--missing)", {}) == (None, VAR_UNKNOWN_NO_FALLBACK)
+    assert sub("var(--missing, var(--other))", {}) == (
+        None, VAR_NESTED_FALLBACK_SKIPPED,
+    )
+    assert sub("var(5px)", {}) == (None, VAR_MALFORMED)
+    assert sub("var(--x", {"--x": "red"}) == (None, VAR_MALFORMED)
+    reasons = {
+        sub(src, table)[1]
+        for src, table in [
+            ("var(--missing)", {}),
+            ("var(--missing, var(--other))", {}),
+            ("var(5px)", {}),
+            ("var(--a)", {"--a": "var(--a)"}),
+        ]
+    }
+    assert len(reasons) == 4
+
+
+def test_a_var_in_an_untaken_fallback_is_not_refused():
+    """The fallback is not evaluated when the custom property is set -- the
+    spec does not even require it to be valid -- so refusing there would
+    lose a resolvable declaration."""
+    assert sub("var(--x, var(--y))", {"--x": "red"}) == ("red", None)
+    assert sub("var(--x, var(--y))", {}) == (None, VAR_NESTED_FALLBACK_SKIPPED)
+
+
+def test_a_value_with_no_var_is_returned_unchanged():
+    assert sub("1px solid red", {}) == ("1px solid red", None)
+    assert contains_var_reference(
+        [t for t in CssTokenizer("1px solid red").tokenize()]
+    ) is False
+    assert contains_var_reference(
+        [t for t in CssTokenizer("var(--x)").tokenize()]
+    ) is True
+    # A malformed one does not count as a reference -- see
+    # `test_a_malformed_var_is_invalid_not_var_unresolved`.
+    assert contains_var_reference(
+        [t for t in CssTokenizer("var(5px)").tokenize()]
+    ) is False
+
+
+def test_custom_property_names_are_not_normalised():
+    assert is_custom_property("--x") is True
+    assert is_custom_property("--X") is True
+    assert is_custom_property("color") is False
+    assert is_custom_property("-webkit-transform") is False
+    assert sub("var(--X)", {"--x": "red", "--X": "blue"}) == ("blue", None)
