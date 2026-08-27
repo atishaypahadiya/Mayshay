@@ -132,14 +132,26 @@ later:
    None -- because task H indexes rules by their rightmost compound, and a
    dict keyed on compounds is the natural shape for that.
 
-   Two consequences worth knowing. These are mutable objects carrying a
-   value hash, the hazard `dataclasses` names `unsafe_hash`: a structure
-   used as a dict key must not be mutated afterwards. The parser builds
-   each one once and never touches it again, and nothing else should
-   start. And `PseudoClassSelector.__hash__` covers the *name* only,
-   because `argument` holds `CssToken`s, which are themselves unhashable
-   dataclasses -- so `:nth-child(1)` and `:nth-child(2)` collide in a dict
-   while still comparing unequal. That is correct, just less selective.
+   The guarantee has to be stated one level deeper than it looks.
+   `PseudoClassSelector.argument` holds `CssToken`s, and a token's own
+   equality *does* include its `pos` -- so a plain dataclass `__eq__` makes
+   `p:nth-child(2)` at offset 0 unequal to the same selector at offset 40
+   while their hashes agree, which is precisely the shape that puts two
+   entries in a dict where one belongs. `PseudoClassSelector` therefore has
+   a hand-written `__eq__`/`__hash__` that compares its argument through
+   `_token_key` (all of a token's fields except `pos`). It is the only
+   structure here with a custom `__eq__`, and it exists to keep *one*
+   convention in this module rather than to add a second: the tokenizer's
+   pos-in-equality is right for a token stream, and adapting at the one
+   boundary where a token is embedded in a selector is cheaper than
+   changing what a token means everywhere. Fixing it in `tokenizer.py`
+   instead was rejected because it would silently weaken every future test
+   that compares tokens, which is how this project has been bitten before.
+
+   These are mutable objects carrying a value hash, the hazard
+   `dataclasses` names `unsafe_hash`: a structure used as a dict key must
+   not be mutated afterwards. The parser builds each one once and never
+   touches it again, and nothing else should start.
 
    This departs from `parser.py`, whose `pos` does participate in
    equality, and the difference is what the objects are for: a
@@ -151,7 +163,7 @@ later:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Iterable
 
 from mayshay.cssparse.tokenizer import (
@@ -286,7 +298,7 @@ class AttributeSelector:
                      self.case))
 
 
-@dataclass
+@dataclass(eq=False)
 class PseudoClassSelector:
     """`:hover`, `:nth-child(2n+1)`, `:not(.a, .b)`.
 
@@ -294,16 +306,31 @@ class PseudoClassSelector:
     run between the parens, whitespace included and delimiters excluded.
     `selectors` is set only for the pseudo-classes of `_SELECTOR_ARG_PSEUDOS`
     -- see deviation 3.
+
+    The only structure with a hand-written `__eq__`, and the only one that
+    needs it: `argument` holds `CssToken`s, whose own equality includes
+    `pos`. Comparing them through `_token_key` is what keeps deviation 10's
+    guarantee true for `p:nth-child(2)` and not only for `p.c`.
     """
 
     name: str
     argument: list[CssToken] | None = None
     selectors: SelectorList | None = None
 
+    def _key(self) -> tuple:
+        return (self.name, _argument_key(self.argument), self.selectors)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, PseudoClassSelector):
+            return NotImplemented
+        return self._key() == other._key()
+
     def __hash__(self) -> int:
-        # Name only: `argument` holds CssTokens, which are unhashable
-        # dataclasses. See deviation 10.
-        return hash((PseudoClassSelector, self.name))
+        # `selectors` is left out: it is derived from `argument`, so it can
+        # never distinguish two pseudo-classes whose arguments agree. Hash
+        # and equality stay consistent -- the hash uses a subset.
+        return hash((PseudoClassSelector, self.name,
+                     _argument_key(self.argument)))
 
 
 @dataclass
@@ -431,6 +458,38 @@ class _Cursor:
 
 def _is_delim(tok: CssToken | None, value: str) -> bool:
     return isinstance(tok, Delim) and tok.value == value
+
+
+def _token_key(token: CssToken) -> tuple:
+    """A hashable identity for a token that ignores *where* it was written.
+
+    `CssToken`s keep `pos` inside their own equality -- that is the
+    tokenizer's convention and it is right for a token stream. It is wrong
+    for the one selector structure that embeds tokens
+    (`PseudoClassSelector.argument`), because this module has already
+    decided that a selector's identity does not include its source offset
+    (deviation 10). Without this, `p:nth-child(2)` written at two different
+    offsets compares unequal and occupies two entries in a dict keyed by
+    compound.
+
+    Built from `dataclasses.fields` rather than a per-token-type table, so a
+    token type added to `tokenizer.py` later is handled without an edit
+    here. The class *name*, not the class object, leads the tuple, so two
+    token types with identical fields still key apart.
+    """
+    return (type(token).__name__,) + tuple(
+        getattr(token, f.name) for f in fields(token) if f.name != "pos"
+    )
+
+
+def _argument_key(argument: list[CssToken] | None) -> tuple | None:
+    """`None` for a non-functional pseudo-class, so `:where` and `:where()`
+    -- which mean different things, see `_pseudo_class_specificity` -- do
+    not compare equal.
+    """
+    if argument is None:
+        return None
+    return tuple(_token_key(token) for token in argument)
 
 
 def _adjacent(first: CssToken, second: CssToken) -> bool:

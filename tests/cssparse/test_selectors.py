@@ -435,14 +435,71 @@ def test_equal_selectors_hash_equal_and_key_the_same_dict_entry():
 def test_different_selectors_are_not_conflated_by_the_hash():
     """The hash is allowed to collide; equality is not allowed to."""
     distinct = [sel(s).selectors[0] for s in
-                ("a b", "ab", "a > b", "a + b", "a.b", "a#b", "[a]", "[a=b]")]
+                ("a b", "ab", "a > b", "a + b", "a.b", "a#b", "[a]", "[a=b]",
+                 ":nth-child(1)", ":nth-child(2)", ":lang(en)", ":lang(fr)",
+                 ":hover", ":where", ":where()", ":not(.a)", ":not(.b)")]
     assert len(set(distinct)) == len(distinct)
-    # Argument tokens are outside PseudoClassSelector.__hash__ (they are
-    # unhashable dataclasses), so these two may collide -- but must not be
-    # equal, and must not merge in a dict.
-    one, two = sel(":nth-child(1)").selectors[0], sel(":nth-child(2)").selectors[0]
-    assert one != two
-    assert len({one, two}) == 2
+
+
+# The interaction that the pos-independence tests above do NOT reach: a
+# functional pseudo-class stores its argument as raw `CssToken`s, and a
+# token's own equality includes `pos`. Every test before this one uses type,
+# class or attribute compounds, all of which are pos-free by construction --
+# so they pass against a parser for which the deviation-10 guarantee is
+# false. See the task report's fix round 2.
+
+
+POSITION_INDEPENDENT = [
+    "p",
+    "p.c#i",
+    "div > p",
+    ":hover",                    # non-functional pseudo-class
+    ":where",                    # bare, argument is None
+    ":where()",                  # functional, argument is empty
+    ":lang(en)",                 # raw argument, one token
+    ":nth-child(2n + 1)",        # raw argument, five tokens incl. whitespace
+    "p:nth-of-type(3)",          # ...in a compound with a type selector
+    "li:nth-child(2)",
+    ":not(.a)",                  # parsed argument *and* raw tokens
+    ":is(#i, p)",
+    'div > p:nth-child(2n+1)[a~="v"]',
+]
+
+
+@pytest.mark.parametrize("src", POSITION_INDEPENDENT)
+def test_the_same_selector_at_a_different_offset_is_the_same_selector(src):
+    """Deviation 10's guarantee, stated at the level it has to hold: not
+    just `Compound.pos`, but anything a compound transitively contains.
+    """
+    here, there = sel(src).selectors[0], sel(f"   {src}").selectors[0]
+    assert here == there
+    assert hash(here) == hash(there)
+
+
+@pytest.mark.parametrize("src", POSITION_INDEPENDENT)
+def test_a_dict_keyed_on_a_compound_does_not_split_by_offset(src):
+    """Task H indexes rules by their rightmost compound. Two stylesheets
+    that write the same rule at different offsets must land in one entry,
+    or the same rule is applied twice.
+    """
+    here = sel(src).selectors[0].compounds[-1]
+    there = sel(f"   {src}").selectors[0].compounds[-1]
+    assert len({here: "a", there: "b"}) == 1
+    assert {here: "a"}[there] == "a"
+    assert len({sel(src), sel(f"   {src}")}) == 1
+
+
+def test_a_functional_pseudo_class_still_compares_its_argument():
+    """Position-independent must not mean argument-blind: the fix must not
+    swing past correct into `:nth-child(1) == :nth-child(2)`.
+    """
+    assert sel(":nth-child(1)") != sel(":nth-child(2)")
+    assert sel(":lang(en)") != sel(":lang(fr)")
+    assert sel(":nth-child(2n+1)") != sel(":nth-child(2n + 1)")  # whitespace
+    assert sel(":where") != sel(":where()")  # None argument vs empty one
+    assert sel(":not(.a)") != sel(":not(.b)")
+    assert simples(":hover")[0] != TypeSelector("hover")
+    assert simples(":hover")[0] != PseudoElementSelector("hover")
 
 
 def test_specificity_never_carries_between_columns():

@@ -105,13 +105,19 @@ def _nested_preludes(block: list[CssToken]):
             prelude.append(tok)
 
 
-def _sweep():
-    """(files, style elements, preludes) across the whole corpus."""
+def _sweep(prefix=""):
+    """(files, style elements, preludes) across the whole corpus.
+
+    `prefix` is prepended to every stylesheet before tokenizing. Whitespace
+    at the start of a stylesheet cannot change how it tokenizes, but it
+    shifts every token's `pos`, which is how the position-independence test
+    below reaches real selectors instead of hand-written ones.
+    """
     files, elements, preludes = set(), 0, []
     for name, css in _style_bodies():
         files.add(name)
         elements += 1
-        for rule in parse_stylesheet(css):
+        for rule in parse_stylesheet(prefix + css):
             if isinstance(rule, QualifiedRule):
                 preludes.append((name, rule.prelude))
             elif isinstance(rule, AtRule) and rule.block is not None:
@@ -159,10 +165,9 @@ def test_every_selector_in_the_corpus_parses():
     assert selectors >= MIN_SELECTORS
 
 
-def test_corpus_selectors_are_hashable_and_position_independent():
+def test_corpus_selectors_are_hashable():
     """Task H keys rules by their rightmost compound. Every compound the
-    corpus produces must survive being put in a dict, and two identical
-    selectors from different offsets must land in the same bucket.
+    corpus produces must survive being put in a dict.
     """
     _, _, preludes = SWEEP
     index = {}
@@ -170,9 +175,31 @@ def test_corpus_selectors_are_hashable_and_position_independent():
         for selector in parse_selector_list(prelude).selectors:
             index.setdefault(selector.compounds[-1], []).append(name)
     assert index
-    a = parse_selector_list(list(CssTokenizer("div > p").tokenize()))
-    b = parse_selector_list(list(CssTokenizer("   div>p   ").tokenize()))
-    assert a == b and hash(a.selectors[0]) == hash(b.selectors[0])
+
+
+def test_corpus_selectors_are_position_independent():
+    """The whole corpus, parsed twice from sources offset against each
+    other: every selector must compare and hash the same, and every
+    rightmost compound must land in one dict entry.
+
+    Hand-written pos-independence tests only reach the shapes someone
+    thought to write. This reaches the 20 functional pseudo-classes the
+    corpus actually ships -- `:not(.notheme)` and friends -- whose raw
+    argument tokens carry a `pos` of their own, which is exactly the
+    interaction that made the first version of deviation 10 false.
+    """
+    _, _, here = SWEEP
+    _, _, there = _sweep("\n\n")
+    assert len(here) == len(there) >= MIN_RULES
+    pairs = 0
+    for (name, a), (_, b) in zip(here, there):
+        first, second = parse_selector_list(a), parse_selector_list(b)
+        assert first == second, name
+        for x, y in zip(first.selectors, second.selectors):
+            assert hash(x) == hash(y)
+            assert len({x.compounds[-1]: 1, y.compounds[-1]: 2}) == 1
+            pairs += 1
+    assert pairs >= MIN_SELECTORS
 
 
 @pytest.mark.parametrize("src,why", [
