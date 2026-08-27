@@ -34,14 +34,18 @@ later:
    value, delimiters included. Nothing in this brief needs the tree: Task G
    and Task I can both re-derive nesting from the token stream, because the
    matching brackets are still present, verbatim, in the flat list.
-2. **`AtRule.block` / `QualifiedRule.block` hold the block's contents only**
-   -- the tokens between, but not including, the outer `{`/`}` -- unlike the
-   nested-group flattening in (1), which keeps its delimiters. This
-   asymmetry follows the field's job: a caller re-parses block content
-   directly, e.g. as a declaration list via `parse_declarations(rule.block)`,
-   and no such caller wants to special-case stripping its own outer braces
-   first.
-3. **`parse_declarations`'s declared return type is `list[Declaration]`.**
+
+   Note, not a further deviation: `AtRule.block` / `QualifiedRule.block`
+   hold the block's contents only -- the tokens between, but not including,
+   the outer `{`/`}`. That matches the spec as written: a simple block's
+   `value` is defined as its *contents*, with the associated start/end
+   tokens kept separately. The asymmetry with (1)'s nested groups, which do
+   keep their own delimiters, is just `_consume_balanced`'s
+   `include_closer` parameter serving two different fields' actual jobs --
+   a rule's `block` is handed straight to a content-parser like
+   `parse_declarations`, which has no reason to want its own outer braces
+   back.
+2. **`parse_declarations`'s declared return type is `list[Declaration]`.**
    An at-rule nested inside a declaration list (rare -- CSS Nesting allows
    e.g. `@media` inside a style rule's block) is still fully consumed by
    `consume_at_rule`, so it cannot corrupt the declarations that follow it,
@@ -49,17 +53,17 @@ later:
    otherwise need to return `list[Declaration | AtRule]`, which the brief's
    interface does not ask for. No test and no corpus `<style>` body observed
    exercises this. Flag it if CSS Nesting support is ever added.
-4. **`!important` detection tolerates whitespace between `!` and
+3. **`!important` detection tolerates whitespace between `!` and
    `important`** (`red ! important`, not just `red !important`), and strips
    both tokens plus any whitespace introduced on either side. This is what
    5.5.5 actually says -- "the last two non-<whitespace-token>s" -- rather
    than "the last two tokens".
-5. **`pos` on `QualifiedRule`/`AtRule` is the position of the rule's first
+4. **`pos` on `QualifiedRule`/`AtRule` is the position of the rule's first
    token** (the prelude's first token, or the at-keyword); `Declaration.pos`
    is the name token's position. The spec does not assign rules a position
    at all; this follows the `pos`-on-everything convention the rest of the
    codebase uses.
-6. **`CssParser` keeps its own `errors`/`metrics`, separate from the
+5. **`CssParser` keeps its own `errors`/`metrics`, separate from the
    `CssTokenizer` it drives**, mirroring `htmlparse.TreeBuilder`'s split from
    `htmlparse.Tokenizer` so a driver can emit "tokenize" and "parse" as
    distinct `metrics.py` stages, the same split `htmlparse` uses for
@@ -151,7 +155,28 @@ class _Cursor:
         self.pos = 0
 
     def _eof(self) -> EOFToken:
-        return EOFToken(pos=self.tokens[-1].pos if self.tokens else -1)
+        """Synthesize an EOF sentinel positioned past the end of `tokens`.
+
+        `pos` approximates one past the *end* of the last token, not its
+        start -- matching the tokenizer's own EOF convention
+        (`CssTokenizer.pos == len(source)` once exhausted) as closely as
+        possible from a token stream that only records each token's start
+        offset. Exact for a token kind whose `.value` is its full serialized
+        text (`Ident`, `Whitespace`, `Delim`, a `Number` written without an
+        exponent, ...); an undercount for a kind whose source text is longer
+        than `.value` (`AtKeyword`'s leading `@`, `Function`'s trailing `(`,
+        a `String`'s quotes and any escapes). Reusing the last token's own
+        *start* position here -- the previous version of this method --
+        would make a synthetic EOF indistinguishable from a real error
+        pointing at that token; this is a best-effort fix, not an exact one,
+        since no `CssToken` carries its own source span.
+        """
+        if not self.tokens:
+            return EOFToken(pos=-1)
+        last = self.tokens[-1]
+        value = getattr(last, "value", None)
+        width = len(value) if isinstance(value, str) else 1
+        return EOFToken(pos=last.pos + max(width, 1))
 
     def peek(self) -> CssToken:
         if self.pos >= len(self.tokens):
@@ -421,11 +446,17 @@ def _consume_declaration(
 def _strip_important(value: list[CssToken]) -> bool:
     """Mutates `value` in place; returns whether `!important` was found.
 
-    5.5.5: "If the last two non-<whitespace-token>s in decl's value are a
-    <delim-token> with the value '!' followed by an <ident-token> ... equal
-    to 'important' ... remove them." Deviation 4 explains why this walks
-    past intervening whitespace on both sides instead of only checking
-    `value[-1]`/`value[-2]`.
+    Performs two separate 5.5.5 steps, not just the one the name suggests:
+    first, the spec's own unconditional "while the last item in decl's
+    value is a whitespace token, remove it" -- which fires whether or not
+    `!important` is present, since a bare `color: red   ` should not keep
+    its trailing whitespace either. Then: "If the last two
+    non-<whitespace-token>s in decl's value are a <delim-token> with the
+    value '!' followed by an <ident-token> ... equal to 'important' ...
+    remove them" -- which, on a match, strips both tokens and repeats the
+    trailing-whitespace removal once more. Deviation 3 explains why the
+    match walks past intervening whitespace on both sides instead of only
+    checking `value[-1]`/`value[-2]` directly.
     """
     while value and isinstance(value[-1], Whitespace):
         value.pop()

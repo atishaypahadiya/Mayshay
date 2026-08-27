@@ -11,7 +11,7 @@ from mayshay.cssparse.parser import (
     AtRule, CssParser, Declaration, QualifiedRule, parse_declarations,
     parse_stylesheet,
 )
-from mayshay.cssparse.tokenizer import CssTokenizer, EOFToken
+from mayshay.cssparse.tokenizer import CssTokenizer, EOFToken, Ident
 
 
 def test_single_rule():
@@ -110,21 +110,21 @@ def test_nested_braces_do_not_end_the_at_rule_block_early():
 
 
 def test_unknown_at_rule_is_fully_consumed_not_skipped():
-    """If at-rules were "skipped" by scanning forward to the next `;` or the
-    next top-level `}` without real brace tracking, a semicolon *inside* the
-    at-rule's block would end the at-rule early. Guard against that here:
-    the prelude and block must be captured, and the trailing rule (which a
-    corrupted cursor position would swallow or misplace) must still appear.
+    """If at-rules were "skipped" by treating ANY semicolon as ending the
+    rule -- rather than only a semicolon outside the rule's own block -- the
+    `;` between `a: b` and `c: d` here would end the at-rule early, corrupt
+    the cursor position, and either swallow or misplace `p`'s rule. The
+    at-rule's block must come back whole, and `p`'s rule must still follow.
     """
-    rules = parse_stylesheet("@weird foo; bar { a: b } p { color: red }")
-    assert len(rules) == 3
+    rules = parse_stylesheet("@weird foo { a: b; c: d } p { color: red }")
+    assert len(rules) == 2
     assert isinstance(rules[0], AtRule)
     assert rules[0].name == "weird"
-    assert rules[0].block is None
+    assert rules[0].block is not None
+    block_names = [t.value for t in rules[0].block if isinstance(t, Ident)]
+    assert block_names == ["a", "b", "c", "d"]
     assert isinstance(rules[1], QualifiedRule)
-    assert rules[1].prelude and rules[1].prelude[0].value == "bar"
-    assert isinstance(rules[2], QualifiedRule)
-    assert rules[2].prelude and rules[2].prelude[0].value == "p"
+    assert rules[1].prelude and rules[1].prelude[0].value == "p"
 
 
 def test_malformed_declaration_is_not_silently_kept():
