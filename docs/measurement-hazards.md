@@ -171,6 +171,49 @@ criterion deserves: a rule derived only from the incidents that produced it
 is a pattern fitted to three points. One that also explains a decision made
 for its own reasons, before the rule existed, is describing something real.
 
+## A different sub-shape: the unstated denominator
+
+The three instances above were **wrong measurements**. There is a fourth
+shape where every measurement is *correct* and the reader still cannot use
+the number, because the population it counts is unnamed.
+
+Asked "how many custom properties does Wikipedia declare, and how many
+declarations consume them?", this project has produced three answers. All
+three reproduce on demand; all three are right:
+
+| population | custom | consuming |
+|---|---:|---:|
+| every declaration in every sheet, descending into all at-rules | 420 | 557 |
+| cascade-visible after `@media` evaluation at 1280x1024 | 313 | 353 |
+| raw textual occurrences in the sheet bytes | 486 | 565 |
+
+The Task A2 brief cited 420/557 as though it were *the* number. The
+implementer measured 313/353 and reported the brief's figures as
+irreproducible -- correctly, because they are irreproducible *under the
+definition the implementer was using*. Neither party was wrong about
+arithmetic. The brief was wrong about specification.
+
+This is the same defect as the display census being a UA-stylesheet census
+(instance 1). There the number was also correct -- it accurately described
+the distribution of `display` under the UA sheet -- and the failure was
+that nothing said so, so it was read as describing the pages. **The value
+carries no evidence of its own scope**, which is why no amount of
+re-reading the number reveals the problem.
+
+The mitigation is different from the other three. Those need an independent
+second measurement. This one needs a **name**:
+
+* State the population in the metric, not just the count.
+  `custom_properties_declared` invites the ambiguity;
+  `custom_properties_cascade_visible` does not.
+* When a figure depends on a parameter -- a viewport, an origin, an
+  inclusion rule -- record the parameter beside it. `scripts/style_report.py`
+  writes the viewport into the metrics rows for exactly this reason: a
+  `flex` count with no viewport beside it is not a reproducible number.
+* A disagreement between two counts of "the same thing" is a specification
+  question first and an arithmetic question second. Ask what each one
+  counted before asking which is right; usually both are.
+
 ## The shape
 
 In all three the output had the right type, a plausible magnitude, and no

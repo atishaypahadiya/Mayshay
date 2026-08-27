@@ -51,6 +51,15 @@ Package root is `src/mayshay/`. Imports look like:
   running is one line.
   This applies to decisions as well as claims: a test deferred as
   "correct by inspection" is an unexecuted claim wearing a decision's clothes.
+- Never `git add -A` (or `git add .`) while a subagent is live. Always stage
+  explicit paths. The working tree is shared: a blanket add sweeps an
+  agent's in-progress work into whatever commit you are making, and three
+  docs commits on the Phase 3 branch ended up carrying engine deliverables
+  whose messages described none of it. Nothing was lost and the tests stayed
+  green, which is what makes it easy to miss -- the damage is to bisect and
+  to review, not to content. This sits beside the one-committing-agent rule
+  from Phase 1 for the same reason: a shared tree needs one writer at a time
+  or explicit boundaries.
 - Every cross-stage comparison must distinguish wrong output from wrong
   input, and report upstream divergence separately from the thing being
   measured. Carry two identifiers, not one: when they agree the comparison

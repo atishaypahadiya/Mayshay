@@ -65,12 +65,25 @@ computed-value time. Deliberately out of scope, each with a counter:
 * cycles, handled by a **substitution depth cap** rather than real cycle
   detection -- `var_depth_exceeded`. A cap is O(1) and cannot be wrong in
   the dangerous direction; full detection is a phase, not a task.
+
+  **Vindicated on the first real page it saw.** Wikipedia ships a genuinely
+  self-referential custom property in production CSS --
+  `--font-size-medium: var(--font-size-medium, 1rem)` -- which accounts for
+  59 of that page's `var_depth_exceeded` hits and would have been an
+  infinite substitution loop without the cap. Not a pathological input
+  constructed for a test; one of three pages in the corpus. That is the
+  argument for choosing a bounded approximation over the complete algorithm
+  when the two differ only in cases nobody can name: the case turned out to
+  be nameable, common, and already present.
 * `var()` in a custom property's own value beyond one level of indirection
 * the guaranteed-invalid-value rules of Custom Properties 1 section 3, in
   their full generality
 
-That is 233 of 257 dropped colour declarations recovered, and 557 Wikipedia
-declarations that currently evaluate to nothing.
+That is 233 of 257 dropped colour declarations recovered. Wikipedia's
+custom-property count depends on the population measured -- 313 declared
+and 353 consuming are the cascade-visible figures at 1280x1024, which is
+the number this task moves; see docs/measurement-hazards.md on why three
+different correct answers exist.
 
 **Box-model longhands.** `margin-left`, `padding-top`, `border-color`,
 `border-left-width` and the other 24. `ComputedStyle` already carries every
