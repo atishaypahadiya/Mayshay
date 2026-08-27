@@ -332,8 +332,27 @@ Three properties to match, each measured:
 * **Quad order is TL, TR, BR, BL** -- eight floats, `x1 y1 x2 y2 x3 y3 x4
   y4`. A rectangle's extent is `x[0]..x[2]` and `y[1]..y[5]`.
 * **`model.width`/`model.height` describe the BORDER box** (420 x 66
-  above), not the content box. Reading them as content dimensions is an
-  easy and silent 20px error.
+  above), not the content box. Reading them as content dimensions is a
+  silent 20px error on a 400px div -- exactly the shape that produces a
+  consistent offset nobody questions, because a uniformly-wrong comparison
+  still looks like a working comparison.
+
+  **This must be an assertion in the harness, not a comment.** On startup,
+  against a fixture page with known geometry, the harness asserts that
+  every edge relation holds before it compares anything:
+
+      content.width + padding.left + padding.right      == padding.width
+      padding.width + border.left  + border.right       == border.width
+      border.width  + margin.left  + margin.right       == margin.width
+      model.width                                       == border.width
+
+  The last line is the load-bearing one: it pins which edge `model.width`
+  names, so a Chrome release that changed the convention -- or a
+  misreading of it on our side -- fails loudly at startup rather than
+  shifting every number by a constant. The fixture's expected values are
+  written out explicitly (content 400 x 50, padding 414 x 60, border
+  420 x 66, margin 460 x 86 for the div above), so the assertion checks
+  against measured ground truth rather than against itself.
 * **Coordinates are document-relative, and scrolling does not move them.**
   Verified directly: adding 800px of `padding-top` and scrolling down 300px
   moved a box's `y` by exactly +800, not +500.
