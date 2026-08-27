@@ -9,6 +9,11 @@ from mayshay.cssparse.values import (
     DROP_VAR_UNRESOLVED,
     LONGHANDS_OF,
     SUPPORTED_PROPERTIES,
+    VAR_DEPTH_EXCEEDED,
+    VAR_MALFORMED,
+    VAR_NESTED_FALLBACK_SKIPPED,
+    VAR_SUBSTITUTION_DEPTH_CAP,
+    VAR_UNKNOWN_NO_FALLBACK,
     Color,
     Keyword,
     Length,
@@ -16,10 +21,13 @@ from mayshay.cssparse.values import (
     WideKeyword,
     bare_wide_keyword,
     classify_drop,
+    contains_var_reference,
     expand_shorthand,
+    is_custom_property,
+    substitute_var,
     parse_declaration_value as pv,
 )
-from mayshay.cssparse.tokenizer import CssTokenizer
+from mayshay.cssparse.tokenizer import CssTokenizer, EOFToken
 
 
 def val(name, src):
@@ -630,3 +638,134 @@ def test_a_wide_keyword_must_be_the_whole_value():
     either, so it is dropped rather than half-interpreted."""
     assert val("margin", "inherit 5px") is None
     assert val("border", "1px solid inherit") is None
+
+
+# --------------------------------------------------------------------------
+# var() substitution (Phase 3 Task A2, deliverable 6)
+# --------------------------------------------------------------------------
+
+
+def sub(src, custom):
+    """`substitute_var` over source text, returning (text, reason)."""
+    tokens = [t for t in CssTokenizer(src).tokenize() if not isinstance(t, EOFToken)]
+    table = {
+        name: tuple(
+            t for t in CssTokenizer(value).tokenize() if not isinstance(t, EOFToken)
+        )
+        for name, value in custom.items()
+    }
+    out, reason = substitute_var(tokens, table)
+    if out is None:
+        return None, reason
+    return "".join(_token_text(t) for t in out).strip(), reason
+
+
+def _token_text(tok):
+    name = type(tok).__name__
+    if name == "Function":
+        return f"{tok.value}("
+    if name == "RParen":
+        return ")"
+    if name == "Comma":
+        return ","
+    if name == "Whitespace":
+        return " "
+    if name == "Dimension":
+        return f"{tok.value}{tok.unit}"
+    if name == "Hash":
+        return f"#{tok.value}"
+    if name == "Percentage":
+        return f"{tok.value}%"
+    return str(getattr(tok, "value", ""))
+
+
+def test_substitution_is_textual_and_keeps_the_surrounding_tokens():
+    """`var()` is replaced in place, not evaluated: the tokens either side
+    survive, which is what makes `1px solid var(--x)` still a border."""
+    assert sub("1px solid var(--x)", {"--x": "red"}) == ("1px solid red", None)
+    assert sub("var(--x)", {"--x": "1px 2px"}) == ("1px 2px", None)
+
+
+def test_a_fallback_may_contain_commas_of_its_own():
+    """The split is at the *first* top-level comma. `var(--f, Georgia,
+    serif)` is one fallback, not two -- splitting on every comma would keep
+    only `Georgia`."""
+    assert sub("var(--f, Georgia, serif)", {}) == ("Georgia, serif", None)
+
+
+def test_one_level_of_indirection_resolves_and_a_cycle_hits_the_cap():
+    assert sub("var(--a)", {"--a": "var(--b)", "--b": "red"}) == ("red", None)
+    assert sub("var(--a)", {"--a": "var(--a)"}) == (None, VAR_DEPTH_EXCEEDED)
+    assert sub("var(--a)", {"--a": "var(--b)", "--b": "var(--a)"}) == (
+        None, VAR_DEPTH_EXCEEDED,
+    )
+
+
+def test_the_depth_cap_refuses_only_past_its_limit():
+    """A cap that refused everything, or nothing, would pass a one-input
+    test. Both sides of the boundary asserted, built from the constant so
+    the test cannot drift away from it."""
+    def chain(links):
+        """`--v0 -> --v1 -> ... -> --v{links}: red`."""
+        table = {f"--v{i}": f"var(--v{i + 1})" for i in range(links)}
+        table[f"--v{links}"] = "red"
+        return table
+
+    # Resolving `--vk`'s own value happens at depth k+1, so a chain whose
+    # last link is `--v{CAP-1}` is the deepest one that fits.
+    cap = VAR_SUBSTITUTION_DEPTH_CAP
+    assert sub("var(--v0)", chain(cap - 1)) == ("red", None)
+    assert sub("var(--v0)", chain(cap)) == (None, VAR_DEPTH_EXCEEDED)
+
+
+def test_each_refusal_has_its_own_reason():
+    """Four distinct outcomes, and they must be distinguishable: a single
+    "could not substitute" reason would make every counter in the cascade
+    report the same thing."""
+    assert sub("var(--missing)", {}) == (None, VAR_UNKNOWN_NO_FALLBACK)
+    assert sub("var(--missing, var(--other))", {}) == (
+        None, VAR_NESTED_FALLBACK_SKIPPED,
+    )
+    assert sub("var(5px)", {}) == (None, VAR_MALFORMED)
+    assert sub("var(--x", {"--x": "red"}) == (None, VAR_MALFORMED)
+    reasons = {
+        sub(src, table)[1]
+        for src, table in [
+            ("var(--missing)", {}),
+            ("var(--missing, var(--other))", {}),
+            ("var(5px)", {}),
+            ("var(--a)", {"--a": "var(--a)"}),
+        ]
+    }
+    assert len(reasons) == 4
+
+
+def test_a_var_in_an_untaken_fallback_is_not_refused():
+    """The fallback is not evaluated when the custom property is set -- the
+    spec does not even require it to be valid -- so refusing there would
+    lose a resolvable declaration."""
+    assert sub("var(--x, var(--y))", {"--x": "red"}) == ("red", None)
+    assert sub("var(--x, var(--y))", {}) == (None, VAR_NESTED_FALLBACK_SKIPPED)
+
+
+def test_a_value_with_no_var_is_returned_unchanged():
+    assert sub("1px solid red", {}) == ("1px solid red", None)
+    assert contains_var_reference(
+        [t for t in CssTokenizer("1px solid red").tokenize()]
+    ) is False
+    assert contains_var_reference(
+        [t for t in CssTokenizer("var(--x)").tokenize()]
+    ) is True
+    # A malformed one does not count as a reference -- see
+    # `test_a_malformed_var_is_invalid_not_var_unresolved`.
+    assert contains_var_reference(
+        [t for t in CssTokenizer("var(5px)").tokenize()]
+    ) is False
+
+
+def test_custom_property_names_are_not_normalised():
+    assert is_custom_property("--x") is True
+    assert is_custom_property("--X") is True
+    assert is_custom_property("color") is False
+    assert is_custom_property("-webkit-transform") is False
+    assert sub("var(--X)", {"--x": "red", "--X": "blue"}) == ("blue", None)

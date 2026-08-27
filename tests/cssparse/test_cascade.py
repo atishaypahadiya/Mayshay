@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from mayshay.cssparse import cascade as cascade_module
+from mayshay.dom.node import Element
 from mayshay.cssparse.cascade import (
     INHERITED,
     LONGHANDS,
@@ -1495,7 +1496,7 @@ def test_the_four_drop_reasons_partition_declarations_dropped():
     not a partition.
     """
     css = (
-        "p { mask-image: none; display: flow-root; color: var(--x);"
+        "p { mask-image: none; display: flow-root; color: var(5px);"
         " width: banana; color: blue }"
     )
     m = metrics_for(BODY_P, css)
@@ -1503,9 +1504,13 @@ def test_the_four_drop_reasons_partition_declarations_dropped():
     assert _reasons(m) == {
         "unsupported-property": 1,
         "unsupported-value": 1,
-        "var-unresolved": 1,
-        "invalid": 1,
+        # `var(5px)` is a syntax error, not a substitution we declined --
+        # see `test_a_malformed_var_is_invalid_not_var_unresolved`.
+        "var-unresolved": 0,
+        "invalid": 2,
     }
+    # And the whole document still balances.
+    assert m["declarations_seen"] == m["declarations_kept"] + m["declarations_dropped"]
 
     clean = metrics_for(BODY_P, "p { color: blue }")
     assert clean["declarations_dropped"] == 0
@@ -1525,7 +1530,7 @@ def test_drop_reasons_are_counted_for_the_style_attribute_too():
     without the `classify_drop` call zeroes the right-hand side.
     """
     decls = (
-        "mask-image: none; display: flow-root; color: var(--x); width: banana"
+        "mask-image: none; display: flow-root; color: var(5px); width: banana"
     )
     from_sheet = _reasons(metrics_for(BODY_P, f"p {{ {decls} }}"))
     from_attr = _reasons(
@@ -1753,9 +1758,12 @@ def test_line_height_normal_stays_symbolic():
     assert style_of(
         BODY_P, "p", "p { font-size: 10px; line-height: 2em }"
     ).line_height == Length(20, "px")
+    # A percentage does NOT stay symbolic -- it is the one percentage in
+    # this engine that resolves at computed-value time. See
+    # `test_percentage_and_number_line_heights_inherit_by_opposite_rules`.
     assert style_of(
         BODY_P, "p", "p { line-height: 125% }"
-    ).line_height == Percent(125)
+    ).line_height == Length(20, "px")
 
 
 def test_font_family_is_recorded_as_a_list_in_source_order():
@@ -1877,3 +1885,292 @@ def test_a_wide_keyword_on_the_root_element_falls_back_to_the_initial_value():
     html = find(doc, "html").computed_style
     assert html.color == Color(0, 0, 0, 1.0)
     assert html.font_size == Length(16, "px")
+
+
+# --------------------------------------------------------------------------
+# var() and custom properties (Phase 3 Task A2, deliverable 6)
+# --------------------------------------------------------------------------
+
+TWO_DIVS = (
+    "<!DOCTYPE html><body>"
+    "<div class=a><p>one</p></div><div class=b><p>two</p></div>"
+    "</body>"
+)
+
+
+def test_the_same_var_declaration_computes_differently_per_element():
+    """**The architectural test.** Declarations are parsed once per sheet and
+    the resulting objects are shared by every element the rule matches, so a
+    `var()` substituted at sheet-parse time would give both paragraphs the
+    same colour -- and would look entirely correct on a page with one
+    element.
+
+    Injection: substituting in `_cascade_declarations` instead of
+    `_compute_style` (or caching the resolved value on the `_PendingValue`
+    across elements) makes both paragraphs the same colour. The two are
+    asserted to differ as well as to each be right, so a cache that returned
+    the *first* answer everywhere cannot pass.
+    """
+    doc = styled(
+        TWO_DIVS,
+        ".a { --accent: red } .b { --accent: blue } p { color: var(--accent) }",
+    )
+    colours = [
+        n.computed_style.color
+        for n in _all_elements(doc)
+        if n.tag_name == "p"
+    ]
+    assert colours == [Color(255, 0, 0, 1.0), Color(0, 0, 255, 1.0)]
+
+
+def _all_elements(doc):
+    stack, out = [doc], []
+    while stack:
+        node = stack.pop()
+        if isinstance(node, Element):
+            out.append(node)
+        stack.extend(reversed(node.children))
+    return out
+
+
+def test_custom_properties_inherit():
+    """A custom property set on an ancestor is visible to a `var()` several
+    levels down. Both halves: the grandchild sees it, and a sibling subtree
+    that redeclares it sees its own."""
+    doc = styled(
+        "<!DOCTYPE html><body><div><section><p>x</p></section></div></body>",
+        "div { --accent: green } p { color: var(--accent) }",
+    )
+    assert find(doc, "p").computed_style.color == Color(0, 128, 0, 1.0)
+
+    shadowed = styled(
+        "<!DOCTYPE html><body><div><section><p>x</p></section></div></body>",
+        "div { --accent: green } section { --accent: blue }"
+        " p { color: var(--accent) }",
+    )
+    assert find(shadowed, "p").computed_style.color == Color(0, 0, 255, 1.0)
+
+
+def test_a_custom_property_cascades_like_any_other_declaration():
+    """Specificity and source order decide the winner, exactly as for
+    `color`. Injection: last-writer-wins regardless of specificity makes the
+    low-specificity rule win."""
+    doc = styled(
+        BODY_P,
+        "#i { --accent: green } p { --accent: red } p { color: var(--accent) }",
+    )
+    assert find(doc, "p").computed_style.color == Color(255, 0, 0, 1.0)
+
+    with_id = styled(
+        '<!DOCTYPE html><body><p id="i">hi</p></body>',
+        "#i { --accent: green } p { --accent: red } p { color: var(--accent) }",
+    )
+    assert find(with_id, "p").computed_style.color == Color(0, 128, 0, 1.0)
+
+
+def test_custom_property_names_are_case_sensitive():
+    """Unlike every other property name in CSS. Normalising one would
+    silently merge `--Accent` and `--accent` into a single property, and the
+    page would still render."""
+    doc = styled(
+        BODY_P, "p { --Accent: red; --accent: blue; color: var(--accent) }"
+    )
+    assert find(doc, "p").computed_style.color == Color(0, 0, 255, 1.0)
+    upper = styled(
+        BODY_P, "p { --Accent: red; --accent: blue; color: var(--Accent) }"
+    )
+    assert find(upper, "p").computed_style.color == Color(255, 0, 0, 1.0)
+
+
+def test_a_fallback_is_used_only_when_the_custom_property_is_unset():
+    """Both branches, in one test: the fallback is not a default."""
+    unset = style_of(BODY_P, "p", "p { color: var(--missing, green) }")
+    assert unset.color == Color(0, 128, 0, 1.0)
+    setted = style_of(
+        BODY_P, "p", "p { --accent: red; color: var(--accent, green) }"
+    )
+    assert setted.color == Color(255, 0, 0, 1.0)
+
+
+def test_an_unset_var_with_no_fallback_drops_only_that_longhand():
+    """Per spec the declaration is invalid at computed-value time, so its
+    siblings survive and the property falls back to inheritance."""
+    m = metrics_for(BODY_P, "p { color: var(--missing); width: 10px }")
+    assert m["var_unknown_no_fallback"] == 1
+    style = style_of(BODY_P, "p", "p { color: var(--missing); width: 10px }")
+    assert style.color == Color(0, 0, 0, 1.0)
+    assert style.width == Length(10, "px")
+
+
+def test_a_substitution_that_produces_an_invalid_value_is_counted():
+    """`width: var(--x)` with `--x: red` substitutes fine and then does not
+    parse. That is a drop a browser also makes, and it is a different number
+    from a substitution we declined to attempt."""
+    m = metrics_for(BODY_P, "p { --x: red; width: var(--x) }")
+    assert m["var_substituted_value_invalid"] == 1
+    assert m["var_unknown_no_fallback"] == 0
+    assert style_of(BODY_P, "p", "p { --x: red; width: var(--x) }").width is AUTO
+    # ...and the same shape with a usable value does substitute.
+    ok = metrics_for(BODY_P, "p { --x: 10px; width: var(--x) }")
+    assert ok["var_substitutions"] == 1
+    assert ok["var_substituted_value_invalid"] == 0
+
+
+def test_a_reference_cycle_is_stopped_by_the_depth_cap():
+    """A depth cap rather than real cycle detection: O(1), and it cannot be
+    wrong in the dangerous direction -- the worst it does is refuse a legal
+    deep chain, counted.
+
+    The self-referential case is not hypothetical. Wikipedia's own CSS
+    ships `--font-size-medium:var(--font-size-medium,1rem)`, which is 59 of
+    the corpus's `var_depth_exceeded` (executed, grepped out of
+    `data/corpus/`).
+    """
+    m = metrics_for(BODY_P, "p { --loop: var(--loop); color: var(--loop) }")
+    assert m["var_depth_exceeded"] == 1
+    assert style_of(
+        BODY_P, "p", "p { --loop: var(--loop); color: var(--loop) }"
+    ).color == Color(0, 0, 0, 1.0)
+
+    # A chain shorter than the cap resolves, so the cap is a limit and not a
+    # blanket refusal of indirection.
+    chained = style_of(
+        BODY_P, "p",
+        "p { --a: var(--b); --b: var(--c); --c: red; color: var(--a) }",
+    )
+    assert chained.color == Color(255, 0, 0, 1.0)
+
+
+def test_a_var_inside_a_fallback_is_skipped_only_on_the_branch_taken():
+    """Out of scope, and counted -- but only when the fallback is the branch
+    actually used. When the custom property is set the fallback is never
+    looked at, which is what the spec says (a fallback need not even be
+    valid), so refusing it there would lose a resolvable declaration."""
+    skipped = metrics_for(BODY_P, "p { color: var(--missing, var(--other)) }")
+    assert skipped["var_nested_fallback_skipped"] == 1
+
+    taken = metrics_for(BODY_P, "p { --x: red; color: var(--x, var(--other)) }")
+    assert taken["var_nested_fallback_skipped"] == 0
+    assert taken["var_substitutions"] == 1
+    assert style_of(
+        BODY_P, "p", "p { --x: red; color: var(--x, var(--other)) }"
+    ).color == Color(255, 0, 0, 1.0)
+
+
+def test_a_shorthand_with_a_var_sets_every_longhand_from_one_substitution():
+    """`border: 1px solid var(--x)` wins twelve longhands with one shared
+    `_PendingValue`. Substituting per longhand would multiply every `var_*`
+    counter by twelve while changing no value.
+
+    Injection: dropping the per-element resolution cache makes
+    `var_substitutions` twelve instead of one.
+    """
+    m = metrics_for(BODY_P, "p { --x: red; border: 1px solid var(--x) }")
+    assert m["var_substitutions"] == 1
+    style = style_of(BODY_P, "p", "p { --x: red; border: 1px solid var(--x) }")
+    for side in ("top", "right", "bottom", "left"):
+        assert style.get(f"border-{side}-width") == Length(1, "px"), side
+        assert style.get(f"border-{side}-style") == "solid", side
+        assert style.get(f"border-{side}-color") == Color(255, 0, 0, 1.0), side
+
+
+def test_a_var_declaration_is_deferred_not_dropped_and_the_totals_balance():
+    """The accounting the drop-reason table depends on: a `var()` on a
+    supported property is *kept* at parse time and resolved per element, so
+    it is no longer a drop for any reason -- and `declarations_seen` still
+    equals kept plus dropped."""
+    m = metrics_for(BODY_P, "p { --x: red; color: var(--x) }")
+    assert m["declarations_pending_var"] == 1
+    assert m["custom_properties_declared"] == 1
+    assert m["declarations_dropped_var_unresolved"] == 0
+    assert m["declarations_seen"] == m["declarations_kept"] + m["declarations_dropped"]
+    assert m["var_declarations_resolved"] == 1
+    assert m["var_declarations_refused"] == 0
+    assert m["var_declarations_unmatched"] == 0
+
+    # A declaration an element asked for and this engine could not produce
+    # is `refused` -- the residue of the old `var-unresolved` drop bucket.
+    refused = metrics_for(BODY_P, "p { color: var(--missing) }")
+    assert refused["var_declarations_refused"] == 1
+    assert refused["var_declarations_unmatched"] == 0
+
+    # A declaration no element ever asked for is NOT a failure, and
+    # collapsing the two into one number is what made Wikipedia report 288
+    # unresolved where the real figure is 7. Both asserted, because a single
+    # counter passes either test alone.
+    unmatched = metrics_for(BODY_P, "q { color: var(--missing) }")
+    assert unmatched["declarations_pending_var"] == 1
+    assert unmatched["var_declarations_attempted"] == 0
+    assert unmatched["var_declarations_refused"] == 0
+    assert unmatched["var_declarations_unmatched"] == 1
+
+
+def test_a_var_on_an_unsupported_property_stays_an_unsupported_property():
+    """`background: var(--x)` would be dropped even with substitution
+    working, so calling it `var-unresolved` would make the var() counter
+    move for a reason var() cannot fix."""
+    m = metrics_for(BODY_P, "p { --x: red; background: var(--x) }")
+    assert m["declarations_dropped_unsupported_property"] == 1
+    assert m["declarations_pending_var"] == 0
+
+
+def test_percentage_and_number_line_heights_inherit_by_opposite_rules():
+    """CSS 2.1 10.8.1 gives `line-height` two computed-value rules, and the
+    value type picks. This is the one property in `INHERITED` where uniform
+    handling is wrong.
+
+    * A `<number>` computes to the number, and the *number* inherits. The
+      child multiplies by its OWN font-size, so a child at 10px gets 15px
+      from `line-height: 1.5` on a 20px parent -- not the parent's 30px.
+    * A `<percentage>` computes to a LENGTH against the element's own
+      font-size, and that *length* inherits. So `line-height: 150%` on the
+      same 20px parent gives the 10px child 30px -- not 15px.
+
+    The child's font-size differs from the parent's on purpose: with one
+    font-size the two rules produce the same answer and neither test
+    discriminates. The two assertions must disagree with each other, and a
+    single mechanism that made both pass would be the wrong mechanism.
+
+    Injection: leaving `Percent` symbolic (removing `line-height` from
+    `_PERCENT_OF_OWN_FONT_SIZE`) fails the percentage half; resolving the
+    number at cascade time -- `Length(1.5 * font_px)` -- fails the numeric
+    half.
+    """
+    numeric = styled(
+        NESTED,
+        "div { font-size: 20px; line-height: 1.5 } span { font-size: 10px }",
+    )
+    parent = find(numeric, "div").computed_style
+    child = find(numeric, "span").computed_style
+    assert parent.line_height == 1.5
+    assert child.line_height == 1.5
+    # The used value the number implies, stated so the point of keeping it a
+    # number is visible: it is 15px on the child, not the parent's 30px.
+    assert child.line_height * child.font_size_px == 15.0
+    assert parent.line_height * parent.font_size_px == 30.0
+
+    percent = styled(
+        NESTED,
+        "div { font-size: 20px; line-height: 150% } span { font-size: 10px }",
+    )
+    parent = find(percent, "div").computed_style
+    child = find(percent, "span").computed_style
+    assert parent.line_height == Length(30, "px")
+    assert child.line_height == Length(30, "px")
+    assert child.line_height != Length(15, "px")
+    assert not isinstance(child.line_height, Percent)
+
+
+def test_a_percentage_width_still_stays_symbolic():
+    """The other half of the same rule, and the reason the two differ: a
+    percentage width refers to the containing block, which does not exist
+    until layout, while a percentage line-height refers to the element's own
+    font-size, which the cascade has.
+
+    Injection: resolving every `Percent` against `font_px` makes this
+    `Length(8, "px")`.
+    """
+    assert style_of(BODY_P, "p", "p { width: 50% }").width == Percent(50)
+    assert style_of(BODY_P, "p", "p { line-height: 50% }").line_height == Length(
+        8, "px"
+    )
