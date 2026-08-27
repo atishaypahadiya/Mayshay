@@ -301,6 +301,105 @@ indistinguishable. Item 7 is resolved by Task D's font and Task C's
 viewport. Item 8 is not a problem to fix; it is recorded so it is not
 "fixed".
 
+## The Chrome comparison contract
+
+Decided before Task D, because it constrains Task D's output format and
+retrofitting a serializer is expensive.
+
+**Numeric per-element comparison over CDP, not screenshot diffing.** A
+pixel diff says something is wrong; it does not say what or where, and it
+cannot produce a position-error distribution. CDP gives box geometry per
+node, which can.
+
+Everything below was verified against **Chrome 151.0.7922.174** with a
+probe, not read from documentation.
+
+### What CDP actually returns
+
+`DOM.getBoxModel` returns all four box edges as quads, in CSS pixels. For a
+`div` with `margin:10px 20px; border:3px; padding:5px 7px; width:400px;
+height:50px`:
+
+| edge | x | y | w x h |
+|---|---|---|---|
+| content | 30.00 .. 430.00 | 18.00 .. 68.00 | 400 x 50 |
+| padding | 23.00 .. 437.00 | 13.00 .. 73.00 | 414 x 60 |
+| border | 20.00 .. 440.00 | 10.00 .. 76.00 | 420 x 66 |
+| margin | 0.00 .. 460.00 | 0.00 .. 86.00 | 460 x 86 |
+
+Three properties to match, each measured:
+
+* **Quad order is TL, TR, BR, BL** -- eight floats, `x1 y1 x2 y2 x3 y3 x4
+  y4`. A rectangle's extent is `x[0]..x[2]` and `y[1]..y[5]`.
+* **`model.width`/`model.height` describe the BORDER box** (420 x 66
+  above), not the content box. Reading them as content dimensions is an
+  easy and silent 20px error.
+* **Coordinates are document-relative, and scrolling does not move them.**
+  Verified directly: adding 800px of `padding-top` and scrolling down 300px
+  moved a box's `y` by exactly +800, not +500.
+
+### The finding that changes Task D's output
+
+`DOM.getBoxModel` is **not sufficient**, and using it alone would silently
+break the comparison for the majority of the corpus.
+
+For an inline `<span>` wrapping across three lines, `getBoxModel` returns
+one box -- x 0.00..194.80, y 89.00..154.00, 195 x 65 -- which is the
+**union** of the fragments and matches none of them. `DOM.getContentQuads`
+returns the three real fragments:
+
+| fragment | x | y | w x h |
+|---|---|---|---|
+| 0 | 78.25 .. 184.09 | 89 .. 106 | 105.84 x 17 |
+| 1 | 0.00 .. 194.80 | 113 .. 130 | 194.80 x 17 |
+| 2 | 0.00 .. 188.53 | 137 .. 154 | 188.53 x 17 |
+
+Inline is **67.8% of the corpus**. Comparing our per-line fragments against
+a union bounding box would make the comparison meaningless for exactly the
+case Task D exists to get right -- and it would look like it was working,
+because the union box is a plausible-shaped rectangle.
+
+So the harness uses **both**: `getBoxModel` for block-level boxes, where
+all four edges matter, and `getContentQuads` for inline boxes, one quad per
+line fragment.
+
+### What Task D must therefore emit
+
+* **Fragments are first-class.** An inline box that spans a line break
+  serialises as N fragments with their own geometry, not as one box with a
+  bounding rectangle. This was already the plan; it is now a hard
+  requirement with a consumer.
+* **All four box edges per box** -- content, padding, border, margin -- as
+  absolute document coordinates with the origin at the document's top-left,
+  y increasing downward. Not relative to the parent, and not
+  viewport-relative.
+* **Rectangles as `x, y, width, height`** in CSS pixels as floats.
+  Converting to and from CDP's quad form is one function, and quads carry
+  a transform capability we do not implement.
+* **A node identity matchable across engines.** CDP's `nodeId` and
+  `backendNodeId` are Chrome-internal and meaningless to us. The contract
+  is a **document-order element ordinal** plus a **structural path**
+  (`/html/body/div[2]/span[1]`), both computed the same way on each side.
+  Two identifiers rather than one on purpose: when the ordinals line up but
+  the paths disagree, the trees diverged, and that is an `htmlparse`
+  finding, not a layout one. **Tree divergence must be reported separately
+  from position divergence** -- otherwise a parser bug reads as thousands of
+  layout errors, which is precisely the confusion Task A2 exists to prevent
+  one layer down.
+
+### Comparison conditions
+
+The reference page is served with a stylesheet forcing `Arial` (which
+Liberation Sans is metric-compatible with), a fixed 1280x1024 viewport,
+`--force-device-scale-factor=1`, and `--hide-scrollbars` -- a scrollbar
+narrows the containing block and shifts every box in it.
+
+Chrome must be launched with `--remote-allow-origins='*'`, and
+`--headless=new` starts with no page target, so the harness attaches to the
+browser endpoint and calls `Target.createTarget` rather than expecting a
+tab in `/json`. Both cost a debugging round in the probe; recorded so they
+do not cost another.
+
 ## Deferred, with counters
 
 Named here so each is a number rather than an absence: `grid`,
