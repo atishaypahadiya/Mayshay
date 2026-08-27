@@ -301,12 +301,16 @@ def test_the_box_model_longhands_are_supported():
     for name, src in supported.items():
         assert val(name, src) is not None, name
 
-    assert len(SUPPORTED_PROPERTIES) == 36
-    added = SUPPORTED_PROPERTIES - {
+    assert len(SUPPORTED_PROPERTIES) == 45
+    box_model = SUPPORTED_PROPERTIES - {
         "display", "width", "height", "font-size", "color",
         "background-color", "margin", "padding", "border",
+        # deliverable 3's nine, counted separately
+        "white-space", "line-height", "font-family", "font-weight",
+        "font-style", "text-align", "vertical-align", "box-sizing",
+        "list-style-type",
     }
-    assert len(added) == 27, sorted(added)
+    assert len(box_model) == 27, sorted(box_model)
 
     # `background` is still outside the table, so a value that is perfectly
     # good CSS is still dropped for the property's sake.
@@ -457,6 +461,13 @@ def test_the_property_table_and_its_derived_sets_agree():
         samples[f"border-{side}-width"] = "1px"
         samples[f"border-{side}-style"] = "solid"
         samples[f"border-{side}-color"] = "red"
+    samples.update({
+        "white-space": "nowrap", "line-height": "1.2",
+        "font-family": "serif", "font-weight": "bold",
+        "font-style": "italic", "text-align": "center",
+        "vertical-align": "middle", "box-sizing": "border-box",
+        "list-style-type": "square",
+    })
     assert set(samples) == SUPPORTED_PROPERTIES, (
         "a property was added to the table without a sample here: "
         f"{set(samples) ^ set(SUPPORTED_PROPERTIES)}"

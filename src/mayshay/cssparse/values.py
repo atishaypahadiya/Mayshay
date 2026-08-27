@@ -160,7 +160,41 @@ Task J or Phase 3 later:
     `background` is still outside the table and still dropped --
     `test_the_box_model_longhands_are_supported` asserts both halves so the
     new boundary cannot drift any more quietly than the old one did.
-14. **`display` is a closed keyword allow-list** (20 entries, above --
+14. **Nine text and box-sizing properties were added by Phase 3 Task A2**:
+    `white-space`, `line-height`, `font-family`, `font-weight`,
+    `font-style`, `text-align`, `vertical-align`, `box-sizing` and
+    `list-style-type`. Three carry their own decisions:
+
+    * **`line-height: normal` stays `Keyword("normal")`**, not a number.
+      Its used value is the font's own preferred spacing, which needs
+      metrics that arrive with Task D; `1.2 x font-size` is what every
+      engine happens to use and is not what the spec says, so resolving it
+      here would bake a guess into a value nothing could later distinguish
+      from a declared one. A `<percentage>` likewise stays `Percent` --
+      that *is* a deviation from CSS 2.1's letter, which computes it
+      against the element's own font-size, and it is taken so the whole
+      percentage family resolves in one place in Task D. One `125%` in the
+      corpus depends on it (executed).
+    * **`font-family` is a tuple of names, kept as parsed**, generics
+      included and not distinguished. Nothing consumes the list this phase
+      -- Phase 3 renders with one vendored font -- so a `serif`-vs-family
+      distinction would be a decision with no consumer to be right for.
+      Recording the list at all is what makes the eventual fallback chain
+      implementable rather than a re-parse.
+    * **`font-weight` resolves `normal`/`bold` to 400/700 here**, because
+      their computed values *are* those numbers. `bolder` and `lighter` are
+      not implemented: their computed value depends on the parent's weight
+      through a lookup table, which is a cascade-time fact this module does
+      not have. Neither appears anywhere in the corpus (executed).
+
+    `list-style-type` is a closed list of CSS Counter Styles 3's predefined
+    styles. The property also admits a `<custom-ident>` naming an
+    `@counter-style` rule, which this engine does not parse, so an
+    unrecognised identifier is `unsupported-value` rather than `invalid` --
+    Wikipedia uses six such names.
+15. **`inherit`, `initial` and `unset` are accepted; `revert` is not.**
+    See `WideKeyword`. Deviation 3 above described the Phase 2 state.
+16. **`display` is a closed keyword allow-list** (20 entries, above --
     counted by `len(_DISPLAY_KEYWORDS)`, not by eye). A `display` value
     outside it is invalid rather than passed through, for
     the same reason the color table had to be complete: a keyword this
@@ -176,6 +210,7 @@ from dataclasses import dataclass
 
 from mayshay.cssparse.tokenizer import (
     Comma,
+    String,
     CssToken,
     Dimension,
     EOFToken,
@@ -806,6 +841,151 @@ def expand_shorthand(name: str, parsed: dict[str, object]) -> dict[str, object]:
 
 
 # --------------------------------------------------------------------------
+# Text and box-sizing properties (Phase 3 Task A2, deliverable 3)
+# --------------------------------------------------------------------------
+
+_WHITE_SPACE_KEYWORDS = frozenset({
+    "normal", "pre", "nowrap", "pre-wrap", "pre-line", "break-spaces",
+})
+
+_FONT_STYLE_KEYWORDS = frozenset({"normal", "italic", "oblique"})
+
+_TEXT_ALIGN_KEYWORDS = frozenset({
+    "start", "end", "left", "right", "center", "justify",
+    "justify-all", "match-parent",
+})
+
+_VERTICAL_ALIGN_KEYWORDS = frozenset({
+    "baseline", "sub", "super", "text-top", "text-bottom",
+    "middle", "top", "bottom",
+})
+
+_BOX_SIZING_KEYWORDS = frozenset({"content-box", "border-box"})
+
+# CSS Counter Styles 3's predefined counter styles, plus `none`. A closed
+# list, for the reason the colour table is closed: `list-style-type` also
+# accepts a `<custom-ident>` naming an `@counter-style` rule, and this engine
+# parses no `@counter-style` rules, so an identifier outside this list names
+# something real that we cannot render. That is `unsupported-value`, not
+# `invalid` -- see `_OPEN_IDENT_PROPERTIES`. Wikipedia alone uses six such
+# names (`meetei`, `santali`, `myanmar_with_period` among them).
+_LIST_STYLE_TYPE_KEYWORDS = frozenset({
+    "none",
+    "disc", "circle", "square",
+    "decimal", "decimal-leading-zero",
+    "lower-roman", "upper-roman",
+    "lower-greek", "lower-alpha", "lower-latin", "upper-alpha", "upper-latin",
+    "arabic-indic", "armenian", "bengali", "cambodian",
+    "cjk-decimal", "cjk-earthly-branch", "cjk-heavenly-stem",
+    "devanagari", "ethiopic-numeric", "georgian", "gujarati", "gurmukhi",
+    "hebrew", "hiragana", "hiragana-iroha",
+    "japanese-formal", "japanese-informal",
+    "kannada", "katakana", "katakana-iroha", "khmer",
+    "korean-hangul-formal", "korean-hanja-formal", "korean-hanja-informal",
+    "lao", "lower-armenian", "malayalam", "mongolian", "myanmar", "oriya",
+    "persian", "simp-chinese-formal", "simp-chinese-informal",
+    "tamil", "telugu", "thai", "tibetan",
+    "trad-chinese-formal", "trad-chinese-informal", "upper-armenian",
+    "disclosure-open", "disclosure-closed",
+})
+
+# `normal` and `bold` are the two keyword weights CSS Fonts 4 keeps; their
+# computed values are the numbers, so they are resolved here rather than
+# reaching the cascade as keywords. `bolder`/`lighter` are deliberately not
+# implemented -- their computed value depends on the *parent's* weight
+# through a lookup table, which is a cascade-time fact this module does not
+# have, and neither appears anywhere in the corpus (executed).
+_FONT_WEIGHT_KEYWORDS = {"normal": 400, "bold": 700}
+
+
+def _keyword_parser(keywords: frozenset[str]):
+    """A property whose whole grammar is one identifier from a closed set."""
+
+    def parse(tokens: list[CssToken]) -> Keyword | None:
+        tok = _single_token(tokens)
+        if isinstance(tok, Ident) and _ascii_lower(tok.value) in keywords:
+            return Keyword(_ascii_lower(tok.value))
+        return None
+
+    return parse
+
+
+def _parse_line_height(tokens: list[CssToken]) -> object | None:
+    """`normal | <number> | <length> | <percentage>`.
+
+    `normal` stays a `Keyword`, not a number. Its used value is the font's
+    own preferred line spacing, which needs font metrics that do not exist
+    until Task D; resolving it to `1.2 x font-size` here would be exactly
+    the computed-vs-used mistake `Percent` and `AUTO` exist to avoid, and
+    the wrong number would look entirely reasonable.
+
+    A `<percentage>` likewise stays a `Percent`, which *is* a deviation from
+    the spec's letter -- CSS 2.1 says a percentage line-height computes to
+    an absolute length against the element's own font-size. It is kept
+    symbolic for consistency with `normal` and with every other percentage
+    in this engine; Task D resolves the family in one place. One `125%` in
+    the corpus depends on it (executed).
+    """
+    tok = _single_token(tokens)
+    if tok is None:
+        return None
+    if isinstance(tok, Ident) and _ascii_lower(tok.value) == "normal":
+        return Keyword("normal")
+    if isinstance(tok, Number):
+        # A negative line-height is invalid CSS.
+        return None if tok.value < 0 else float(tok.value)
+    return _parse_length_percentage(tok, allow_auto=False)
+
+
+def _parse_font_weight(tokens: list[CssToken]) -> int | None:
+    tok = _single_token(tokens)
+    if isinstance(tok, Ident):
+        return _FONT_WEIGHT_KEYWORDS.get(_ascii_lower(tok.value))
+    if isinstance(tok, Number):
+        value = float(tok.value)
+        # CSS Fonts 4 widened the range from 100-900 to 1-1000 and made it
+        # continuous; anything outside it is invalid rather than clamped.
+        return int(value) if 1 <= value <= 1000 else None
+    return None
+
+
+def _parse_font_family(tokens: list[CssToken]) -> tuple[str, ...] | None:
+    """A comma-separated list of family names, kept as parsed.
+
+    `<family-name>` is either a `<string>` or a run of identifiers
+    (`Times New Roman` unquoted is three tokens and one family). Generic
+    families (`serif`, `monospace`) are ordinary entries: nothing consumes
+    the list this phase, so distinguishing them would be a decision with no
+    consumer to be right for. Recording the list at all is what makes the
+    eventual fallback chain implementable rather than a re-parse.
+    """
+    if not _trim(tokens):
+        return None
+    families: list[str] = []
+    for arg in _split_args(tokens):
+        arg = _trim(arg)
+        if not arg:
+            return None
+        if len(arg) == 1 and isinstance(arg[0], String):
+            families.append(arg[0].value)
+            continue
+        words = [tok.value for tok in arg if isinstance(tok, Ident)]
+        if len(words) != len([t for t in arg if not isinstance(t, Whitespace)]):
+            return None
+        families.append(" ".join(words))
+    return tuple(families)
+
+
+def _parse_vertical_align(tokens: list[CssToken]) -> object | None:
+    tok = _single_token(tokens)
+    if tok is None:
+        return None
+    if isinstance(tok, Ident) and _ascii_lower(tok.value) in _VERTICAL_ALIGN_KEYWORDS:
+        return Keyword(_ascii_lower(tok.value))
+    return _parse_length_percentage(tok, allow_auto=False)
+
+
+# --------------------------------------------------------------------------
 # The property table
 # --------------------------------------------------------------------------
 #
@@ -934,6 +1114,23 @@ _PROPERTY_PARSERS: dict[str, object] = {
     "border-style": _four("border-style", _parse_border_style_component),
     "border-color": _four("border-color", _parse_color),
     **{f"border-{side}": _border_side(side) for side in _SIDES},
+    # Deliverable 3: the properties Task D cannot start without. Nothing in
+    # Phase 3 consumes `font-family` or `vertical-align` yet; they are
+    # parsed and recorded because a `ComputedStyle` with no `white-space`
+    # is not something line-box code can be written against, and because
+    # retrofitting `box-sizing` after Task C would mean revisiting every
+    # width in it.
+    "white-space": _one("white-space", _keyword_parser(_WHITE_SPACE_KEYWORDS)),
+    "font-style": _one("font-style", _keyword_parser(_FONT_STYLE_KEYWORDS)),
+    "text-align": _one("text-align", _keyword_parser(_TEXT_ALIGN_KEYWORDS)),
+    "box-sizing": _one("box-sizing", _keyword_parser(_BOX_SIZING_KEYWORDS)),
+    "list-style-type": _one(
+        "list-style-type", _keyword_parser(_LIST_STYLE_TYPE_KEYWORDS)
+    ),
+    "line-height": _one("line-height", _parse_line_height),
+    "font-weight": _one("font-weight", _parse_font_weight),
+    "font-family": _one("font-family", _parse_font_family),
+    "vertical-align": _one("vertical-align", _parse_vertical_align),
 }
 
 # Which longhands each supported property sets -- *all* of them, including
@@ -982,6 +1179,14 @@ LONGHANDS_OF: dict[str, tuple[str, ...]] = {
             f"border-{side}-{kind}" for kind in ("width", "style", "color")
         )
         for side in _SIDES
+    },
+    **{
+        prop: (prop,)
+        for prop in (
+            "white-space", "line-height", "font-family", "font-weight",
+            "font-style", "text-align", "vertical-align", "box-sizing",
+            "list-style-type",
+        )
     },
 }
 
@@ -1084,7 +1289,7 @@ _KNOWN_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
 # `<string>`, so an identifier this module does not recognise names
 # something real (an `@counter-style` rule, a font on the user's machine)
 # rather than being malformed.
-_OPEN_IDENT_PROPERTIES: frozenset[str] = frozenset()
+_OPEN_IDENT_PROPERTIES: frozenset[str] = frozenset({"list-style-type"})
 
 
 def _var_functions(tokens: list[CssToken]) -> bool:
