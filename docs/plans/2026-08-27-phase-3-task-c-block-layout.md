@@ -169,6 +169,43 @@ when the numbers happen to match.
 The corpus uses `margin: 0 auto` widely, so the *centring* path will be
 exercised; the over-constrained path almost certainly will not. Count both.
 
+## What Task C finishes, and what it cannot
+
+Reported as **named categories**, not as expected-versus-unexpected. A
+judgement hides the fourth case; named categories make it countable.
+
+**Block-level `width: auto` resolves here.** It comes from the §10.3.3
+constraint equation against the containing block and is independent of
+content — that is the point of width flowing down. Verified against Chrome
+151 in a 600px containing block: a block with two characters of text and a
+block with forty-seven both used exactly 600.00px. **A block-level box with
+a symbolic width after Task C is a defect, not a handoff.**
+
+Three things legitimately cannot finalise in Task C. Each gets its own
+counter, named for the reason:
+
+1. **`height: auto` on a block containing inline content** — the height
+   depends on how many line boxes the text produces. `heights_deferred_
+   inline_content`.
+2. **Shrink-to-fit widths** — floats, absolutely positioned boxes and
+   `inline-block`, which need the max-content and min-content sizes of
+   their contents and therefore text measurement. Same Chrome probe: float,
+   `inline-block` and absolutely positioned boxes all used 19.27px for the
+   two-character content that gave a block 600px.
+   `widths_deferred_shrink_to_fit`.
+3. **Inline-level boxes**, which have no independent width at all.
+   `widths_inline_level`.
+
+Item 2 matters for scope. Floats and absolute positioning are deferred in
+Task C anyway, but **`inline-block` is not** — the corpus has 90 of them —
+and its width genuinely cannot be computed until Task D. Those stay
+symbolic on purpose.
+
+A **fourth bucket** collects anything symbolic that fits none of the three.
+It should be zero. It is the bucket where a defect appears, and reporting
+it as a named category rather than as "unexpected" keeps it a measurement
+rather than a judgement.
+
 ## Testing discipline
 
 Same as Task B, and for the same measured reason:
