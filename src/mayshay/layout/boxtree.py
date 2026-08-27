@@ -82,6 +82,16 @@ class Box:
     path: str | None = None
     fragment: int = 0
 
+    # Filled by Task C (`layout.block`) with a `BoxGeometry`: all four box
+    # edges in absolute document coordinates, per the Phase 3 comparison
+    # contract. Untyped here on purpose -- `layout.block` imports this
+    # module, so naming its type would be a cycle, and this module builds
+    # structure only. `None` means "not laid out", which is a real state:
+    # out-of-flow boxes and everything inside an inline formatting context
+    # are deferred to Task D and counted rather than given a guessed
+    # rectangle.
+    geometry: object | None = None
+
     @property
     def is_inline_level(self) -> bool:
         return self.display in INLINE_LEVEL
