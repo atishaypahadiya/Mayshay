@@ -44,7 +44,7 @@ from mayshay.dom.node import Element
 from mayshay.htmlparse.treebuilder import parse
 from mayshay.layout.block import (
     COUNTER_NAMES,
-    PARENT_CHILD_BARRIERS,
+    COLLAPSE_BARRIERS,
     MarginGroup,
     layout_document,
 )
@@ -693,14 +693,22 @@ def test_padding_or_a_fixed_height_blocks_the_parent_last_child_collapse(
     """Rule 3 applies only when the parent's height is `auto`. Chrome 151
     puts the following sibling at 71 with the 1px padding and at 70 with the
     fixed height; the positive case above puts it at 60."""
-    root, metrics = laid_out(
-        f'<div style="width:400px"><div id=p style="margin-bottom:10px;{declaration}">'
+    markup = (
+        '<div style="width:400px"><div id=p style="margin-bottom:10px;{extra}">'
         '<div id=c style="height:20px;margin-bottom:40px"></div></div>'
         '<div id=n style="height:20px"></div></div>'
     )
+    root, metrics = laid_out(markup.format(extra=declaration))
     assert top(root, "n") != 60.0, "the child's 40px margin escaped the parent"
     assert top(root, "n") == (71.0 if "padding" in declaration else 70.0)
-    assert metrics[counter] == 1
+
+    # Asserted as a *delta* against the same fixture without the barrier.
+    # The absolute count is a page-wide number -- every box with a fixed
+    # height closes its own bottom edge to collapse-through, so `#c` and
+    # `#n` contribute to `margin_collapse_blocked_parent_height` too -- and
+    # only the delta is a statement about the barrier under test.
+    _, baseline = laid_out(markup.format(extra=""))
+    assert metrics[counter] == baseline[counter] + 1
 
 
 @pytest.mark.parametrize(
@@ -817,18 +825,24 @@ def test_clear_alone_is_not_a_barrier_when_there_is_no_float():
 
     `clear` is therefore parsed, cascaded, and deliberately not acted on.
     """
-    root, metrics = laid_out(
+    markup = (
         '<div style="width:400px">'
         '<div id=a style="height:20px;margin-bottom:30px"></div>'
-        '<div id=b style="clear:both;height:20px;margin-top:10px"></div></div>'
+        '<div id=b style="{extra}height:20px;margin-top:10px"></div></div>'
     )
+    root, metrics = laid_out(markup.format(extra="clear:both;"))
     assert gap(root, "a", "b") == 30.0
     assert top(root, "b") == 50.0
-    assert all(
-        metrics[f"margin_collapse_blocked_{reason}"] == 0
-        for reason in PARENT_CHILD_BARRIERS
-        if reason != "root"
-    )
+    assert metrics["margins_collapsed"] >= 1
+
+    # Byte-for-byte the same geometry and the same barrier counts as the
+    # fixture without `clear`, which is the strongest form of "it changed
+    # nothing".
+    plain, baseline = laid_out(markup.format(extra=""))
+    assert top(plain, "b") == top(root, "b")
+    for reason in COLLAPSE_BARRIERS:
+        key = f"margin_collapse_blocked_{reason}"
+        assert metrics[key] == baseline[key], reason
 
 
 def test_line_boxes_block_collapse_through_and_whitespace_does_not():
@@ -938,6 +952,39 @@ def test_the_four_measured_collapse_through_cases(middle, expected_gap):
     assert gap(root, "a", "b") == expected_gap
 
 
+@pytest.mark.parametrize(
+    "declaration,counter",
+    [
+        ("border-top:1px solid", "margin_collapse_blocked_border_top"),
+        ("border-bottom:1px solid", "margin_collapse_blocked_border_bottom"),
+        ("padding-top:1px", "margin_collapse_blocked_padding_top"),
+        ("padding-bottom:1px", "margin_collapse_blocked_padding_bottom"),
+    ],
+)
+def test_one_pixel_on_any_single_edge_stops_collapse_through(
+    declaration, counter
+):
+    """All four edges, separately. Chrome 151 gives the same 81px gap for
+    every one of them -- 40 + 1 + 40 -- against the 40 the same box gives
+    with no edge at all.
+
+    Four cases rather than one because the four are four separate places to
+    forget. An injection that dropped only the `border-bottom` branch was a
+    **no-op** against the earlier version of this file, which tested the
+    padding cases and the `border-top` case and nothing else: the defect was
+    real and no test noticed. That is the whole argument for the injection
+    table.
+    """
+    root, metrics = laid_out(
+        between(f'<div id=m style="margin:10%;{declaration}"></div>')
+    )
+    assert gap(root, "a", "b") == 81.0
+    assert top(root, "m") == 60.0
+    assert geometry(root, "m").border.height == 1.0
+    assert metrics["margins_collapsed_through_empty"] == 0
+    assert metrics[counter] >= 1
+
+
 # --------------------------------------------------------------------------
 # The mechanical checks
 # --------------------------------------------------------------------------
@@ -1042,7 +1089,7 @@ def test_every_margin_edge_joins_a_group_or_stands_alone():
     assert metrics["margin_edges_seen"] == 2 * metrics["widths_resolved"]
 
 
-def test_every_parent_child_edge_is_open_or_closed_for_one_reason():
+def test_every_vertical_edge_is_open_or_closed_for_one_reason():
     root, metrics = laid_out(
         '<div style="width:400px">'
         '<div id=p1 style="padding-top:1px"><div id=c1 style="height:10px">'
@@ -1052,12 +1099,12 @@ def test_every_parent_child_edge_is_open_or_closed_for_one_reason():
         '<div id=p3><div id=c3 style="height:10px"></div></div></div>'
     )
     blocked = sum(
-        metrics[f"margin_collapse_blocked_{reason}"] for reason in PARENT_CHILD_BARRIERS
+        metrics[f"margin_collapse_blocked_{reason}"] for reason in COLLAPSE_BARRIERS
     )
-    assert metrics["parent_child_edges_seen"] == (
-        metrics["parent_child_edges_open"] + blocked
+    assert metrics["collapse_barrier_edges_seen"] == (
+        metrics["collapse_barrier_edges_open"] + blocked
     )
-    assert metrics["parent_child_edges_seen"] > 0
+    assert metrics["collapse_barrier_edges_seen"] > 0
 
 
 def test_every_counter_is_seeded_at_zero():
@@ -1127,33 +1174,36 @@ def test_absolute_coordinates_compose_through_nesting():
 # --------------------------------------------------------------------------
 
 
-def test_the_corpus_barely_exercises_any_of_this():
-    """Not a correctness test: a census, so the coverage gap is a number
-    rather than a hope.
+def test_every_corpus_page_lays_out_with_the_partitions_intact():
+    """The corpus as a smoke test, which is all it can be here.
 
-    The shapes counted here are the ones the synthetic tests above cover,
-    and the point is how few of them a real page contains. The figures are
-    reported by `scripts/layout_report.py`; this test asserts only the
-    relationship that makes the census meaningful -- that the corpus
-    contains far fewer collapse-through sites than the synthetic suite does
-    -- so it does not have to be edited every time the corpus is recollected.
+    Every constraint in `assert_layout_constraints` runs inside
+    `layout_document`, so this exercises all three of them over real markup
+    -- 12,581 boxes on Wikipedia alone -- rather than only over the
+    synthetic fixtures above. What it cannot do is exercise the *rules*:
+    `scripts/layout_report.py` reports the census, and at 1280x1024 with
+    external sheets applied it says the three pages between them contain
+    **zero** percentage vertical margins, **zero** adjacent sibling pairs
+    with two negative margins, 9 with mixed signs, and 4 collapse-through
+    chains of two or more. That is the coverage gap as a number.
+
+    In-document CSS only here; the external sheets need the manifest
+    ordering that `scripts/corpus.py` owns, and a test that reached into
+    `scripts/` for it would be measuring the driver.
     """
-    pytest.importorskip("pathlib")
     from pathlib import Path
 
     corpus = Path(__file__).resolve().parents[2] / "data" / "corpus"
-    if not corpus.is_dir():  # pragma: no cover - corpus is committed
-        pytest.skip("no corpus")
-    page = corpus / "example.com" / "page.html"
-    if not page.is_file():  # pragma: no cover - corpus is committed
-        pytest.skip("no example.com page")
-    document = parse(page.read_text(encoding="utf-8", errors="replace"))
-    style_document(document, [], viewport=VIEWPORT)
-    root, _ = build_box_tree(document)
-    metrics = layout_document(root, VIEWPORT)
-    # The whole point: a real page runs through this code and exercises
-    # almost none of its rules.
-    assert metrics["layout_boxes_seen"] > 0
-    assert metrics["margin_edges_seen"] == (
-        metrics["margin_edges_collapsed"] + metrics["margin_edges_alone"]
-    )
+    pages = sorted(corpus.glob("*/page.html"))
+    if not pages:  # pragma: no cover - the corpus is committed
+        pytest.skip("no collected corpus pages")
+    for page in pages:
+        document = parse(page.read_text(encoding="utf-8", errors="replace"))
+        style_document(document, [], viewport=VIEWPORT)
+        root, _ = build_box_tree(document)
+        metrics = layout_document(root, VIEWPORT)
+        assert metrics["layout_boxes_seen"] == len(list(root.walk())), page.parent.name
+        assert metrics["widths_deferred_other"] == 0, page.parent.name
+        assert metrics["margin_edges_seen"] == (
+            metrics["margin_edges_collapsed"] + metrics["margin_edges_alone"]
+        ), page.parent.name

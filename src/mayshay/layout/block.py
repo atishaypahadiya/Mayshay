@@ -68,7 +68,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass, replace
 
-from mayshay.cssparse.cascade import ComputedStyle
+from mayshay.cssparse.cascade import VIEWPORT_UNITS, ComputedStyle
 from mayshay.cssparse.media import Viewport
 from mayshay.cssparse.values import AUTO, Length, Percent
 from mayshay.layout.boxtree import Box
@@ -150,8 +150,8 @@ COUNTER_NAMES: tuple[str, ...] = (
     "margin_edges_seen",
     "margin_edges_collapsed",
     "margin_edges_alone",
-    "parent_child_edges_seen",
-    "parent_child_edges_open",
+    "collapse_barrier_edges_seen",
+    "collapse_barrier_edges_open",
     "margin_collapse_blocked_root",
     "margin_collapse_blocked_padding_top",
     "margin_collapse_blocked_border_top",
@@ -167,7 +167,8 @@ COUNTER_NAMES: tuple[str, ...] = (
     "layout_position_relative_unoffset",
     "layout_inner_fallback_block",
     "layout_table_box_margins_applied",
-    "layout_length_unit_unresolved",
+    "layout_viewport_unit_unresolved",
+    "layout_length_unit_unexpected",
     "layout_boxes_deferred_subtree",
 )
 
@@ -245,6 +246,13 @@ class BoxGeometry:
     containing_block_width: float
     collapsed_margin_top: float = 0.0
     collapsed_margin_bottom: float = 0.0
+    # Whether this box's own top and bottom margins ended up adjoining --
+    # section 8.3.1's collapse-through. Recorded rather than inferred: a
+    # zero-height box with no children looks identical from the outside
+    # whether it collapsed through or was stopped by a line box or a new
+    # formatting context, and a census that guesses from the geometry counts
+    # 78 where the layout counted 58.
+    collapsed_through: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -389,16 +397,26 @@ def _px(value: object, *, basis: float, metrics: Counter[str]) -> float | None:
     if isinstance(value, Percent):
         return float(value.value) / 100.0 * basis
     if isinstance(value, Length):
+        if value.unit in VIEWPORT_UNITS:
+            # `cascade._length_to_px` returns None for `vw`/`vh`/`vmin`/
+            # `vmax` and the value survives symbolically. Resolving it *here*
+            # would give two answers for the same unit -- a `vw` box-model
+            # length would resolve and a `vw` font-size would not -- so it
+            # stays where it belongs: `_length_to_px` needs a viewport
+            # threaded through its two call sites, which is a cascade change
+            # and not a layout one. Counted, and treated as zero.
+            #
+            # Three occurrences on the corpus, all on example.com
+            # (`60vw` once, `15vh` twice) and all box-model.
+            metrics["layout_viewport_unit_unresolved"] += 1
+            return 0.0
         if value.unit != "px":
-            # The cascade converts every absolute and font-relative unit to
-            # px; a survivor is one it could not resolve (a viewport unit
-            # cascaded with no viewport). Counted rather than guessed.
-            metrics["layout_length_unit_unresolved"] += 1
+            metrics["layout_length_unit_unexpected"] += 1
             return 0.0
         return float(value.value)
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
-    metrics["layout_length_unit_unresolved"] += 1
+    metrics["layout_length_unit_unexpected"] += 1
     return 0.0
 
 
@@ -443,20 +461,6 @@ def _establishes_formatting_context(box: Box, style: ComputedStyle) -> str | Non
     if box.display in NON_BLOCK_INNER_DISPLAYS:
         return "new_formatting_context"
     return None
-
-
-def _has_in_flow_block_children(box: Box) -> bool:
-    """Is there anything here for a parent/child margin collapse to happen
-    *to*? A barrier on a box with no in-flow block-level child blocked
-    nothing, and counting it would turn every leaf `<div>` with padding into
-    a margin-collapsing event."""
-    for child in box.children:
-        if child.is_inline_level:
-            continue
-        if _is_out_of_flow(_style_of(child)) is not None:
-            continue
-        return True
-    return False
 
 
 def _is_blank_text_box(box: Box) -> bool:
@@ -790,17 +794,28 @@ def _layout_block(
             and (height is None or height == 0)
         )
 
-    if _has_in_flow_block_children(box):
-        # One reason per edge, and the two open-or-closed counts partition
-        # with the per-reason ones -- asserted in `assert_layout_constraints`.
-        # This is the check that fails the moment a barrier is added to the
-        # rule set and forgotten in the counting.
-        metrics["parent_child_edges_seen"] += 2
-        for closed_by in (top_closed_by, bottom_closed_by):
-            if closed_by is None:
-                metrics["parent_child_edges_open"] += 1
-            else:
-                metrics[f"margin_collapse_blocked_{closed_by}"] += 1
+    # Both of this box's vertical edges, classified open or closed with one
+    # named reason each, for every laid-out block box. The partition over
+    # them is asserted in `assert_layout_constraints` and is the check that
+    # fails the moment a barrier joins the rule set and is forgotten in the
+    # counting.
+    #
+    # Counted for every box, not only for parents: an edge closes the
+    # parent/first-child collapse *and* the box's own collapse-through, and
+    # both are real. An empty `<div style="padding:1px">` between two
+    # margined siblings blocks a collapse that a bare one does not, so the
+    # barrier event is there even with no children to have it with.
+    #
+    # An edge can be structurally open and still collapse nothing, when line
+    # boxes are what stop it. That is `margin_collapse_blocked_line_box`,
+    # which is deliberately outside this partition -- it is a fact about the
+    # content, not about the edge.
+    metrics["collapse_barrier_edges_seen"] += 2
+    for closed_by in (top_closed_by, bottom_closed_by):
+        if closed_by is None:
+            metrics["collapse_barrier_edges_open"] += 1
+        else:
+            metrics[f"margin_collapse_blocked_{closed_by}"] += 1
 
     if height is None:
         used_height = content_height
@@ -825,6 +840,7 @@ def _layout_block(
 
     _assign_geometry(
         box,
+        collapsed_through=collapsed_through,
         horizontal=horizontal,
         margin_top=margin_top,
         margin_bottom=margin_bottom,
@@ -911,11 +927,28 @@ def _layout_children(
             _defer_subtree(child, metrics, reason="widths_deferred_shrink_to_fit")
             continue
         if child.is_inline_level:
-            # Task B guarantees a block container's children are either all
-            # block-level or all inline-level, so this is unreachable for a
-            # well-formed tree; it is here so a malformed one is a counted
-            # number rather than a wrong position.
-            _defer_subtree(child, metrics, reason="widths_deferred_other")
+            # Reached, and measured rather than assumed. Task B leaves a
+            # block container's children alone when they are *all*
+            # inline-level, so a container holding nothing but collapsible
+            # white space arrives here: `_has_line_boxes` correctly says it
+            # has no line boxes (white space that collapses away produces
+            # none, which is why it still collapses through), and then its
+            # blank text children turn up in the block-flow loop.
+            #
+            # Seven of them on the corpus, all on Wikipedia, all blank text.
+            # An earlier version of this comment claimed the branch was
+            # unreachable for a well-formed tree and sent every case to
+            # `widths_deferred_other`; the fourth bucket read 7 instead of 0
+            # and that is what the bucket is for.
+            _defer_subtree(
+                child,
+                metrics,
+                reason=(
+                    "widths_not_applicable_inline_level"
+                    if _is_blank_text_box(child)
+                    else "widths_deferred_other"
+                ),
+            )
             continue
 
         result = _layout_block(
@@ -1026,6 +1059,7 @@ def _assign_geometry(
     inner_x: float,
     inner_y: float,
     cb_width: float,
+    collapsed_through: bool = False,
 ) -> None:
     border_x = horizontal.margin_left
     padding_x = border_x + horizontal.border_left
@@ -1060,6 +1094,7 @@ def _assign_geometry(
             border_top, horizontal.border_right, border_bottom, horizontal.border_left
         ),
         containing_block_width=cb_width,
+        collapsed_through=collapsed_through,
     )
 
 
@@ -1129,7 +1164,7 @@ def assert_layout_constraints(
     """
     _assert_box_partition(metrics)
     _assert_margin_edge_partition(metrics)
-    _assert_parent_child_edge_partition(metrics)
+    _assert_collapse_barrier_partition(metrics)
     _assert_geometry(root, cb_x=0.0, cb_width=initial_containing_block_width)
 
 
@@ -1147,7 +1182,7 @@ def _assert_box_partition(metrics: Counter[str]) -> None:
     )
 
 
-PARENT_CHILD_BARRIERS: tuple[str, ...] = (
+COLLAPSE_BARRIERS: tuple[str, ...] = (
     "root",
     "padding_top",
     "border_top",
@@ -1158,15 +1193,16 @@ PARENT_CHILD_BARRIERS: tuple[str, ...] = (
 )
 
 
-def _assert_parent_child_edge_partition(metrics: Counter[str]) -> None:
+def _assert_collapse_barrier_partition(metrics: Counter[str]) -> None:
     blocked = sum(
         metrics[f"margin_collapse_blocked_{reason}"]
-        for reason in PARENT_CHILD_BARRIERS
+        for reason in COLLAPSE_BARRIERS
     )
-    total = metrics["parent_child_edges_open"] + blocked
-    assert metrics["parent_child_edges_seen"] == total, (
-        "every parent/child margin edge is open or closed for exactly one "
-        f"named reason: seen {metrics['parent_child_edges_seen']} != {total}"
+    total = metrics["collapse_barrier_edges_open"] + blocked
+    assert metrics["collapse_barrier_edges_seen"] == total, (
+        "every vertical edge is open to collapsing or closed for exactly one "
+        f"named reason: seen {metrics['collapse_barrier_edges_seen']} != "
+        f"{total}"
     )
 
 

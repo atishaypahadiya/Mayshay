@@ -643,7 +643,10 @@ _ABSOLUTE_PX = {
 _EM_MULTIPLE = {"em": 1.0, "ex": 0.5, "ch": 0.5}
 
 # Need a viewport. Kept symbolic -- see the module docstring.
-_VIEWPORT_UNITS = frozenset({"vw", "vh", "vmin", "vmax"})
+# Public: layout has to recognise the units the cascade could not
+# resolve, and a second copy of the set in `layout/block.py` is exactly the
+# kind of quiet duplication that drifts.
+VIEWPORT_UNITS = frozenset({"vw", "vh", "vmin", "vmax"})
 
 
 def _length_to_px(
@@ -664,7 +667,7 @@ def _length_to_px(
         return round(length.value * multiple * font_px, 6)
     if unit == "rem":
         return round(length.value * root_px, 6)
-    if unit in _VIEWPORT_UNITS:
+    if unit in VIEWPORT_UNITS:
         return None
     raise ValueError(f"unhandled length unit {unit!r}")
 
