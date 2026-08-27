@@ -95,8 +95,16 @@ KNOWN_ERROR_MISSES = {
 }
 
 
-def _curated_cases():
-    """Corpus cases whose expected errors fall entirely inside our set.
+def _strip_position(line: str) -> str:
+    return line.split(":", 1)[1].strip() if ":" in line else line.strip()
+
+
+def curated_codes(case) -> list[str] | None:
+    """The expected codes for `case` if it is curated, else None.
+
+    A case is curated when its expected errors fall entirely inside our set:
+    it isn't a fragment or script-on case, and every expected code is in
+    TREE_ERROR_CODES.
 
     The selection rule -- "every expected code is in TREE_ERROR_CODES" -- is a
     proxy for "every expected error is one a tree builder could produce", and
@@ -114,28 +122,35 @@ def _curated_cases():
     describes what the eight modes can produce, which is a different question.
     Splitting the vocabulary by producer would need a per-code annotation the
     corpus does not carry.
+
+    Shared with scripts/error_report.py so the whole-corpus sweep can never
+    drift from what this test file actually selects and checks.
     """
+    if case.fragment is not None or case.script == "on":
+        return None
+    codes = [_strip_position(line) for line in case.errors]
+    if codes and all(c in TREE_ERROR_CODES for c in codes):
+        return codes
+    return None
+
+
+def _curated_cases():
     try:
         cases = load_tree_tests("tests1.dat")
     except FileNotFoundError:
         return []
     out = []
     for case in cases:
-        if case.fragment is not None or case.script == "on":
+        codes = curated_codes(case)
+        if codes is None:
             continue
-        codes = [_strip_position(line) for line in case.errors]
-        if codes and all(c in TREE_ERROR_CODES for c in codes):
-            marks = []
-            if case.id in KNOWN_ERROR_MISSES:
-                marks.append(
-                    pytest.mark.xfail(strict=True, reason=KNOWN_ERROR_MISSES[case.id])
-                )
-            out.append(pytest.param(case, codes, marks=marks, id=case.id))
+        marks = []
+        if case.id in KNOWN_ERROR_MISSES:
+            marks.append(
+                pytest.mark.xfail(strict=True, reason=KNOWN_ERROR_MISSES[case.id])
+            )
+        out.append(pytest.param(case, codes, marks=marks, id=case.id))
     return out
-
-
-def _strip_position(line: str) -> str:
-    return line.split(":", 1)[1].strip() if ":" in line else line.strip()
 
 
 @requires_corpus
