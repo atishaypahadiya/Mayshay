@@ -462,13 +462,25 @@ def test_genuinely_malformed_values_are_invalid():
 
 
 def test_a_kelvin_sign_keyword_is_invalid_not_unsupported_value():
-    """Deviation 12's pair, classified. `blocK` and `pinK` are not
-    CSS at all -- `str.lower()` would fold U+212A to `k` and accept both --
-    so they belong in `invalid`, while the ASCII spellings parse and are
-    never classified at all.
+    """Deviation 12's pair, classified. `bloc<U+212A>` and `pin<U+212A>` are
+    not CSS at all -- `str.lower()` would fold U+212A KELVIN SIGN to `k` and
+    accept both -- so they are dropped, and the drop belongs in `invalid`
+    rather than in a bucket that says "valid CSS we chose not to do".
+
+    The sign is built from an escape, never written as a literal: U+212A and
+    ASCII K are indistinguishable in a terminal, and a literal here would
+    silently become the ASCII spelling on any copy-paste -- at which point
+    `val(...)` would return a parsed value, `classify_drop` would be being
+    called outside its contract, and both halves would still pass.
     """
-    assert why("display", "blocK") == DROP_INVALID
-    assert why("color", "pinK") == DROP_INVALID
+    kelvin = "\u212a"
+    assert kelvin != "K" and kelvin.lower() == "k"
+    assert val("display", "bloc" + kelvin) is None
+    assert val("color", "pin" + kelvin) is None
+    assert why("display", "bloc" + kelvin) == DROP_INVALID
+    assert why("color", "pin" + kelvin) == DROP_INVALID
+    # The ASCII spellings parse, so this is a test of the fold and not of
+    # `classify_drop` returning a constant.
     assert val("display", "block") is not None
     assert val("color", "pink") is not None
 

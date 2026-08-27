@@ -65,6 +65,13 @@ HEADLINE = (
     ("cssparse", "rules_total"),
     ("cssparse", "declarations_kept"),
     ("cssparse", "declarations_dropped"),
+    # The breakdown, not just the rate: a drop rate falls when the parser
+    # improves and also when validation loosens, and only these four tell
+    # the two apart. `invalid` is the one that must never shrink.
+    ("cssparse", "declarations_dropped_unsupported_property"),
+    ("cssparse", "declarations_dropped_unsupported_value"),
+    ("cssparse", "declarations_dropped_var_unresolved"),
+    ("cssparse", "declarations_dropped_invalid"),
     ("cssparse", "style_elements"),
     ("cssparse", "inline_style_attributes"),
     ("cssparse", "author_stylesheets"),

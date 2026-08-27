@@ -181,7 +181,22 @@ Deliberate deviations and omissions
     until the counter was corrected, so any `declarations_applied` figure in
     a CSV written before this commit is low by the number of `font-size`
     declarations that page applied.
-12. **Every declaration and error counter is a whole-document total** --
+12. **Every dropped declaration is classified into exactly one of four
+    reasons**, emitted as `declarations_dropped_<reason>` alongside the
+    total: `unsupported_property` (the name is not in `values.py`'s table),
+    `unsupported_value` (the name is known, the value grammar is not),
+    `var_unresolved` (a `var()` reference this module did not substitute)
+    and `invalid` (genuinely malformed; a browser drops it too). They sum
+    to `declarations_dropped`, which keeps its Phase 2 meaning.
+
+    The reason a rate alone is not enough: it falls when the parser
+    improves and it also falls when validation loosens, and those are
+    opposite outcomes. `invalid` is the tripwire -- everything in it is
+    something a browser drops too, so a shrinking `invalid` means this
+    engine started accepting garbage. `values.classify_drop` decides;
+    `_cascade_declarations` is the single place that calls it, for both
+    `<style>` bodies and `style=` attributes.
+13. **Every declaration and error counter is a whole-document total** --
     `<style>` bodies, `style=` attributes and the UA sheet summed
     together. `tokenizer_parse_errors`
     and `css_parse_errors` include the inline path -- which they did not

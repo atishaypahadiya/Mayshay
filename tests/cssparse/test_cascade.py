@@ -18,7 +18,14 @@ from mayshay.cssparse.cascade import (
     ComputedStyle,
     style_document,
 )
-from mayshay.cssparse.values import AUTO, Color, Keyword, Length, Percent
+from mayshay.cssparse.values import (
+    AUTO,
+    DROP_REASONS,
+    Color,
+    Keyword,
+    Length,
+    Percent,
+)
 from mayshay.htmlparse.treebuilder import parse
 
 
@@ -1459,3 +1466,79 @@ def test_an_href_with_no_entry_does_not_crash_and_is_counted():
     metrics = style_document(document, [], external_css={"a.css": "p{color:green}"})
     assert metrics["link_stylesheets_skipped"] == 1
     assert find(document, "p").computed_style.color == RED
+
+
+# --------------------------------------------------------------------------
+# Drop reasons (Phase 3 Task A2, deliverable 1)
+# --------------------------------------------------------------------------
+
+
+def _reason_key(reason):
+    return f"declarations_dropped_{reason.replace('-', '_')}"
+
+
+def _reasons(m):
+    return {r: m[_reason_key(r)] for r in DROP_REASONS}
+
+
+def test_the_four_drop_reasons_partition_declarations_dropped():
+    """Injection: incrementing only `declarations_dropped` and forgetting the
+    reason counter (the shape the code had before this task) leaves the parts
+    summing to less than the total.
+
+    Both sides asserted: a document that drops nothing must have every
+    counter at zero *and present*, because a partition with a missing part is
+    not a partition.
+    """
+    css = (
+        "p { mask-image: none; display: flow-root; color: var(--x);"
+        " width: banana; color: blue }"
+    )
+    m = metrics_for(BODY_P, css)
+    assert sum(_reasons(m).values()) == m["declarations_dropped"]
+    assert _reasons(m) == {
+        "unsupported-property": 1,
+        "unsupported-value": 1,
+        "var-unresolved": 1,
+        "invalid": 1,
+    }
+
+    clean = metrics_for(BODY_P, "p { color: blue }")
+    assert clean["declarations_dropped"] == 0
+    assert _reasons(clean) == dict.fromkeys(DROP_REASONS, 0)
+    for reason in DROP_REASONS:
+        assert _reason_key(reason) in clean, reason
+
+
+def test_drop_reasons_are_counted_for_the_style_attribute_too():
+    """**The chokepoint test.** `<style>` bodies and `style=` attributes ran
+    through two near-identical copies of the same loop, and a Phase 2 fix
+    landed in one and silently not the other. The two now share
+    `_cascade_declarations`, and this asserts the same four declarations are
+    classified identically whichever way they are written.
+
+    Injection: reverting `_parse_inline_style` to its own copy of the loop
+    without the `classify_drop` call zeroes the right-hand side.
+    """
+    decls = (
+        "mask-image: none; display: flow-root; color: var(--x); width: banana"
+    )
+    from_sheet = _reasons(metrics_for(BODY_P, f"p {{ {decls} }}"))
+    from_attr = _reasons(
+        style_document(parse(f'<!DOCTYPE html><body><p style="{decls}">hi</p>'), [])
+    )
+    assert from_sheet == from_attr
+    assert sum(from_attr.values()) == 4
+
+
+def test_an_unsupported_property_and_a_malformed_value_are_counted_apart():
+    """The distinction the whole instrumentation exists for: a drop rate
+    falls when the parser improves *and* when validation loosens, and only
+    the breakdown tells them apart. Injection: collapsing both branches into
+    one counter makes the two dicts equal."""
+    unsupported = _reasons(metrics_for(BODY_P, "p { mask-image: none }"))
+    malformed = _reasons(metrics_for(BODY_P, "p { width: banana }"))
+    assert unsupported["unsupported-property"] == 1
+    assert unsupported["invalid"] == 0
+    assert malformed["invalid"] == 1
+    assert malformed["unsupported-property"] == 0
