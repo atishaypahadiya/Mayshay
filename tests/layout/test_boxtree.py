@@ -290,3 +290,33 @@ def test_a_real_split_is_counted_as_a_split_and_not_as_dissolved():
     assert metrics["boxes_inline_split"] == 1
     assert metrics["boxes_inline_fragments"] == 2
     assert metrics["boxes_inline_dissolved"] == 0
+
+
+def test_dissolved_inlines_are_recorded_as_known_non_comparables():
+    """The Chrome harness must be able to EXCLUDE these by identity, not
+    just know how many there are. CDP answers getBoxModel for a node we
+    produce no box for, so an unrecorded dissolved inline reads as a layout
+    failure rather than a question that does not apply.
+    """
+    seen = []
+    root, metrics = built_recording("<div><span><p>x</p></span></div>", seen)
+    assert metrics["boxes_inline_dissolved"] == 1
+    assert len(seen) == 1
+    assert seen[0]["path"].endswith("/span[1]")
+    assert seen[0]["reason"] == "inline-dissolved"
+    assert isinstance(seen[0]["ordinal"], int)
+
+
+def test_a_real_split_is_not_recorded_as_non_comparable():
+    """A split inline HAS boxes -- one per fragment -- so it is comparable
+    and must not be excluded. Only the no-box case is."""
+    seen = []
+    _, metrics = built_recording("<div><span>a<p>x</p>b</span></div>", seen)
+    assert metrics["boxes_inline_split"] == 1
+    assert seen == []
+
+
+def built_recording(html, sink, css=""):
+    document = parse(f"<style>{css}</style>{html}" if css else html)
+    style_document(document, [])
+    return build_box_tree(document, non_comparable=sink)

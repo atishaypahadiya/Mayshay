@@ -223,7 +223,9 @@ def _wrap_inline_runs(children: list[Box], metrics: Counter[str]) -> list[Box]:
     return out
 
 
-def _split_inline_around_blocks(box: Box, metrics: Counter[str]) -> list[Box]:
+def _split_inline_around_blocks(
+    box: Box, metrics: Counter[str], non_comparable: list | None = None
+) -> list[Box]:
     """An inline box containing a block-level box is broken around it.
 
     Returns the boxes that replace `box` in its parent. The inline's own
@@ -281,10 +283,25 @@ def _split_inline_around_blocks(box: Box, metrics: Counter[str]) -> list[Box]:
         metrics["boxes_inline_fragments"] += index
     else:
         metrics["boxes_inline_dissolved"] += 1
+        # Recorded, not merely counted. The Chrome harness needs the
+        # identities: CDP will happily answer getBoxModel for this node
+        # while we have no box for it at all, so without this list it reads
+        # as a layout failure instead of a question that does not apply.
+        # Same shape as the two-identifier scheme -- distinguishing "we
+        # differ" from "there is nothing to compare".
+        if non_comparable is not None and box.ordinal is not None:
+            non_comparable.append(
+                {"ordinal": box.ordinal, "path": box.path, "reason": "inline-dissolved"}
+            )
     return pieces
 
 
-def _build(node: Node, ids: dict[int, tuple[int, str]], metrics: Counter[str]) -> list[Box]:
+def _build(
+    node: Node,
+    ids: dict[int, tuple[int, str]],
+    metrics: Counter[str],
+    non_comparable: list | None = None,
+) -> list[Box]:
     """Boxes for `node` itself. Returns a list because an inline may split."""
     display = _display_of(node, metrics)
     if display is None:
@@ -301,17 +318,19 @@ def _build(node: Node, ids: dict[int, tuple[int, str]], metrics: Counter[str]) -
 
     children: list[Box] = []
     for child in node.children:
-        children.extend(_build(child, ids, metrics))
+        children.extend(_build(child, ids, metrics, non_comparable))
 
     if box.is_inline_level:
         box.children = children
-        return _split_inline_around_blocks(box, metrics)
+        return _split_inline_around_blocks(box, metrics, non_comparable)
 
     box.children = _wrap_inline_runs(children, metrics)
     return [box]
 
 
-def build_box_tree(document: Node) -> tuple[Box | None, Counter[str]]:
+def build_box_tree(
+    document: Node, *, non_comparable: list | None = None
+) -> tuple[Box | None, Counter[str]]:
     """Build the box tree for a styled document.
 
     Returns `(root, metrics)`. Writing the metrics is a driver's job -- see
@@ -321,6 +340,13 @@ def build_box_tree(document: Node) -> tuple[Box | None, Counter[str]]:
     element needs a `computed_style` to have a `display`. Elements without
     one are skipped and counted in `boxes_unstyled_skipped` rather than
     guessed at.
+
+    Pass a list as `non_comparable` to collect the DOM nodes that produce no
+    box on our side but that CDP will still answer for -- currently the
+    dissolved inlines. The Chrome comparison harness must exclude these by
+    identity; 32 of them on the corpus would otherwise read as 32 layout
+    failures. Derived rather than hard-coded, so it stays correct when the
+    corpus is re-collected.
     """
     metrics: Counter[str] = Counter()
     # Seeded so absence and zero stay distinguishable in the CSV: a page
@@ -347,7 +373,7 @@ def build_box_tree(document: Node) -> tuple[Box | None, Counter[str]]:
 
     roots: list[Box] = []
     for child in document.children:
-        roots.extend(_build(child, ids, metrics))
+        roots.extend(_build(child, ids, metrics, non_comparable))
 
     # The document element is the single root when there is one; a stray
     # comment or doctype produces no box, so `roots` is usually length 1.

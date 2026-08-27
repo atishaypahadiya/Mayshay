@@ -229,6 +229,59 @@ correct one and the only reliable detector was an independent second
 derivation. Reading harder does not work. Neither does checking that the
 number is reasonable, because it always was.
 
+## Instance ten, and what it says about these rules
+
+`boxes_inline_split` counted 34 sites on the corpus and
+`boxes_inline_fragments` counted 2. The split figure was not wrong
+arithmetic -- it was a name covering two different things. 32 of the 34
+were inlines whose children are *all* block-level
+(`<span><table>...</table></span>`, which Hacker News does 30 times); those
+are not split around anything, they dissolve and contribute no box. One
+counter for both over-claimed, and the number read as "34 inlines were
+split" when the truth was "2 were split and 32 vanished".
+
+That is the unstated-population shape again, and it happened **four commits
+after this file was written**, in code by the person who wrote it, while
+the rule was fresh.
+
+### Writing a rule down does not install it
+
+Every instance in this document was caught by **measurement**:
+
+| # | caught by |
+|---|---|
+| 1 display census | probing an injected sheet after an exactly-zero delta |
+| 2 `getlength` | computing the same advances from `fontTools` |
+| 3 `getBoxModel` | asking `getContentQuads` the same question |
+| 4 var() denominator | an implementer reproducing the figure and disagreeing |
+| 10 `boxes_inline_split` | noticing 34 splits produced 2 fragments, and looking |
+
+**None was caught by remembering the rule.** Not one. In every case the
+author knew the principle, had recently written or read it, and produced
+the defect anyway; the detector was always a number that did not add up.
+The 342-vs-519 pruning-root error is the same story -- it went into a
+planning document days after the denominator hazard was documented, and was
+found by re-measuring for a brief rather than by recall.
+
+The honest conclusion is that these rules are worth very little as things
+to remember and quite a lot as things to *run*. Vigilance is not a control.
+So the countermeasures that have actually worked here are all mechanical:
+
+* injection testing, which fails a build rather than asking anyone to be
+  careful;
+* seeded counters, so absence and zero are distinguishable without anyone
+  checking;
+* partition assertions (`sum(reasons) == dropped`, `seen == kept + dropped`)
+  that fail loudly the moment a category is added and forgotten;
+* the tree-hash check on the branch rewrite, which caught two truncations
+  no amount of reading the script would have;
+* a second derivation, run once at design time, rather than a resolution to
+  be suspicious later.
+
+Where a rule cannot be made mechanical, expect it to be violated and plan
+for the violation to be *loud* -- which is the whole content of the
+"quiet sharing" criterion above.
+
 ## What to do about it
 
 * **A measurement is verified by a second measurement obtained a different

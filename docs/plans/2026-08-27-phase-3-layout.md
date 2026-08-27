@@ -420,6 +420,15 @@ line fragment.
 * **Rectangles as `x, y, width, height`** in CSS pixels as floats.
   Converting to and from CDP's quad form is one function, and quads carry
   a transform capability we do not implement.
+* **Known non-comparables, recorded before Task D runs.** Some DOM nodes
+  produce no box on our side while CDP still answers `getBoxModel` for
+  them. `build_box_tree(document, non_comparable=[...])` collects them by
+  identity -- currently the 32 dissolved inlines on the corpus, an inline
+  whose children are all block-level and which therefore contributes no box
+  at all. Unrecorded, those read as 32 layout failures. This is the same
+  shape as the two-identifier scheme: distinguishing "we differ" from "the
+  question does not apply". Derived from the tree rather than hard-coded,
+  so it stays correct when the corpus is re-collected.
 * **A node identity matchable across engines.** CDP's `nodeId` and
   `backendNodeId` are Chrome-internal and meaningless to us. The contract
   is a **document-order element ordinal** plus a **structural path**
