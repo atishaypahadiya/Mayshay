@@ -48,10 +48,21 @@ decision from an oversight:
   `figure`, `dl`, `dd`, `ol`, `ul`, `pre`, `hr`. The brief scopes default
   margins to `body`, `p` and `h1`-`h6`; adding a partial list of the rest
   would be a worse lie than the complete absence of one.
-- **No `table` display types beyond `display: table` on `<table>` itself.**
-  `table-row`/`table-cell` are parseable values, but the tree builder's
-  table insertion modes are a Phase 1 carried gap, so styling for a table
-  structure the parser does not reliably build would be untestable.
+- **`li` is `display: block`, not the spec's `display: list-item`.** The
+  keyword parses, but nothing generates a marker box, so `list-item` would
+  today be a synonym for `block` that claimed more than it delivered. This
+  one is a genuine gap rather than a decision, and it should be revisited
+  the moment layout can draw a marker.
+- **No `display` for the table elements' *presentational* fallbacks**
+  (`table[role=presentation]`, `display: table` on non-table elements). The
+  table display types themselves are all present -- see the Tables block
+  below. An earlier draft of this file gave `<table>` `display: table` and
+  left its children inline, and justified it on the grounds that the tree
+  builder does not reliably build tables. That justification was false:
+  Phase 1's carried gap is the *table insertion modes*' conformance
+  behaviour on malformed markup, which is a different thing from the
+  elements not existing -- `tr`, `td`, `th`, `tbody` and `caption` are all
+  present in the corpus's parsed trees, in the hundreds.
 - **Quirks-mode UA rules are absent entirely.** `Document.mode` is
   classified (Task C) but not acted on until layout.
 
@@ -80,7 +91,22 @@ article, aside, footer, header, main, nav, section, search,
 figure, figcaption, details, summary, dialog, fieldset, legend,
 form, center, optgroup, option { display: block }
 
+/* --- Tables ------------------------------------------------------------
+   All of it or none of it. `display: table` on the container while `tr`,
+   `td`, `tbody` and `caption` sit at the initial `inline` is worse than
+   silence: the container establishes a formatting context its own children
+   then ignore, and every row collapses into one inline run. The corpus
+   makes that concrete -- hn.html has 4 tables, 98 `tr` and 159 `td`;
+   wikipedia.html has 24, 120 and 159, plus 85 `th` and 24 `tbody`. */
 table { display: table }
+caption { display: table-caption }
+colgroup { display: table-column-group }
+col { display: table-column }
+thead { display: table-header-group }
+tbody { display: table-row-group }
+tfoot { display: table-footer-group }
+tr { display: table-row }
+td, th { display: table-cell }
 
 /* --- Inline ------------------------------------------------------------
    `inline` is already the initial value, so these rules change nothing on

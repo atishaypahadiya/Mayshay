@@ -381,16 +381,27 @@ def test_important_author_rule_beats_a_normal_inline_style():
     assert style.color == Color(255, 0, 0, 1.0)
 
 
-def test_author_normal_beats_ua_important_is_false():
-    """UA `!important` outranks everything an author can write. Asserted on
-    the rank table rather than through CSS, because `ua.py` deliberately
-    contains no `!important` rule to drive it with.
+def test_ua_important_outranks_every_author_declaration(monkeypatch):
+    """The top rung of the ladder, asserted through observable behaviour
+    rather than through the private rank constants.
+
+    `ua.py` deliberately contains no `!important` rule, so the UA sheet is
+    swapped for one that does. Every other rung is already pinned by an
+    observable test: UA < author (`test_author_rule_beats_ua`), author <
+    inline (`test_inline_style_beats_author_rules`), inline < author-important
+    (`test_important_author_rule_beats_a_normal_inline_style`), and
+    author-important < inline-important
+    (`test_important_inline_style_beats_important_author_rule`).
+
+    Injection: making `_IMPORTANT_RANK["ua"]` anything below
+    `_RANK_INLINE_IMPORTANT` turns this blue.
     """
-    assert cascade_module._RANK_UA_IMPORTANT > cascade_module._RANK_INLINE_IMPORTANT
-    assert cascade_module._RANK_INLINE_IMPORTANT > cascade_module._RANK_AUTHOR_IMPORTANT
-    assert cascade_module._RANK_AUTHOR_IMPORTANT > cascade_module._RANK_INLINE_NORMAL
-    assert cascade_module._RANK_INLINE_NORMAL > cascade_module._RANK_AUTHOR_NORMAL
-    assert cascade_module._RANK_AUTHOR_NORMAL > cascade_module._RANK_UA_NORMAL
+    monkeypatch.setattr(cascade_module, "UA_CSS", "p { color: red !important }")
+    doc = parse(
+        '<!DOCTYPE html><body><p id="x" style="color: blue !important">hi</p></body>'
+    )
+    style_document(doc, ["#x#x { color: blue !important }"])
+    assert find(doc, "p").computed_style.color == Color(255, 0, 0, 1.0)
 
 
 def test_specificity_compares_the_whole_triple_not_a_sum():
@@ -916,3 +927,256 @@ def test_the_corpus_link_counts_are_what_the_phase_predicted():
             pytest.skip(f"{path} missing")
         doc = parse(path.read_text(encoding="utf-8", errors="replace"))
         assert style_document(doc, [])["link_stylesheets_skipped"] == count, name
+
+
+# --------------------------------------------------------------------------
+# Fix round 1: shorthand reset, table displays, border-width's two initials,
+# the keyword allow-list, and the root-element identity.
+# --------------------------------------------------------------------------
+
+
+def test_a_partial_shorthand_resets_the_longhands_it_omits():
+    """`values.py`'s deviation 7 hands this obligation here: a shorthand
+    sets *every* longhand it governs, not only the ones it mentions.
+
+    Without the reset the second declaration has no width key for the first
+    one to lose to, so `border-top-width` stays at 5px -- an earlier
+    longhand leaking through a later partial shorthand. A browser resets it
+    to `medium`. Invisible on any page that writes its shorthands in full,
+    and silently wrong on the ones that do not.
+    """
+    style = style_of(
+        BODY_P, "p", "p { border: 5px solid red } p { border: solid blue }"
+    )
+    assert style.border_top_width == Length(3, "px")   # medium, not 5px
+    assert style.border_top_style == "solid"
+    assert style.border_top_color == Color(0, 0, 255, 1.0)
+
+
+def test_a_partial_shorthand_reset_reaches_every_side():
+    """The reset is per longhand, not per shorthand: all four sides of all
+    three components."""
+    style = style_of(
+        BODY_P,
+        "p",
+        "p { border: 7px dashed red } p { border: dotted }",
+    )
+    for side in ("top", "right", "bottom", "left"):
+        assert style.get(f"border-{side}-width") == Length(3, "px"), side
+        assert style.get(f"border-{side}-style") == "dotted", side
+        # `border`'s omitted colour resets to `currentcolor`, i.e. black.
+        assert style.get(f"border-{side}-color") == Color(0, 0, 0, 1.0), side
+
+
+def test_the_shorthand_reset_respects_the_cascade_rather_than_overwriting():
+    """The reset values enter the cascade with the *same* rank, specificity
+    and source order as the shorthand that produced them, so a more specific
+    earlier rule still wins.
+
+    Injection: applying the reset directly to the ComputedStyle after the
+    cascade instead of through it makes `#x`'s 5px lose to `p`'s reset.
+    """
+    style = style_of(
+        '<!DOCTYPE html><body><p id="x">hi</p></body>',
+        "p",
+        "#x { border: 5px solid red } p { border: solid blue }",
+    )
+    assert style.border_top_width == Length(5, "px")
+    assert style.border_top_color == Color(255, 0, 0, 1.0)
+
+
+def test_a_margin_shorthand_reset_is_a_no_op_because_it_sets_every_side():
+    """The one-to-four-value rule always produces all four sides, so the
+    reset table entry for `margin` can never fire. Pinned so that stays
+    true if the expansion is ever changed."""
+    style = style_of(BODY_P, "p", "p { margin: 1px 2px 3px 4px } p { margin: 9px }")
+    for side in ("top", "right", "bottom", "left"):
+        assert style.get(f"margin-{side}") == Length(9, "px"), side
+
+
+def test_border_width_falls_back_to_medium_when_a_style_is_specified():
+    """`border: solid red` specifies a style and a colour and leaves the
+    width to its initial value, `medium` -- 3px, which a browser paints.
+
+    An earlier version of this module used a single `Length(0, "px")`
+    initial and justified it on the grounds that the style is `none` so the
+    used width is zero regardless. That reasoning is false exactly here: the
+    style *is* specified.
+    """
+    style = style_of(BODY_P, "p", "p { border: solid red }")
+    assert style.border_top_width == Length(3, "px")
+    assert style.border_top_style == "solid"
+
+
+def test_a_border_with_no_style_computes_to_zero_width():
+    """The other half of the same rule (CSS 2.1 section 8.5.1): a width is
+    zero when the style is `none` or `hidden`, whatever the width said.
+
+    Injection: making `medium` the sole initial gives every element on the
+    page a 3px border; dropping the zeroing step gives `border: 5px red` a
+    5px border a browser does not paint.
+    """
+    assert style_of(BODY_P, "p", "p { border: 5px red }").border_top_width == Length(
+        0, "px"
+    )
+    assert style_of(BODY_P, "p", "p { border: 5px hidden red }").border_top_width == (
+        Length(0, "px")
+    )
+    assert style_of(BODY_P, "p", "p { border: 5px solid red }").border_top_width == (
+        Length(5, "px")
+    )
+
+
+def test_an_element_with_no_border_has_zero_width_borders():
+    """The default case, which the `medium` initial must not disturb.
+
+    The colour is asserted too: an element that declares no border at all
+    never goes through the shorthand reset, so its `border-*-color` comes
+    from the `currentcolor` seeding step instead. Nothing paints it today,
+    but it is the value a `getComputedStyle` equivalent would report, and
+    without this assertion the seeding step has no test at all.
+    """
+    style = style_of(BODY_P, "p", "p { color: blue }")
+    for side in ("top", "right", "bottom", "left"):
+        assert style.get(f"border-{side}-width") == Length(0, "px"), side
+        assert style.get(f"border-{side}-style") == "none", side
+        assert style.get(f"border-{side}-color") == Color(0, 0, 255, 1.0), side
+
+
+def test_a_partial_shorthand_in_a_style_attribute_resets_too():
+    """The reset lives at both declaration sources, not just in stylesheets.
+
+    Injection: dropping `_reset_omitted_longhands` from
+    `_parse_inline_style` only -- which is the half of the fix most likely
+    to be forgotten, since the two call sites are 40 lines apart.
+    """
+    style = style_of(
+        '<!DOCTYPE html><body><p style="border: dotted blue">hi</p></body>',
+        "p",
+        "p { border: 5px solid red }",
+    )
+    assert style.border_top_width == Length(3, "px")
+    assert style.border_top_style == "dotted"
+    assert style.border_top_color == Color(0, 0, 255, 1.0)
+
+
+def test_border_colour_defaults_to_the_elements_own_colour():
+    """`border-*-color`'s initial value is `currentcolor`, so an element
+    that declares a border without a colour borders in its own text colour
+    -- not in black, and not in its parent's colour.
+
+    Injection: seeding the border colours from `parent.color`, or leaving
+    the ComputedStyle default at black, both turn this red.
+    """
+    style = style_of(
+        "<!DOCTYPE html><body><div><p>hi</p></div></body>",
+        "p",
+        "div { color: red } p { color: blue; border: 1px solid }",
+    )
+    assert style.border_top_color == Color(0, 0, 255, 1.0)
+    assert isinstance(style.border_top_color, Color)
+
+
+def test_an_explicit_border_colour_still_beats_the_currentcolor_default():
+    style = style_of(BODY_P, "p", "p { color: blue; border: 1px solid red }")
+    assert style.border_top_color == Color(255, 0, 0, 1.0)
+
+
+def test_ua_gives_every_table_element_its_table_display():
+    """A UA sheet that makes `<table>` a table and leaves `<tr>`/`<td>`
+    inline is worse than one that says nothing: the container establishes a
+    formatting context its own children then ignore.
+
+    Injection: removing any one line of the Tables block leaves that element
+    at the initial `inline`.
+    """
+    doc = styled(
+        "<!DOCTYPE html><body><table><caption>c</caption>"
+        "<colgroup><col></colgroup>"
+        "<thead><tr><th>h</th></tr></thead>"
+        "<tbody><tr><td>d</td></tr></tbody>"
+        "<tfoot><tr><td>f</td></tr></tfoot></table></body>"
+    )
+    expected = {
+        "table": "table",
+        "caption": "table-caption",
+        "colgroup": "table-column-group",
+        "col": "table-column",
+        "thead": "table-header-group",
+        "tbody": "table-row-group",
+        "tfoot": "table-footer-group",
+        "tr": "table-row",
+        "td": "table-cell",
+        "th": "table-cell",
+    }
+    for tag, display in expected.items():
+        assert find(doc, tag).computed_style.display == display, tag
+
+
+@pytest.mark.parametrize("name", ["hn", "wikipedia"])
+def test_the_corpus_tables_are_not_inline_runs(name):
+    """The corpus is why this matters: hn.html has 4 tables, 98 `tr` and 159
+    `td`; wikipedia.html has 24, 120 and 159. All of them would collapse
+    into inline runs in Phase 3 without the Tables block."""
+    path = Path(__file__).resolve().parents[2] / "data" / "corpus" / f"{name}.html"
+    if not path.exists():  # pragma: no cover - corpus is checked in
+        pytest.skip(f"{path} missing")
+    doc = parse(path.read_text(encoding="utf-8", errors="replace"))
+    style_document(doc, [])
+    seen = Counter()
+    stack = [doc]
+    while stack:
+        n = stack.pop()
+        tag = getattr(n, "tag_name", None)
+        if tag in ("table", "tr", "td", "th"):
+            seen[tag] += 1
+            assert n.computed_style.display != "inline", (tag, n.computed_style.display)
+        stack.extend(n.children)
+    assert seen["table"] > 0 and seen["tr"] > 50 and seen["td"] > 50, seen
+
+
+def test_a_keyword_with_no_computed_value_rule_is_an_error_not_a_string():
+    """`_computed_value` unwraps a Keyword to `str` only for the properties
+    whose computed value *is* the keyword. A keyword on any other property
+    means a property was added to `values.py` without a computed-value
+    decision here, and stringifying it silently is how a property ends up
+    half-implemented.
+
+    Nothing a stylesheet can contain reaches this today -- the nine
+    properties' only keyword producers are `display`, `border-*-style` and
+    `currentcolor` -- so it can only fire on a code change.
+    """
+    kwargs = dict(font_px=16.0, root_px=16.0, own_color=Color(0, 0, 0, 1.0))
+    assert cascade_module._computed_value("display", Keyword("block"), **kwargs) == "block"
+    assert (
+        cascade_module._computed_value("border-top-style", Keyword("solid"), **kwargs)
+        == "solid"
+    )
+    assert cascade_module._computed_value(
+        "background-color", Keyword("currentcolor"), **kwargs
+    ) == Color(0, 0, 0, 1.0)
+    with pytest.raises(ValueError, match="no computed-value rule"):
+        cascade_module._computed_value("width", Keyword("banana"), **kwargs)
+
+
+def test_rem_is_defined_by_the_root_element_not_by_a_stray_orphan():
+    """`root_font_px` must follow the document element, not "any element
+    whose parent is not an Element".
+
+    The tree builder never produces a second element child of the Document,
+    but a hand-built tree can, and letting one redefine `rem` for everything
+    after it would be a silent, document-wide wrong number.
+    """
+    from mayshay.dom.node import Element as DomElement
+
+    doc = parse('<!DOCTYPE html><html><body></body></html>')
+    stray = DomElement("div", {"style": "font-size: 40px"})
+    inner = DomElement("span", {"style": "width: 1rem"})
+    stray.append_child(inner)
+    doc.append_child(stray)
+
+    style_document(doc, ["html { font-size: 20px }"])
+    assert find(doc, "html").computed_style.font_size == Length(20, "px")
+    assert find(doc, "div").computed_style.font_size == Length(40, "px")
+    # 1rem is the ROOT's 20px, not the stray parent's 40px.
+    assert inner.computed_style.width == Length(20, "px")

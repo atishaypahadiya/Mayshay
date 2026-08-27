@@ -88,6 +88,19 @@ a selector list shares its block's declaration numbers, which is correct --
 they are the same source position -- and their differing specificities break
 any tie that matters.
 
+A shorthand sets **every** longhand it governs, not only the ones it
+mentions: the omitted ones are reset to their initial values before the
+declaration enters the cascade. `values.py` deliberately leaves them out of
+its parse result (its deviation 7) and hands the obligation here, because
+filling them in needs the initial-value table. Without the reset,
+
+    p { border: 5px solid red }
+    p { border: solid blue }
+
+leaves `border-top-width` at 5px -- the second declaration has no width key
+for the first one to lose to -- where a browser resets it to `medium`. See
+`_reset_omitted_longhands`.
+
 
 Deliberate deviations and omissions
 -----------------------------------
@@ -118,12 +131,20 @@ Deliberate deviations and omissions
    `background-color`/`border-*-color` it means this element's own computed
    `color`. `values.py` deliberately left it as `Keyword("currentcolor")`
    because it had no cascade to consult.
-8. **The initial value of `border-*-width` is `Length(0, "px")`, not the
-   spec's `medium`.** `values.py` does not parse the `thin|medium|thick`
-   trio (its deviation 8), and a border whose style is the initial `none`
-   has a used width of zero regardless, so zero is the honest default. If
-   the keyword trio is ever added, this becomes 3px and `border-style: none`
-   has to zero it at used-value time.
+8. **`border-*-width` has two different "initial" values, and both are
+   needed.** The *specified* initial value is `medium`, which
+   `INITIAL_SPECIFIED` records as `Length(3, "px")`; the *computed* value is
+   `0` whenever the corresponding `border-*-style` is `none` or `hidden`
+   (CSS 2.1 section 8.5.1), which `_zero_widths_of_borderless_sides`
+   enforces. Collapsing them into one constant gets one of the two cases
+   wrong whichever constant is chosen: with a single `0`, `border: solid
+   red` paints nothing, where a browser paints 3px, because that
+   declaration *does* specify a style and leaves only the width to its
+   initial value; with a single `3px`, every element on the page acquires
+   a three-pixel border. `values.py` still does not parse the
+   `thin|medium|thick` trio (its deviation 8), so the keyword itself never
+   arrives from a stylesheet -- but the value it names is load-bearing all
+   the same.
 9. **Quirks mode is not consulted.** `Document.mode` is classified by Task C
    and acted on in layout: unitless lengths and the alternate box model are
    used-value concerns.
@@ -200,6 +221,82 @@ _ZERO_LENGTH = Length(0, "px")
 _INITIAL_COLOR = Color(0, 0, 0, 1.0)
 _TRANSPARENT = Color(0, 0, 0, 0.0)
 
+# `border-width`'s initial value is the keyword `medium`, which every engine
+# renders as 3px. `values.py` does not parse the `thin|medium|thick` trio
+# (its deviation 8), so the keyword never arrives from a stylesheet -- but
+# the *initial* value still has to be right, because `border: solid red`
+# specifies a style and a colour and leaves the width to it. See
+# `_zero_widths_of_borderless_sides` for the other half of the rule.
+_MEDIUM_BORDER_WIDTH = Length(3, "px")
+
+_SIDES = ("top", "right", "bottom", "left")
+_BORDER_STYLE_PROPS = tuple(f"border-{side}-style" for side in _SIDES)
+_BORDER_COLOR_PROPS = tuple(f"border-{side}-color" for side in _SIDES)
+_BORDER_WIDTH_PROPS = tuple(f"border-{side}-width" for side in _SIDES)
+
+# A border whose style is `none` or `hidden` has a computed width of zero
+# whatever the width says -- CSS 2.1 section 8.5.1's "Computed value:
+# absolute length; `0` if the border style is `none` or `hidden`".
+_BORDERLESS_STYLES = frozenset({"none", "hidden"})
+
+# The *specified* initial value of every longhand: what a property falls
+# back to when a shorthand does not mention it. Deliberately not read off
+# `ComputedStyle`'s field defaults, because two of them differ: a computed
+# `border-*-color` is a resolved `Color`, while its initial value is the
+# keyword `currentcolor`, and a computed `border-*-width` is zeroed when the
+# style is `none` while its initial value is `medium`. Running these through
+# `_computed_value` is what turns the specified form into the computed one.
+INITIAL_SPECIFIED: dict[str, object] = {
+    "display": Keyword("inline"),
+    "width": AUTO,
+    "height": AUTO,
+    "color": _INITIAL_COLOR,
+    "background-color": _TRANSPARENT,
+    "font-size": Length(INITIAL_FONT_SIZE_PX, "px"),
+    **{f"margin-{side}": _ZERO_LENGTH for side in _SIDES},
+    **{f"padding-{side}": _ZERO_LENGTH for side in _SIDES},
+    **{prop: _MEDIUM_BORDER_WIDTH for prop in _BORDER_WIDTH_PROPS},
+    **{prop: Keyword("none") for prop in _BORDER_STYLE_PROPS},
+    **{prop: Keyword("currentcolor") for prop in _BORDER_COLOR_PROPS},
+}
+
+# Which longhands each shorthand governs -- *all* of them, not just the ones
+# a given declaration happened to mention. See `_reset_omitted_longhands`.
+_SHORTHAND_LONGHANDS: dict[str, tuple[str, ...]] = {
+    "margin": tuple(f"margin-{side}" for side in _SIDES),
+    "padding": tuple(f"padding-{side}" for side in _SIDES),
+    "border": _BORDER_WIDTH_PROPS + _BORDER_STYLE_PROPS + _BORDER_COLOR_PROPS,
+}
+
+
+def _reset_omitted_longhands(name: str, longhands: dict[str, object]) -> dict[str, object]:
+    """A shorthand sets *every* longhand it governs, including the ones it
+    does not mention -- those go to their initial values.
+
+    This is the obligation `values.py`'s deviation 7 hands to this module,
+    and it is the difference between CSS and a merge. Without it:
+
+        p { border: 5px solid red }
+        p { border: solid blue }
+
+    leaves `border-top-width` at 5px, because the second declaration's
+    parsed result simply has no width key for the first one to lose to. A
+    browser resets it to `medium`. The leak is invisible on any page that
+    writes its shorthands in full, and silently wrong on any page that does
+    not -- which is most of them.
+
+    `margin` and `padding` can never leave a side unset (the one-to-four
+    value rule always produces all four), so in practice only `border` is
+    affected; they are in the table so a future shorthand cannot be added
+    without a decision, and so the invariant is stated rather than assumed.
+    """
+    governed = _SHORTHAND_LONGHANDS.get(name)
+    if governed is None:
+        return longhands
+    for prop in governed:
+        longhands.setdefault(prop, INITIAL_SPECIFIED[prop])
+    return longhands
+
 
 def _field_name(prop: str) -> str:
     return prop.replace("-", "_")
@@ -233,6 +330,21 @@ class ComputedStyle:
     padding_bottom: object = _ZERO_LENGTH
     padding_left: object = _ZERO_LENGTH
 
+    # Zero, not the `medium` initial value: the initial `border-style` is
+    # `none`, and a border with no style has a computed width of zero. The
+    # *specified* initial value lives in `INITIAL_SPECIFIED`, and
+    # `_zero_widths_of_borderless_sides` keeps the two consistent for every
+    # element that does declare a border.
+    #
+    # These four defaults are in fact unobservable, and deliberately kept
+    # anyway: the only parsed source of a non-`none` `border-*-style` is the
+    # `border` shorthand, which always resets the width alongside it, so
+    # `_zero_widths_of_borderless_sides` overwrites whatever is here on
+    # every element that could tell the difference. Changing them to `3px`
+    # therefore fails no test -- which is a fact about the invariant, not a
+    # gap in the suite. They stay at zero because that is the value the
+    # invariant would produce, and a default that contradicted it would be
+    # a trap for the next person to weaken the zeroing step.
     border_top_width: object = _ZERO_LENGTH
     border_right_width: object = _ZERO_LENGTH
     border_bottom_width: object = _ZERO_LENGTH
@@ -424,6 +536,7 @@ def _compute_rest(
         style.set(
             prop,
             _computed_value(
+                prop,
                 value,
                 font_px=own_font_px,
                 root_px=root_font_px,
@@ -434,8 +547,17 @@ def _compute_rest(
     return applied
 
 
+# The properties whose *computed* value is the keyword itself, and which
+# therefore store a plain `str`. An allow-list rather than "unwrap any
+# Keyword": a keyword on any other property means either a value type that
+# needs resolving (`currentcolor`, handled above it) or a property added to
+# `values.py` without a computed-value decision being made here, and
+# stringifying that silently is how a property ends up half-implemented.
+_KEYWORD_VALUED = frozenset({"display"}) | frozenset(_BORDER_STYLE_PROPS)
+
+
 def _computed_value(
-    value: object, *, font_px: float, root_px: float, own_color: object
+    prop: str, value: object, *, font_px: float, root_px: float, own_color: object
 ) -> object:
     """One specified value -> its computed value.
 
@@ -444,9 +566,13 @@ def _computed_value(
     if isinstance(value, Keyword):
         if value.name == "currentcolor":
             return own_color
-        # `display`, `border-*-style`: the computed value is the keyword,
-        # stored as a plain string. See deviation 6.
-        return value.name
+        if prop in _KEYWORD_VALUED:
+            # See deviation 6: the computed value *is* the keyword.
+            return value.name
+        raise ValueError(
+            f"no computed-value rule for keyword {value.name!r} on {prop!r}; "
+            f"add it to _KEYWORD_VALUED or resolve it explicitly"
+        )
     if isinstance(value, Length):
         px = _length_to_px(value, font_px=font_px, root_px=root_px)
         return value if px is None else Length(px, "px")
@@ -569,6 +695,7 @@ def _parse_block(
             # which is what a browser does.
             metrics["declarations_dropped"] += 1
             continue
+        longhands = _reset_omitted_longhands(decl.name, longhands)
         rank = (_IMPORTANT_RANK if decl.important else _NORMAL_RANK)[origin]
         index = next(order)
         for prop, value in longhands.items():
@@ -590,6 +717,7 @@ def _parse_inline_style(
         if longhands is None:
             metrics["declarations_dropped"] += 1
             continue
+        longhands = _reset_omitted_longhands(decl.name, longhands)
         rank = (
             _RANK_INLINE_IMPORTANT if decl.important else _RANK_INLINE_NORMAL
         )
@@ -753,11 +881,18 @@ def _compute_style(
     #    `style.color` already holds.
     if "color" in declared:
         style.color = _computed_value(
+            "color",
             declared["color"],
             font_px=own_font_px,
             root_px=root_font_px,
             own_color=style.color,
         )
+
+    # 2b. `border-*-color`'s initial value is `currentcolor`, so an element
+    #     that declares no border colour gets its own. Seeded before step 3
+    #     so a declared border colour still wins.
+    for prop in _BORDER_COLOR_PROPS:
+        style.set(prop, style.color)
 
     # 3. Everything else, against the element's OWN font-size and colour.
     applied = _compute_rest(
@@ -768,7 +903,26 @@ def _compute_style(
         own_color=style.color,
     )
     metrics["declarations_applied"] += applied + int("color" in declared)
+
+    # 4. A border with no style has no width, whatever the width said.
+    _zero_widths_of_borderless_sides(style)
     return style
+
+
+def _zero_widths_of_borderless_sides(style: ComputedStyle) -> None:
+    """CSS 2.1 section 8.5.1: `border-*-width` computes to `0` when the
+    corresponding `border-*-style` is `none` or `hidden`.
+
+    This is why the *computed* default is 0 while the *specified* initial
+    value is `medium`: with no border declared at all the style is `none`
+    and the width is zero, but `border: solid red` specifies a style, so the
+    omitted width falls back to `medium` and is painted at 3px. Collapsing
+    those two into one constant gets one of the two cases wrong whichever
+    constant is chosen.
+    """
+    for style_prop, width_prop in zip(_BORDER_STYLE_PROPS, _BORDER_WIDTH_PROPS):
+        if style.get(style_prop) in _BORDERLESS_STYLES:
+            style.set(width_prop, _ZERO_LENGTH)
 
 
 def _inherit_from(parent: ComputedStyle) -> ComputedStyle:
@@ -832,6 +986,13 @@ def style_document(document: Node, author_css: list[str]) -> Counter[str]:
 
     root_font_px = INITIAL_FONT_SIZE_PX
     initial = ComputedStyle()
+    # The root element is the first element in document order, and it is the
+    # only one whose font-size `rem` refers to. Identified up front rather
+    # than inferred from "my parent is not an Element", which is also true
+    # of any stray element the tree builder left hanging off the Document --
+    # and letting one of those redefine `rem` for the rest of the page would
+    # be a silent, document-wide wrong number.
+    root_element = next((n for n in nodes if isinstance(n, Element)), None)
 
     for node in nodes:
         parent = node.parent
@@ -850,11 +1011,11 @@ def style_document(document: Node, author_css: list[str]) -> Counter[str]:
             node.computed_style = _compute_style(
                 parent_style, declared, root_font_px, metrics
             )
-            if not isinstance(parent, Element):
-                # The root element. Its own `rem` resolved against the
-                # initial 16px (CSS Values 4: `rem` on the root element
-                # refers to the property's initial value); every descendant
-                # resolves `rem` against what it just computed.
+            if node is root_element:
+                # Its own `rem` resolved against the initial 16px (CSS
+                # Values 4: `rem` on the root element refers to the
+                # property's initial value); every descendant resolves
+                # `rem` against what it just computed.
                 root_font_px = node.computed_style.font_size_px
         else:
             # Text, Comment, DocumentType, Document. No declarations can

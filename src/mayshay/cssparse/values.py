@@ -199,10 +199,20 @@ _LENGTH_UNITS = frozenset({
     "cm", "mm", "q", "in", "pt", "pc",
 })
 
+# The internal table display types are here because a UA stylesheet that
+# gives `<table>` `display: table` and leaves `<tr>`/`<tbody>`/`<caption>`
+# at the initial `inline` is worse than one that says nothing at all: the
+# container establishes a formatting context its own children then ignore.
+# See `ua.py`. `inline-table` is included for symmetry with the other
+# `inline-*` pairs already present.
 _DISPLAY_KEYWORDS = frozenset({
     "block", "inline", "inline-block", "none",
     "flex", "inline-flex", "grid", "inline-grid",
-    "list-item", "table", "table-row", "table-cell", "contents",
+    "list-item", "contents",
+    "table", "inline-table",
+    "table-row", "table-cell",
+    "table-row-group", "table-header-group", "table-footer-group",
+    "table-column", "table-column-group", "table-caption",
 })
 
 _BORDER_STYLE_KEYWORDS = frozenset({
