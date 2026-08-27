@@ -92,9 +92,14 @@ The snapshot is kept for provenance, not for new measurements.
     .venv/bin/python scripts/style_report.py       # metrics -> data/metrics/
 
 Both go through `scripts/corpus.py`, which reads each manifest and hands
-the external sheets to `style_document`. Do not glob for `*.css` -- the
-manifest is what says which sheets belong to a page, in what order, and
-which were collected but should not be applied.
+the external sheets to `style_document` via `page.external_css()` -- an
+href-to-source mapping, so each sheet cascades **at the position its
+`<link>` occupies**. Do not glob for `*.css`, and do not use
+`page.author_css()` for cascading: that returns a flat list, which puts
+every external sheet before every in-document `<style>`. All three pages
+here happen to place their links first, so the two agree on this corpus --
+but source order is the cascade's last tiebreak and the difference is real
+on any page that interleaves them.
 
 Both take `--viewport` (default `1280x1024`), because `@media` evaluation
 makes every cascade figure viewport-dependent. `style_report.py` writes the

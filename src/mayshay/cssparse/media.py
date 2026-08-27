@@ -27,8 +27,18 @@ Not evaluated, and counted by name so the gap stays visible:
   the screen is worse than not evaluating it
 * `hover`, `pointer`, `prefers-*`, `device-*`, resolution and anything else
   that needs device state this engine has no source for
-* `calc()` and any other function inside a feature value
+* any function inside a feature value other than a `calc()` of added and
+  subtracted lengths -- nested `calc()`, `min()`/`max()`/`clamp()`,
+  multiplication and division, and percentages all fall out as unsupported
 * MQ4 range syntax (`(400px <= width)`), `or`, and `<general-enclosed>`
+
+`calc()` is evaluated only in its additive length form, `calc(A + B - C)`.
+That narrow case is worth having rather than skipping: it appears in 25 of
+the corpus's 114 `@media` preludes, all of them breakpoints of the shape
+`calc(1120px - 1px)`. Measured at 1280x1024, supporting it takes the
+unevaluated-query count from 40 to 15 and the matched-block count from 43 to
+46 -- and it makes the remaining 15 a clean "these need device state" rather
+than a mix of two different reasons.
 
 Deviation from the spec, on purpose: a query naming a feature we do not
 support evaluates to **false even under `not`**. The spec says an unknown
@@ -48,6 +58,7 @@ from mayshay.cssparse.tokenizer import (
     Colon,
     Comma,
     CssToken,
+    Delim,
     Dimension,
     EOFToken,
     Function,
@@ -179,6 +190,45 @@ def _to_px(tok: CssToken) -> float | None:
     return None
 
 
+def _calc_to_px(tokens: list[CssToken]) -> float | None:
+    """`calc(A + B - C)` over lengths, in px, or None if it is not that.
+
+    Deliberately not a calc engine: no nesting, no `*`, no `/`, no
+    percentages, no mixing in a bare number. Anything else returns None and
+    the feature is recorded unsupported, which is the safe direction -- a
+    wrong breakpoint silently applies or withholds a whole block of CSS.
+
+    `tokens` starts after the `calc(` Function token and runs to its
+    matching `)`.
+    """
+    total, sign, seen = 0.0, 1, False
+    # Terms and operators must alternate. Without this, `calc(5px 6px)` --
+    # two lengths and no operator, which is invalid -- would quietly sum to
+    # 11px instead of being recorded as a form we do not evaluate.
+    expect_operator = False
+    for tok in tokens:
+        if isinstance(tok, RParen):
+            break
+        if isinstance(tok, Delim) and tok.value in "+-":
+            if not expect_operator:
+                return None  # leading or doubled operator
+            sign = 1 if tok.value == "+" else -1
+            expect_operator = False
+            continue
+        if expect_operator:
+            return None  # two terms in a row
+        if isinstance(tok, (LParen, Function)):
+            return None  # nesting
+        value = _to_px(tok)
+        if value is None:
+            return None
+        total += sign * value
+        seen = True
+        expect_operator = True
+    # A trailing operator (`calc(5px -)`) leaves this False.
+    return total if seen and expect_operator else None
+
+
 def _parse_feature(inner: list[CssToken]) -> Feature:
     """Parse the tokens between a feature's parentheses."""
     inner = _significant(inner)
@@ -203,9 +253,20 @@ def _parse_feature(inner: list[CssToken]) -> Feature:
             return Feature(name, op, None, supported=False, raw_name=raw)
         return Feature(name, "boolean", None, raw_name=raw)
 
+    if (
+        isinstance(rest[0], Colon)
+        and len(rest) > 2
+        and isinstance(rest[1], Function)
+        and rest[1].value.lower() == "calc"
+    ):
+        px = _calc_to_px(rest[2:])
+        if px is None or name == "orientation":
+            return Feature(name, op, None, supported=False, raw_name=raw)
+        return Feature(name, op, px, raw_name=raw)
+
     if not isinstance(rest[0], Colon) or len(rest) != 2:
-        # `(400px <= width)` and `(width: calc(...))` both land here: more
-        # or fewer tokens than one colon and one value.
+        # `(400px <= width)` lands here: more or fewer tokens than one colon
+        # and one value.
         return Feature(name, op, None, supported=False, raw_name=raw)
 
     value_tok = rest[1]

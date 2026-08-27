@@ -219,13 +219,65 @@ def test_unsupported_features_are_false_and_named(prelude, feature):
     assert metrics[f"media_feature_{feature}"] == 1
 
 
-def test_calc_in_a_feature_value_is_unsupported_not_guessed():
-    """`max-width: calc(1120px - 1px)` appears 25 times in the corpus.
-    Evaluating it wrongly would be worse than declining to."""
-    result, metrics = evaluate("screen and (max-width: calc(1120px - 1px))")
+# --- calc() -------------------------------------------------------------
+#
+# Only the additive length form, `calc(A + B - C)`. It appears in 25 of the
+# corpus's 114 @media preludes, all breakpoints of the shape
+# `calc(1120px - 1px)`; supporting it took the unevaluated-query count from
+# 40 to 15 at 1280x1024. Everything else stays unsupported, because a wrong
+# breakpoint silently applies or withholds a whole block of CSS.
+
+
+def test_calc_subtraction_is_evaluated():
+    """`calc(1120px - 1px)` is 1119px. Both sides of that boundary, or this
+    passes on any implementation that returns a constant."""
+    assert evaluate("(max-width: calc(1120px - 1px))", Viewport(1119, 800))[0] is True
+    assert evaluate("(max-width: calc(1120px - 1px))", Viewport(1120, 800))[0] is False
+
+
+def test_calc_addition_is_evaluated():
+    assert evaluate("(min-width: calc(1000px + 500px))", Viewport(1500, 800))[0] is True
+    assert evaluate("(min-width: calc(1000px + 500px))", Viewport(1499, 800))[0] is False
+
+
+def test_calc_chains_more_than_two_terms():
+    # 2000 - 100 - 100 == 1800. A parser that applied one sign to the whole
+    # tail would get 2000 - 0 == 2000 and pass a two-term test.
+    assert evaluate("(min-width: calc(2000px - 100px - 100px))", Viewport(1800, 9))[0] is True
+    assert evaluate("(min-width: calc(2000px - 100px - 100px))", Viewport(1799, 9))[0] is False
+
+
+def test_calc_mixes_units():
+    # 1in == 96px, so calc(1in + 4px) is 100px.
+    assert evaluate("(min-width: calc(1in + 4px))", Viewport(100, 80))[0] is True
+    assert evaluate("(min-width: calc(1in + 4px))", Viewport(99, 80))[0] is False
+
+
+@pytest.mark.parametrize(
+    "prelude",
+    [
+        "(width: calc(100px * 2))",      # multiplication
+        "(width: calc(100px / 2))",      # division
+        "(min-width: calc(50% - 1px))",  # percentage
+        "(min-width: calc(calc(1px)))",  # nesting
+        "(min-width: calc())",           # empty
+        "(min-width: calc(- 5px))",      # leading operator
+        "(min-width: calc(5px 6px))",    # no operator
+        "(min-width: calc(5px -))",      # trailing operator
+        "(min-width: calc(5px + + 6px))",  # doubled operator
+    ],
+)
+def test_calc_forms_we_do_not_evaluate_are_unsupported(prelude):
+    """Not merely wrong-but-quiet: recorded, so the gap stays countable."""
+    result, metrics = evaluate(prelude)
     assert result is False
     assert metrics["media_queries_unsupported"] == 1
-    assert metrics["media_feature_max-width"] == 1
+
+
+def test_calc_is_not_accepted_for_orientation():
+    result, metrics = evaluate("(orientation: calc(1px))")
+    assert result is False
+    assert metrics["media_queries_unsupported"] == 1
 
 
 def test_range_syntax_is_unsupported():

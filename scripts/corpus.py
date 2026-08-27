@@ -6,21 +6,22 @@ One place that knows the manifest layout, so a measurement script can say
     from corpus import load_pages
     for page in load_pages():
         document = TreeBuilder(page.html()).build()
-        counters = style_document(document, page.author_css())
+        counters = style_document(document, [], viewport,
+                                  external_css=page.external_css())
 
 instead of re-deriving "which `.css` file belongs to this page, in what
 order" every time. That derivation is exactly where two scripts drift apart
 and start reporting two different numbers for the same page.
 
-Ordering deviation, stated up front because it affects results:
-`style_document` cascades everything in `author_css` *before* the
-in-document `<style>` elements it finds itself. A browser interleaves
-`<link>` and `<style>` by document position. The two differ only for
-declarations of equal origin, importance and specificity -- where source
-order is the tiebreak -- so it is a real difference, not a theoretical one,
-and it is worth fixing at the `style_document` boundary when external sheets
-stop being a corpus-only concern. Until then this loader hands sheets over
-in document order among themselves and the deviation stays visible here.
+Use `external_css()`, not `author_css()`. It returns the href-to-source
+mapping `style_document` needs to cascade each sheet **at the position its
+`<link>` occupies**. `author_css()` returns the same sources as a flat list,
+which cascades all of them before every in-document `<style>` -- wrong
+whenever a page interleaves the two, as Wikipedia does with two links and 18
+`<style>` blocks. Source order is the cascade's last tiebreak, and ties of
+equal origin, importance and specificity are common in real CSS, so the
+difference is a real one. `author_css()` is kept for callers that want the
+raw sources (byte counts, parse sweeps), not for cascading.
 
 Sheets that failed to fetch are not silently dropped: they stay on
 `page.missing_sheets` with the status the collector recorded, so a caller
@@ -92,6 +93,22 @@ class CorpusPage:
             (self.directory / sheet["file"]).read_text("utf-8", "replace")
             for sheet in self.sheets
         ]
+
+    def external_css(self) -> dict[str, str]:
+        """`href` as written in the document -> that sheet's source.
+
+        The key is the raw href, because that is what `style_document` reads
+        off the `<link>` element; the manifest is what maps it to a local
+        file. Two `<link>`s sharing an href share one entry, which is
+        correct: the same URL is one sheet, and the collector already
+        fetched it once.
+        """
+        return {
+            sheet["href"]: (self.directory / sheet["file"]).read_text(
+                "utf-8", "replace"
+            )
+            for sheet in self.sheets
+        }
 
     @property
     def css_bytes(self) -> int:

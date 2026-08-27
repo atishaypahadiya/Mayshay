@@ -65,22 +65,27 @@ The viewport is opt-in: `style_document(document, css)` with no viewport
 behaves exactly as it did in Phase 2. That is what keeps pre-`@media`
 figures reproducible rather than silently restated.
 
-## The `calc()` blind spot, priced
+## `calc()`, priced and then taken
 
-`calc()` appears in 25 of 114 `@media` preludes in the corpus. Rather than
-leave the cost unknown, a shadow build with a minimal
-`calc(<len> ± <len>)` evaluator was measured against the real one at
-1280x1024:
+`calc()` appears in 25 of 114 `@media` preludes in the corpus, all
+breakpoints of the shape `calc(1120px - 1px)`. The cost of skipping it was
+measured first, in a shadow build, before deciding:
 
-|                          | shipped | with `calc()` |
-|--------------------------|--------:|--------------:|
-| queries not evaluated    |      40 |            15 |
-| `@media` blocks matched  |      43 |            46 |
-| Wikipedia `flex` elements|     204 |           205 |
+|                          | without `calc()` | with |
+|--------------------------|-----------------:|-----:|
+| queries not evaluated    |               40 |   15 |
+| `@media` blocks matched  |               43 |   46 |
+| Wikipedia `flex` elements|              204 |  205 |
 
-So the gap costs 3 blocks and about ten elements at this viewport. Small,
-real, quantified, and cheap to close later — the remaining 15 unevaluated
-queries are all `prefers-*`, which genuinely need device state.
+Three blocks and about ten elements — small, but the better reason to take
+it is that it makes the remaining 15 unevaluated queries a clean "these
+need device state" (`prefers-color-scheme` x14, `prefers-reduced-motion`
+x1) rather than a mix of two unrelated causes.
+
+Only the additive length form is evaluated: `calc(A + B - C)`. Nesting,
+`*`, `/`, percentages, bare numbers, and malformed operator runs are all
+recorded unsupported, because a wrong breakpoint silently applies or
+withholds a whole block of CSS.
 
 ## Results
 
@@ -91,12 +96,12 @@ skipped; `media` adds `@media` evaluation.
 | display        |   ua |  ext | media | share |
 |----------------|-----:|-----:|------:|------:|
 | inline         | 6306 | 6155 |  5829 | 67.8% |
-| block          | 1324 | 1320 |  1246 | 14.5% |
-| none           |  267 |  385 |   513 |  6.0% |
+| block          | 1324 | 1320 |  1242 | 14.5% |
+| none           |  267 |  385 |   519 |  6.0% |
 | table-cell     |  401 |  401 |   401 |  4.7% |
 | table-row      |  218 |  218 |   218 |  2.5% |
-| flex           |    2 |    4 |   204 |  2.4% |
-| inline-block   |   22 |   24 |    93 |  1.1% |
+| flex           |    2 |    4 |   205 |  2.4% |
+| inline-block   |   22 |   24 |    90 |  1.0% |
 | table          |   26 |   29 |    29 |  0.3% |
 | inline-flex    |    0 |   27 |    28 |  0.3% |
 | table-row-group|   24 |   24 |    24 |  0.3% |
@@ -104,9 +109,9 @@ skipped; `media` adds `@media` evaluation.
 | grid           |    0 |    0 |     2 |  0.0% |
 | list-item      |    2 |    2 |     2 |  0.0% |
 
-**flex family 232 (2.70%), grid family 2 (0.02%).**
+**flex family 233 (2.71%), grid family 2 (0.02%).**
 
-Wikipedia's `flex` count went 2 → 4 → 204: a 51x increase from evaluating
+Wikipedia's `flex` count went 2 → 4 → 205: a 51x increase from evaluating
 `@media` alone, and the single strongest argument for having done this
 before planning layout. `grid` exists only inside a `@media` block.
 
@@ -114,6 +119,21 @@ Hacker News still shows a zero delta at this viewport, and that is now the
 *correct* answer rather than an artifact: its `display` rules live in
 `@media only screen and (min-width:300px) and (max-width:750px)`, which a
 1280px viewport genuinely does not match.
+
+## Stylesheet ordering
+
+External sheets now enter the cascade at the position their `<link>`
+occupies, via `style_document(..., external_css=...)`. They previously all
+cascaded before every in-document `<style>`, whatever the markup said —
+and source order is the cascade's last tiebreak, so that silently picked
+the winner for any two declarations of equal origin, importance and
+specificity, which in real CSS is common rather than a corner case.
+
+The corpus does **not** exercise the fix: all three pages happen to place
+every `<link>` before every `<style>` (Wikipedia is `LLSSSSSSSSSSSSSSSSSS`),
+so the old and new orders coincide and every figure above is unchanged by
+it. That is a verified coincidence, not evidence the change is inert — the
+unit tests in `test_cascade.py` are what stand behind it.
 
 ## Reproducing
 

@@ -103,7 +103,8 @@ def run_page(page: CorpusPage, viewport: Viewport | None) -> dict[str, dict]:
     tokenize["source_bytes"] = page.html_bytes
     tokenize["source_chars"] = len(source)
 
-    cssparse = style_document(document, page.author_css(), viewport)
+    cssparse = style_document(document, [], viewport,
+                              external_css=page.external_css())
     # Recorded alongside the cascade's own counters because "how much CSS
     # does this page ship" is a headline number for the analysis half, and
     # it is not derivable from anything else in the row set.

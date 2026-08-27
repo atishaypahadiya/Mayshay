@@ -52,7 +52,7 @@ from mayshay.htmlparse.treebuilder import TreeBuilder  # noqa: E402
 
 
 def display_counts(
-    page: CorpusPage, author_css: list[str], viewport=None
+    page: CorpusPage, external_css: dict[str, str], viewport=None
 ) -> tuple[Counter, int, Counter]:
     """Returns (display -> element count, total elements, cascade metrics).
 
@@ -62,7 +62,7 @@ def display_counts(
     leftovers.
     """
     document = TreeBuilder(page.html()).build()
-    metrics = style_document(document, author_css, viewport)
+    metrics = style_document(document, [], viewport, external_css=external_css)
 
     counts: Counter[str] = Counter()
     total = 0
@@ -175,9 +175,10 @@ def main(argv: list[str] | None = None) -> int:
           f"({viewport.orientation})\n")
 
     for page in pages:
-        ua, total, _ = display_counts(page, [])
-        ext, _, _ = display_counts(page, page.author_css())
-        med, _, metrics = display_counts(page, page.author_css(), viewport)
+        sheets = page.external_css()
+        ua, total, _ = display_counts(page, {})
+        ext, _, _ = display_counts(page, sheets)
+        med, _, metrics = display_counts(page, sheets, viewport)
         print(render(page, ua, ext, med, total, metrics))
         print()
         totals_ua += ua

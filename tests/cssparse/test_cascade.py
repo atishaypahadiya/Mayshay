@@ -1371,3 +1371,91 @@ def test_parse_errors_in_a_style_attribute_are_recorded():
     assert sheet["css_parse_errors"] == 1
     assert inline["tokenizer_parse_errors"] == sheet["tokenizer_parse_errors"]
     assert inline["css_parse_errors"] == sheet["css_parse_errors"]
+
+
+# --------------------------------------------------------------------------
+# External stylesheets interleave with <style> by document position
+# --------------------------------------------------------------------------
+#
+# These used to be two passes: every sheet in `author_css` cascaded before
+# every in-document `<style>`, whatever the markup said. Source order is the
+# cascade's last tiebreak, so that silently picked the winner for any two
+# declarations of equal origin, importance and specificity.
+#
+# The corpus does NOT exercise this -- all three pages happen to put every
+# `<link>` before every `<style>`, so the old and new orders coincide there.
+# These tests are the only thing standing behind the fix.
+
+
+def _color_of(html, **kwargs):
+    document = parse(html)
+    style_document(document, [], **kwargs)
+    return find(document, "p").computed_style.color
+
+
+RED, GREEN, BLUE = Color(255, 0, 0), Color(0, 128, 0), Color(0, 0, 255)
+
+
+def test_a_style_element_beats_a_link_that_precedes_it():
+    html = '<link rel=stylesheet href="a.css"><style>p{color:red}</style><p>x'
+    assert _color_of(html, external_css={"a.css": "p{color:green}"}) == RED
+
+
+def test_a_link_beats_a_style_element_that_precedes_it():
+    """The case the old flat ordering got wrong: an external sheet later in
+    the document must win a tie against an earlier `<style>`."""
+    html = '<style>p{color:red}</style><link rel=stylesheet href="a.css"><p>x'
+    assert _color_of(html, external_css={"a.css": "p{color:green}"}) == GREEN
+
+
+def test_three_way_interleave_resolves_to_the_last_in_document_order():
+    html = (
+        '<link rel=stylesheet href="a.css">'
+        "<style>p{color:red}</style>"
+        '<link rel=stylesheet href="b.css">'
+        "<p>x"
+    )
+    sheets = {"a.css": "p{color:green}", "b.css": "p{color:blue}"}
+    assert _color_of(html, external_css=sheets) == BLUE
+
+
+def test_author_css_still_cascades_before_the_document():
+    """`author_css` is for sheets with no position in the document, so an
+    in-document `<style>` outranks them on a tie."""
+    html = "<style>p{color:red}</style><p>x"
+    document = parse(html)
+    style_document(document, ["p{color:green}"])
+    assert find(document, "p").computed_style.color == RED
+
+
+def test_specificity_still_beats_source_order():
+    """Order is the LAST tiebreak. A later sheet must not overturn a more
+    specific rule -- otherwise this suite would pass on a cascade that only
+    looked at position."""
+    html = '<style>p#x{color:red}</style><link rel=stylesheet href="a.css"><p id=x>y'
+    assert _color_of(html, external_css={"a.css": "p{color:green}"}) == RED
+
+
+def test_a_supplied_link_is_counted_as_supplied_not_skipped():
+    html = '<link rel=stylesheet href="a.css"><link rel=stylesheet href="b.css"><p>x'
+    document = parse(html)
+    metrics = style_document(document, [], external_css={"a.css": "p{color:green}"})
+    assert metrics["link_stylesheets_total"] == 2
+    assert metrics["link_stylesheets_supplied"] == 1
+    assert metrics["link_stylesheets_skipped"] == 1  # b.css was not supplied
+
+
+def test_two_links_sharing_an_href_both_apply_from_one_entry():
+    html = '<link rel=stylesheet href="a.css"><link rel=stylesheet href="a.css"><p>x'
+    document = parse(html)
+    metrics = style_document(document, [], external_css={"a.css": "p{color:green}"})
+    assert metrics["link_stylesheets_supplied"] == 2
+    assert find(document, "p").computed_style.color == GREEN
+
+
+def test_an_href_with_no_entry_does_not_crash_and_is_counted():
+    html = '<link rel=stylesheet href="missing.css"><style>p{color:red}</style><p>x'
+    document = parse(html)
+    metrics = style_document(document, [], external_css={"a.css": "p{color:green}"})
+    assert metrics["link_stylesheets_skipped"] == 1
+    assert find(document, "p").computed_style.color == RED

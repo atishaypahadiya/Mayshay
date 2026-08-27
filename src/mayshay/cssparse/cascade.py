@@ -127,7 +127,10 @@ Deliberate deviations and omissions
    feature outside `media.py`'s scope; both are counted rather than dropped
    silently. See that module for the full list.
 3. **`<link rel=stylesheet>` is counted, never fetched** -- `net/` is Phase
-   5. See `_count_link_stylesheets` for why the count is worth having.
+   5. The count turns "no styles applied" from a blank render into a
+   number, and the fraction of real pages depending entirely on external
+   CSS is itself a finding. Supply the sheets via `external_css` and the
+   counter reports only what is still missing.
 4. **`:hover`, `:focus`, `:visited` and friends never match** (matching.py's
    own deviation): there is no interaction and no history. `:link` matches
    any `a[href]`, so link colouring is at least approximately right.
@@ -890,33 +893,6 @@ def _rel_tokens(element: Element) -> set[str]:
     return {token.lower() for token in element.attrs.get("rel", "").split()}
 
 
-def _count_link_stylesheets(elements: list[Element], metrics: Counter[str]) -> None:
-    """Count `<link rel=stylesheet>`, do not fetch it.
-
-    `net/` arrives in Phase 5. Counting turns "no styles applied" from a
-    blank render into a number, and the fraction of real pages that depend
-    entirely on external CSS is itself a finding for the analysis half of
-    this project -- hn.html has exactly one stylesheet link and no `<style>`
-    element at all, so the count is the difference between "we styled it"
-    and "we styled the UA sheet".
-
-    `rel=icon`, `rel=preconnect`, `rel=canonical` and the rest do not count:
-    they are not stylesheets. A `rel=stylesheet` with no `href` does not
-    count either -- there is nothing that would have been fetched.
-    `rel="alternate stylesheet"` does count; it is a stylesheet the user
-    could select, and treating it as one over-counts by a rounding error on
-    the corpus while under-counting would hide whole sheets.
-    """
-    for element in elements:
-        if element.tag_name != "link":
-            continue
-        if "stylesheet" not in _rel_tokens(element):
-            continue
-        if not element.attrs.get("href", "").strip():
-            continue
-        metrics["link_stylesheets_skipped"] += 1
-
-
 def _style_element_source(element: Element) -> str | None:
     """A `<style>` element's CSS text, or None if it is not CSS.
 
@@ -1088,6 +1064,7 @@ def style_document(
     document: Node,
     author_css: list[str],
     viewport: Viewport | None = None,
+    external_css: dict[str, str] | None = None,
 ) -> Counter[str]:
     """Attach a `ComputedStyle` to every node of `document`.
 
@@ -1095,6 +1072,15 @@ def style_document(
     somewhere other than the document itself. In-document `<style>` elements
     are found and cascaded automatically; `<link rel=stylesheet>` is counted
     and not fetched.
+
+    `external_css` maps a `<link rel=stylesheet>`'s `href` -- exactly as
+    written in the document -- to that sheet's source. Supplying it is how
+    an external sheet enters the cascade *at the position its `<link>`
+    occupies*, which is what source order requires; `author_css` is for
+    sheets with no position in the document and still cascades before it.
+    A `<link>` with no entry here is counted in `link_stylesheets_skipped`
+    exactly as it was before external sheets could be supplied at all.
+    `scripts/corpus.py` builds this mapping from a page's manifest.
 
     `viewport` is optional and opt-in. Without one, at-rules are counted and
     skipped exactly as they were through Phase 2 -- which keeps every figure
@@ -1122,25 +1108,68 @@ def style_document(
     # writing one CSV row per key would otherwise emit no row at all for a
     # page with no external stylesheets, and "no row" and "zero" are
     # different findings for the analysis half.
+    # Seeded so the key is present at zero rather than absent: a driver
+    # writing one CSV row per key would otherwise emit no row at all for a
+    # page with no external stylesheets, and "no row" and "zero" are
+    # different findings for the analysis half. The counting itself happens
+    # in the document-order walk below, which is the only place that knows
+    # whether a given link was supplied.
     metrics["link_stylesheets_skipped"] = 0
-    _count_link_stylesheets(elements, metrics)
+    metrics["link_stylesheets_total"] = 0
 
     order = _Counter()
     rules = _parse_sheet(UA_CSS, "ua", order, metrics, viewport)
     metrics["ua_rules"] = len(rules)
 
+    # Sheets with no position in the document -- a UA-supplied user sheet, or
+    # a caller passing raw CSS -- cascade before it. Anything attributable to
+    # a `<link>` belongs in `external_css` instead, so it lands in the right
+    # place in source order.
     for source in author_css:
         metrics["author_stylesheets"] += 1
         rules.extend(_parse_sheet(source, "author", order, metrics, viewport))
 
+    # ONE pass, in document order, over both `<style>` and `<link>`.
+    #
+    # These used to be two passes: every external sheet cascaded before every
+    # in-document `<style>`, whatever the markup said. Source order is the
+    # last tiebreak in the cascade, so that silently changed the winner for
+    # any two declarations of equal origin, importance and specificity --
+    # which in real CSS is common, not a corner case. Wikipedia links two
+    # sheets and then ships 18 `<style>` blocks; under the old order every
+    # one of those blocks won ties it should sometimes have lost.
+    external = external_css or {}
     for element in elements:
-        if element.tag_name != "style":
+        if element.tag_name == "style":
+            source = _style_element_source(element)
+            if source is None:
+                metrics["style_elements_skipped"] += 1
+                continue
+            metrics["style_elements"] += 1
+            rules.extend(_parse_sheet(source, "author", order, metrics, viewport))
             continue
-        source = _style_element_source(element)
+
+        if element.tag_name != "link" or "stylesheet" not in _rel_tokens(element):
+            continue
+        href = element.attrs.get("href", "").strip()
+        if not href:
+            # Nothing that would have been fetched; not a skipped sheet.
+            continue
+        # `rel=icon`, `rel=preconnect`, `rel=canonical` and the rest are not
+        # stylesheets and never reach here. `rel="alternate stylesheet"`
+        # does: it IS a stylesheet, just one the user would have to select,
+        # so it is counted. It is not applied unless a caller puts it in
+        # `external_css`, and `scripts/corpus.py` deliberately does not.
+        metrics["link_stylesheets_total"] += 1
+        source = external.get(href)
         if source is None:
-            metrics["style_elements_skipped"] += 1
+            # Still the Phase 2 meaning: a linked sheet the cascade did not
+            # get. With no `external_css` that is every link, so the counter
+            # is unchanged for every caller that supplies nothing.
+            metrics["link_stylesheets_skipped"] += 1
             continue
-        metrics["style_elements"] += 1
+        metrics["link_stylesheets_supplied"] += 1
+        metrics["author_stylesheets"] += 1
         rules.extend(_parse_sheet(source, "author", order, metrics, viewport))
 
     metrics["rules_total"] = len(rules)
