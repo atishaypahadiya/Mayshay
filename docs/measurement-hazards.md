@@ -103,35 +103,73 @@ an implementation path, so the diagnostic inherits the defect's blind spot.
 ### The criterion
 
 This is what decides when "ask a second method" is mandatory rather than
-prudent:
+prudent. It has two parts, and the first alone is not usable:
 
 > **A check can only detect defects that are not upstream of it.** If the
-> candidate diagnostic shares an implementation path with the thing being
-> diagnosed, it cannot fail when that path is wrong, and a green result
-> from it carries no information.
+> candidate diagnostic shares the specific path that could be defective, it
+> cannot fail when that path is wrong.
+>
+> **But sharing is not disqualifying on its own -- quiet sharing is.** The
+> question is what a defect in the shared path would look like. One that
+> produces a loud, uniform, obviously-broken failure is safe to share,
+> because it cannot masquerade as a pass. One that could produce a
+> plausible green is not.
 
-So before trusting a check, ask what it shares with its subject. If the
-answer is "the code that might be broken", the check is decorative and an
-independent second derivation is the only thing that works. If the answer
-is "nothing but the question", it is real evidence.
+The second part is what keeps this from regressing into
+who-verifies-the-verifier. Almost every useful check shares *something*
+with its subject, and a rule that forbids all sharing forbids all checking.
+
+**Worked example, and a correction to an earlier draft of this file.** The
+html5lib-tests comparison shares a great deal with the parser it validates:
+the `.dat` fixture loader, `dom.serialize()`, and the pytest harness. An
+earlier version of this section called it "shares only the input", which is
+simply wrong.
+
+It is still a good check, and the reason is the second part of the
+criterion, not the first. A defect in `serialize()` does not produce a
+plausible pass -- it produces hundreds of uniform failures across every
+fixture at once, which is unmissable. The shared path is real but its
+failure mode is loud. Compare `getlength`: the shared path there fails by
+returning a *slightly different plausible number*, silently, on every call.
+Same structure, opposite risk.
+
+So the operative pair of questions before trusting a check:
+
+1. Does it share the path that could actually be wrong -- not just any path?
+2. If that path is wrong, does the check fail loudly or return a plausible
+   green?
+
+Only "yes, and quietly" makes an independent second derivation mandatory.
 
 Concretely, in this project:
 
-* Measuring advances with Pillow and diagnosing with Pillow's own options
-  shares the rasterizer. `fontTools` reading `hmtx` shares only the file.
-* Checking a cascade counter by reading another counter the same function
-  emits shares the function. Counting the same thing from the DOM is
-  independent.
-* Validating our HTML parser against trees our own parser produced shares
-  everything. `html5lib-tests` fixtures share only the input.
+| check | shares | if the shared path is wrong | verdict |
+|---|---|---|---|
+| Pillow advances, diagnosed with Pillow's own options | the rasterizer, including its rounding | same plausible number, silently | **decorative** -- needed `fontTools` |
+| our parser vs html5lib-tests | loader, serializer, harness | hundreds of uniform failures | fine -- loud |
+| a cascade counter checked against another counter the same function emits | the function | both move together, silently | decorative -- count from the DOM instead |
+| `getBoxModel` vs `getContentQuads` | Chrome's layout engine | both wrong the same way | acceptable for *fragmentation*, which is what they disagree about; not for absolute correctness |
 
-The project already applied this once before it had a name.
+That last row is worth stating plainly: asking Chrome twice cannot tell us
+whether Chrome is right. It told us the two methods answer different
+questions, which is what was needed. A check has a scope, and its scope is
+the difference between the two things being compared.
+
+### The criterion applied before it was named
+
 `scripts/collect.py` uses BeautifulSoup to find `<link rel=stylesheet>`
-elements rather than `mayshay.htmlparse`, and the reason recorded in its
-docstring is exactly this: a parser defect would otherwise become a corpus
-defect, and the corpus would then validate the parser that shaped it. The
-corpus is the measuring instrument; it must not be built with the tool
-under measurement.
+elements rather than `mayshay.htmlparse`, and the reason in its docstring is
+exactly this: a parser defect would otherwise become a corpus defect, and
+the corpus would then validate the parser that shaped it. **The corpus is
+the measuring instrument; it must not be built with the tool under
+measurement.**
+
+That was reasoned to independently, months before any of this was written
+down, in a context where nobody was thinking about verification at all --
+the task was "collect some pages". That matters for how much weight the
+criterion deserves: a rule derived only from the incidents that produced it
+is a pattern fitted to three points. One that also explains a decision made
+for its own reasons, before the rule existed, is describing something real.
 
 ## The shape
 
@@ -161,8 +199,10 @@ number is reasonable, because it always was.
 * **When two methods can answer the same question, ask both once** before
   building on either. It is one throwaway script at design time and a
   rebuilt harness afterwards. This is mandatory, not prudent, whenever the
-  first method's own diagnostics share an implementation path with it --
-  see the criterion above.
+  first method's own diagnostics share the possibly-defective path AND a
+  defect there would return a plausible green rather than failing loudly --
+  see the criterion above. Shared paths that fail loudly are fine to rely
+  on; most good checks have one.
 * **Prefer the source closest to the data.** `hmtx` over a rasterizer's
   convenience wrapper; the manifest over a directory glob; the token stream
   over a regex. Each layer of convenience is a place a value can be
