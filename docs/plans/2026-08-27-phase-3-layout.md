@@ -279,13 +279,14 @@ should take it rather than returning `None`.
 `auto` survive symbolically, which is exactly right and is the single most
 helpful thing Phase 2 did for this phase. Noted so it is not "fixed".
 
-### Recommended sequencing
+### Where each one is handled
 
-Items 2, 3, 4 and 5 are **prerequisites**, not cleanup — Task D cannot be
-written against a `ComputedStyle` with no `white-space`. They should be one
-task before Task B, in the shape Phase 2 used for its own Tasks A and B.
-Item 6 rides along with 5. Items 7 and 8 are Task C/D concerns and need no
-separate work.
+Items 2, 3, 4, 5 and 6 are **Task A2**, above — prerequisites rather than
+cleanup, because Task D cannot be written against a `ComputedStyle` with no
+`white-space`, and at a 70% drop rate a layout bug and a cascade bug are
+indistinguishable. Item 7 is resolved by Task D's font and Task C's
+viewport. Item 8 is not a problem to fix; it is recorded so it is not
+"fixed".
 
 ## Deferred, with counters
 
