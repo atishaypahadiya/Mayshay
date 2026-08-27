@@ -757,59 +757,254 @@ def expand_shorthand(name: str, parsed: dict[str, object]) -> dict[str, object]:
     raise ValueError(f"{name!r} is not a shorthand this module expands")
 
 
+# --------------------------------------------------------------------------
+# The property table
+# --------------------------------------------------------------------------
+#
+# One entry per property this module accepts, each mapping a token list to
+# the longhand dict it sets (or None). Deliberately a table rather than the
+# `if name == ...` chain this used to be: `SUPPORTED_PROPERTIES` and
+# `LONGHANDS_OF` are both *derived* from it below, so a property added here
+# cannot be missing from either, and `classify_drop` cannot disagree with
+# `parse_declaration_value` about what "supported" means. The chain made
+# that agreement a matter of remembering.
+
+
+def _one(prop: str, parse):
+    """A property whose parser yields a single value for a single longhand."""
+
+    def parse_one(tokens: list[CssToken]) -> dict[str, object] | None:
+        value = parse(tokens)
+        return None if value is None else {prop: value}
+
+    return parse_one
+
+
+def _sides(name: str, *, allow_auto: bool):
+    """A `margin`/`padding` shorthand: the one-to-four-value rule."""
+
+    def parse_sides(tokens: list[CssToken]) -> dict[str, object] | None:
+        parsed = _parse_margin_or_padding(tokens, allow_auto=allow_auto)
+        return None if parsed is None else expand_shorthand(name, parsed)
+
+    return parse_sides
+
+
+def _border_shorthand(tokens: list[CssToken]) -> dict[str, object] | None:
+    parsed = _parse_border(tokens)
+    return None if parsed is None else expand_shorthand("border", parsed)
+
+
+_PROPERTY_PARSERS: dict[str, object] = {
+    "display": _one("display", _parse_display),
+    "width": _one("width", _parse_width_height),
+    "height": _one("height", _parse_width_height),
+    "font-size": _one("font-size", _parse_font_size),
+    "color": _one("color", _parse_color),
+    "background-color": _one("background-color", _parse_color),
+    "margin": _sides("margin", allow_auto=True),
+    "padding": _sides("padding", allow_auto=False),
+    "border": _border_shorthand,
+}
+
+# Which longhands each supported property sets -- *all* of them, including
+# the ones a given declaration happens not to mention. A longhand maps to
+# itself. This is what the cascade's shorthand-reset needs, and it lives
+# here rather than there so it is derived from the same table the parser
+# dispatches on. (`values.py` still does not know what the *initial values*
+# are; that stays the cascade's, which is the half of the split
+# `expand_shorthand`'s deviation 7 describes.)
+LONGHANDS_OF: dict[str, tuple[str, ...]] = {
+    "display": ("display",),
+    "width": ("width",),
+    "height": ("height",),
+    "font-size": ("font-size",),
+    "color": ("color",),
+    "background-color": ("background-color",),
+    "margin": tuple(f"margin-{side}" for side in _SIDES),
+    "padding": tuple(f"padding-{side}" for side in _SIDES),
+    "border": tuple(
+        f"border-{side}-{kind}"
+        for kind in ("width", "style", "color")
+        for side in _SIDES
+    ),
+}
+
+# Every property `parse_declaration_value` can accept. Derived, never
+# written out twice.
+SUPPORTED_PROPERTIES: frozenset[str] = frozenset(_PROPERTY_PARSERS)
+
+assert set(LONGHANDS_OF) == SUPPORTED_PROPERTIES, (
+    "LONGHANDS_OF and the parser table disagree: "
+    f"{set(LONGHANDS_OF) ^ SUPPORTED_PROPERTIES}"
+)
+
+
 def parse_declaration_value(name: str, tokens: list[CssToken]) -> dict[str, object] | None:
     """Parse one declaration's value tokens for property `name`.
 
     Returns `None` when the value is invalid for `name` -- the caller (Task
     J's cascade) is expected to drop that one declaration and keep its
     siblings, exactly as an unsupported/malformed declaration behaves in a
-    real browser.
+    real browser. `classify_drop` says *why*, for the same arguments.
     """
     name = normalize_property_name(name)
+    parse = _PROPERTY_PARSERS.get(name)
+    if parse is None:
+        return None
     # EOFToken only ever appears here because a caller (this module's own
     # tests, most obviously) drove a `CssTokenizer` straight through to
     # completion rather than going through `cssparse.parser`, whose
     # `Declaration.value` never contains one. Stripping it up front means
     # both call shapes parse identically.
+    return parse([tok for tok in tokens if not isinstance(tok, EOFToken)])
+
+
+# --------------------------------------------------------------------------
+# Why a declaration was dropped
+# --------------------------------------------------------------------------
+#
+# A drop *rate* is ambiguous: it falls when the parser improves and it also
+# falls when validation loosens, and those are opposite outcomes. These four
+# reasons partition every drop so the two can be told apart. `invalid` is the
+# one that must never shrink -- everything in it is something a browser drops
+# too, so a smaller `invalid` means this module started accepting garbage.
+
+DROP_UNSUPPORTED_PROPERTY = "unsupported-property"
+DROP_UNSUPPORTED_VALUE = "unsupported-value"
+DROP_VAR_UNRESOLVED = "var-unresolved"
+DROP_INVALID = "invalid"
+
+DROP_REASONS: tuple[str, ...] = (
+    DROP_UNSUPPORTED_PROPERTY,
+    DROP_UNSUPPORTED_VALUE,
+    DROP_VAR_UNRESOLVED,
+    DROP_INVALID,
+)
+
+# The only functions any supported property's grammar accepts. `var()` is
+# excluded on purpose -- it is not a value function, it is a substitution,
+# and `classify_drop` reaches it before this set is consulted.
+_SUPPORTED_FUNCTIONS = frozenset({"rgb", "rgba"})
+
+# The CSS-wide keywords. All four are valid CSS on every property, so a
+# declaration this module rejects because of one is `unsupported-value`,
+# never `invalid`. After the cascade learned `inherit`/`initial`/`unset`,
+# only `revert` still reaches here in the bare single-keyword form -- it
+# needs origin-level rollback the cascade does not model.
+_WIDE_KEYWORDS = frozenset({"inherit", "initial", "unset", "revert"})
+
+# Valid CSS keywords this module deliberately does not implement, per
+# property. Membership here is what separates `unsupported-value` from
+# `invalid`: `display: flow-root` is real CSS we do not do, while
+# `display: bloc<U+212A>` is not real CSS at all and a browser drops it too.
+_KNOWN_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
+    # Real `display` values outside `_DISPLAY_KEYWORDS`.
+    "display": frozenset({
+        "flow", "flow-root", "run-in", "math",
+        "ruby", "ruby-base", "ruby-text",
+        "ruby-base-container", "ruby-text-container",
+    }),
+    # The intrinsic sizing keywords (CSS Sizing 3), which need a layout pass
+    # to mean anything.
+    "width": frozenset({
+        "min-content", "max-content", "fit-content", "stretch", "content",
+    }),
+    "height": frozenset({
+        "min-content", "max-content", "fit-content", "stretch", "content",
+    }),
+    # Deviation 8: `border-width` takes only `<length>` here, not the
+    # spec's keyword trio.
+    "border": frozenset({"thin", "medium", "thick"}),
+}
+
+# Properties whose grammar admits an open-ended `<custom-ident>` or
+# `<string>`, so an identifier this module does not recognise names
+# something real (an `@counter-style` rule, a font on the user's machine)
+# rather than being malformed.
+_OPEN_IDENT_PROPERTIES: frozenset[str] = frozenset()
+
+
+def _var_functions(tokens: list[CssToken]) -> bool:
+    """Does this value contain a *well-formed* `var()` reference?
+
+    Well-formed means `var(` followed immediately by an identifier starting
+    with `--`. A `var()` with anything else first is a syntax error a browser
+    drops too, so it deliberately does not count here and falls through to
+    `invalid`.
+    """
+    for i, tok in enumerate(tokens):
+        if not isinstance(tok, Function) or _ascii_lower(tok.value) != "var":
+            continue
+        rest = _trim(tokens[i + 1:])
+        if rest and isinstance(rest[0], Ident) and rest[0].value.startswith("--"):
+            return True
+    return False
+
+
+def _has_unsupported_construct(name: str, tokens: list[CssToken]) -> bool:
+    """Does this value use valid CSS that this module documents as out of
+    scope? See `_KNOWN_UNSUPPORTED_KEYWORDS` for the separation this draws.
+    """
+    known = _KNOWN_UNSUPPORTED_KEYWORDS.get(name, frozenset())
+    for tok in tokens:
+        if isinstance(tok, Function):
+            fn = _ascii_lower(tok.value)
+            # `var` is the caller's business, checked before this function
+            # runs; a malformed one belongs in `invalid`.
+            if fn != "var" and fn not in _SUPPORTED_FUNCTIONS:
+                return True
+        elif isinstance(tok, Ident):
+            keyword = _ascii_lower(tok.value)
+            if keyword in _WIDE_KEYWORDS or keyword in known:
+                return True
+            if name in _OPEN_IDENT_PROPERTIES:
+                return True
+    return False
+
+
+def classify_drop(name: str, tokens: list[CssToken]) -> str:
+    """Why `parse_declaration_value(name, tokens)` returned `None`.
+
+    Call only when it did; the result is meaningless otherwise. The order of
+    the four tests is itself a decision:
+
+    * **property before value.** `background: var(--x)` is
+      `unsupported-property` whether or not `var()` is substituted, because
+      `background` is not a property this module has. Testing `var()` first
+      would move that declaration between two buckets when `var()` landed
+      and say nothing about either.
+    * **`var()` before the value grammar**, because a value containing one
+      has no grammar to check until it is substituted.
+    * **`invalid` last**, and only for values that survived every "we know
+      this and chose not to" test. That is what makes a shrinking `invalid`
+      a signal rather than noise.
+    """
+    name = normalize_property_name(name)
+    if name not in SUPPORTED_PROPERTIES:
+        return DROP_UNSUPPORTED_PROPERTY
     tokens = [tok for tok in tokens if not isinstance(tok, EOFToken)]
-
-    if name == "display":
-        value = _parse_display(tokens)
-        return None if value is None else {"display": value}
-
-    if name in ("width", "height"):
-        value = _parse_width_height(tokens)
-        return None if value is None else {name: value}
-
-    if name == "font-size":
-        value = _parse_font_size(tokens)
-        return None if value is None else {"font-size": value}
-
-    if name in ("color", "background-color"):
-        value = _parse_color(tokens)
-        return None if value is None else {name: value}
-
-    if name == "margin":
-        sides = _parse_margin_or_padding(tokens, allow_auto=True)
-        return None if sides is None else expand_shorthand("margin", sides)
-
-    if name == "padding":
-        sides = _parse_margin_or_padding(tokens, allow_auto=False)
-        return None if sides is None else expand_shorthand("padding", sides)
-
-    if name == "border":
-        parsed = _parse_border(tokens)
-        return None if parsed is None else expand_shorthand("border", parsed)
-
-    return None  # not one of the nine properties this module handles
+    if _var_functions(tokens):
+        return DROP_VAR_UNRESOLVED
+    if _has_unsupported_construct(name, tokens):
+        return DROP_UNSUPPORTED_VALUE
+    return DROP_INVALID
 
 
 __all__ = [
     "AUTO",
+    "DROP_INVALID",
+    "DROP_REASONS",
+    "DROP_UNSUPPORTED_PROPERTY",
+    "DROP_UNSUPPORTED_VALUE",
+    "DROP_VAR_UNRESOLVED",
+    "LONGHANDS_OF",
+    "SUPPORTED_PROPERTIES",
     "Color",
     "Keyword",
     "Length",
     "Percent",
+    "classify_drop",
     "expand_shorthand",
     "normalize_property_name",
     "parse_declaration_value",
