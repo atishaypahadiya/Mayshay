@@ -1,0 +1,265 @@
+# Review package: 2328f50..bdabfd2
+
+## Commits
+bdabfd2 dom: add cascade affordances - computed_style slot, class_list, element positions
+
+## Files changed
+ src/mayshay/dom/__init__.py |  2 ++
+ src/mayshay/dom/node.py     | 55 ++++++++++++++++++++++++++++++++++++++
+ tests/dom/test_node.py      | 64 +++++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 121 insertions(+)
+
+## Diff
+diff --git a/src/mayshay/dom/__init__.py b/src/mayshay/dom/__init__.py
+index 9f1be12..65bd9b7 100644
+--- a/src/mayshay/dom/__init__.py
++++ b/src/mayshay/dom/__init__.py
+@@ -6,22 +6,24 @@ DOM node types.
+ Re-exports only; every name below is defined in `node.py`.
+ """
+ 
+ from mayshay.dom.node import (
+     Comment,
+     Document,
+     DocumentType,
+     Element,
+     Node,
+     Text,
++    annotate_positions,
+     serialize,
+ )
+ 
+ __all__ = [
+     "Comment",
+     "Document",
+     "DocumentType",
+     "Element",
+     "Node",
+     "Text",
++    "annotate_positions",
+     "serialize",
+ ]
+diff --git a/src/mayshay/dom/node.py b/src/mayshay/dom/node.py
+index 929b02e..f9d7d1a 100644
+--- a/src/mayshay/dom/node.py
++++ b/src/mayshay/dom/node.py
+@@ -13,20 +13,24 @@ from typing import Literal
+ 
+ # The three document modes the spec defines. Named so a typo in an assignment
+ # is a type error rather than a mode that silently matches nothing.
+ DocumentMode = Literal["no-quirks", "limited-quirks", "quirks"]
+ 
+ 
+ class Node:
+     def __init__(self) -> None:
+         self.parent: Node | None = None
+         self.children: list[Node] = []
++        # Phase 2 attaches a ComputedStyle here. On Node rather than Element so
++        # text nodes inherit their parent's style directly, instead of layout
++        # carrying a special case for every text run.
++        self.computed_style: object | None = None
+ 
+     def append_child(self, node: Node) -> Node:
+         if node.parent is not None:
+             node.parent.remove_child(node)
+         node.parent = self
+         self.children.append(node)
+         return node
+ 
+     def insert_before(self, node: Node, ref: Node) -> Node:
+         if ref not in self.children:
+@@ -88,24 +92,54 @@ class DocumentType(Node):
+         # public id rather than dropping the pair.
+         self.public_id = public_id
+         self.system_id = system_id
+ 
+ 
+ class Element(Node):
+     def __init__(self, tag_name: str, attrs: dict[str, str] | None = None) -> None:
+         super().__init__()
+         self.tag_name = tag_name
+         self.attrs: dict[str, str] = dict(attrs or {})
++        self._class_list: frozenset[str] | None = None
++        # Set by annotate_positions(). Position among ELEMENT siblings, which
++        # is what :nth-child counts -- self.children interleaves Text/Comment.
++        self.element_index: int | None = None
+ 
+     def __repr__(self) -> str:
+         return f"<Element {self.tag_name} {self.attrs}>"
+ 
++    @property
++    def id(self) -> str | None:
++        return self.attrs.get("id")
++
++    @property
++    def class_list(self) -> frozenset[str]:
++        """Cached. `str.split()` with no argument splits on whitespace runs
++        and drops empties, which is exactly the HTML class-attribute rule --
++        `class="box  wide"` (two spaces) must not yield an empty string, which
++        `split(" ")` would produce.
++
++        Cached because selector matching asks for this once per element per
++        rule; re-splitting there is the difference between a scan and a hot
++        loop. Nothing mutates `attrs` in Phase 2, so a stale cache can't
++        happen yet -- if a mutator (e.g. `Element.setAttribute`) is ever
++        added, it must reset `self._class_list = None` whenever it touches
++        the `class` attribute.
++        """
++        if self._class_list is None:
++            self._class_list = frozenset(self.attrs.get("class", "").split())
++        return self._class_list
++
++    @property
++    def element_children(self) -> list[Element]:
++        return [c for c in self.children if isinstance(c, Element)]
++
+ 
+ class Text(Node):
+     def __init__(self, data: str = "") -> None:
+         super().__init__()
+         self.data = data
+ 
+     def __repr__(self) -> str:
+         return f"<Text {self.data!r}>"
+ 
+ 
+@@ -127,20 +161,41 @@ def _render(node: Node, depth: int, out: list[str]) -> None:
+         out.append(f"{pad}<!-- {node.data} -->")
+     elif isinstance(node, DocumentType):
+         if node.public_id is None and node.system_id is None:
+             out.append(f"{pad}<!DOCTYPE {node.name}>")
+         else:
+             public = node.public_id or ""
+             system = node.system_id or ""
+             out.append(f'{pad}<!DOCTYPE {node.name} "{public}" "{system}">')
+ 
+ 
++def annotate_positions(root: Node) -> int:
++    """Give every Element its index among its element siblings. Returns the
++    count of elements annotated.
++
++    One pass before matching, rather than an O(n) filter inside every
++    :nth-child / '+' / '~' test.
++    """
++    count = 0
++    stack: list[Node] = [root]
++    while stack:
++        node = stack.pop()
++        index = 0
++        for child in node.children:
++            if isinstance(child, Element):
++                child.element_index = index
++                index += 1
++                count += 1
++            stack.append(child)
++    return count
++
++
+ def serialize(document: Document) -> str:
+     """Render a tree in the html5lib-tests `#document` format."""
+     out: list[str] = []
+     # Explicit stack; deep documents would overflow Python's recursion limit.
+     stack: list[tuple[Node, int]] = [
+         (child, 0) for child in reversed(document.children)
+     ]
+     while stack:
+         node, depth = stack.pop()
+         _render(node, depth, out)
+diff --git a/tests/dom/test_node.py b/tests/dom/test_node.py
+index f9e24bd..3a2b90f 100644
+--- a/tests/dom/test_node.py
++++ b/tests/dom/test_node.py
+@@ -1,18 +1,19 @@
+ import pytest
+ 
+ from mayshay.dom.node import (
+     Comment,
+     Document,
+     DocumentType,
+     Element,
+     Text,
++    annotate_positions,
+     serialize,
+ )
+ from tests.support.dat import load_tree_tests
+ from tests.support.marks import requires_corpus
+ 
+ 
+ def test_append_child_sets_parent():
+     parent, child = Element("div"), Element("span")
+     parent.append_child(child)
+     assert child.parent is parent
+@@ -176,10 +177,73 @@ def test_serializer_matches_corpus_multiple_attributes():
+     html.append_child(Element("head"))
+     body = html.append_child(Element("body"))
+     body.append_child(
+         Element(
+             "isindex",
+             {"name": "A", "action": "B", "prompt": "C", "foo": "D"},
+         )
+     )
+ 
+     assert serialize(doc) == fixture.document
++
++
++def test_computed_style_defaults_to_none_on_every_node_type():
++    from mayshay.dom.node import Comment, Document, DocumentType, Element, Text
++
++    for node in (Document(), DocumentType("html"), Element("p"), Text("x"), Comment("c")):
++        assert node.computed_style is None
++
++
++def test_class_list_splits_on_whitespace_runs():
++    """Real markup: `class="box  wide"` -- two spaces."""
++    el = Element("div", {"class": "box  wide"})
++    assert el.class_list == frozenset({"box", "wide"})
++
++
++def test_class_list_handles_tabs_newlines_and_edges():
++    el = Element("div", {"class": "  a\tb\nc  "})
++    assert el.class_list == frozenset({"a", "b", "c"})
++
++
++def test_class_list_absent_is_empty():
++    assert Element("div").class_list == frozenset()
++
++
++def test_id_accessor():
++    assert Element("div", {"id": "Main"}).id == "Main"
++    assert Element("div").id is None
++
++
++def test_id_case_is_preserved():
++    """Attribute names fold; values do not. CSS id matching is case-sensitive."""
++    assert Element("div", {"id": "Main"}).id != "main"
++
++
++def test_element_children_excludes_text_and_comments():
++    from mayshay.dom.node import Comment, Text
++
++    div = Element("div")
++    div.append_child(Text("\n"))
++    a = div.append_child(Element("a"))
++    div.append_child(Comment("c"))
++    b = div.append_child(Element("b"))
++    assert div.element_children == [a, b]
++
++
++def test_annotate_positions_indexes_elements_only():
++    from mayshay.dom.node import Document, Text
++
++    doc = Document()
++    div = doc.append_child(Element("div"))
++    div.append_child(Text("\n"))
++    first = div.append_child(Element("p"))
++    div.append_child(Text("\n"))
++    second = div.append_child(Element("p"))
++
++    count = annotate_positions(doc)
++    assert first.element_index == 0
++    assert second.element_index == 1
++    assert count == 3
++
++
++def test_element_index_is_none_before_annotation():
++    assert Element("p").element_index is None

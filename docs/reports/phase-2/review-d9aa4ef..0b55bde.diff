@@ -1,0 +1,252 @@
+# Review package: d9aa4ef..0b55bde
+
+## Commits
+0b55bde scripts: add error_report.py for whole-corpus parse-error agreement
+
+## Files changed
+ scripts/error_report.py              | 137 +++++++++++++++++++++++++++++++++++
+ tests/htmlparse/test_parse_errors.py |  45 ++++++++----
+ 2 files changed, 167 insertions(+), 15 deletions(-)
+
+## Diff
+diff --git a/scripts/error_report.py b/scripts/error_report.py
+new file mode 100644
+index 0000000..ccfcd24
+--- /dev/null
++++ b/scripts/error_report.py
+@@ -0,0 +1,137 @@
++#!/usr/bin/env python3
++"""Tree-construction parse-error agreement sweep over the html5lib-tests corpus.
++
++Task B established that our tree-construction parse errors agree with
++html5lib's #errors on 404 of 474 curated corpus cases. Tasks C, D and J each
++had to re-derive that number from scratch in /tmp because nothing in the repo
++computed it -- the same situation that produced scripts/conformance_report.py
++in Phase 1. This is that script's counterpart for parse errors: same shape,
++same flags, same --diff convention.
++
++Compare sets of disagreeing ids, never bare totals -- equal totals routinely
++hide an equal-sized swap.
++
++    .venv/bin/python scripts/error_report.py --out before.txt
++    ... make the change ...
++    .venv/bin/python scripts/error_report.py --out after.txt
++    .venv/bin/python scripts/error_report.py --diff before.txt after.txt
++
++"Curated" cases and TREE_ERROR_CODES are not redefined here: both come from
++tests/htmlparse/test_parse_errors.py, imported rather than reimplemented, so
++this report can never select a different set of cases than the pytest suite
++actually checks.
++
++Agreement is a multiset comparison of codes, positions never compared (see
++test_corpus_error_codes_match_as_a_multiset for why). A disagreeing case is
++classified into one or both of:
++  - extra:   we emit a code the corpus does not expect (or too many of one)
++  - missing: the corpus expects a code we never emit (or not enough of one)
++Task B found these call for opposite responses -- stop emitting the wrong
++thing, versus start emitting the missing thing -- so they are always reported
++and diffed separately, never collapsed into one "wrong" bucket.
++"""
++
++from __future__ import annotations
++
++import argparse
++import collections
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path[:0] = [str(ROOT), str(ROOT / "src")]
++
++from mayshay.htmlparse.treebuilder import TreeBuilder  # noqa: E402
++from tests.htmlparse.test_parse_errors import curated_codes  # noqa: E402
++from tests.support.dat import TREE_DIR, load_tree_tests  # noqa: E402
++
++
++def case_id(test) -> str:
++    """Same convention as conformance_report.case_id: qualify by the parent
++    directory so a future filename collision under tree-construction/ cannot
++    silently merge two cases into one id."""
++    path = Path(test.path)
++    if path.parent.name == "tree-construction":
++        return f"{path.name}:{test.index}"
++    return f"{path.parent.name}/{path.name}:{test.index}"
++
++
++def run() -> tuple[list[str], list[str], list[str]]:
++    """Return (agreeing, extra, missing) case ids, across the whole corpus.
++
++    extra and missing are not mutually exclusive: a single disagreeing case
++    can both emit a code the corpus doesn't expect and fail to emit one it
++    does, and would then show up in both lists.
++    """
++    agreeing, extra, missing = [], [], []
++    for case in load_tree_tests():
++        expected = curated_codes(case)
++        if expected is None:
++            continue
++        cid = case_id(case)
++        try:
++            tb = TreeBuilder(case.data)
++            tb.build()
++            actual = [code for _, code in tb.errors]
++        except Exception:
++            actual = []  # a crash agrees with nothing
++        actual_c = collections.Counter(actual)
++        expected_c = collections.Counter(expected)
++        if actual_c == expected_c:
++            agreeing.append(cid)
++            continue
++        if actual_c - expected_c:
++            extra.append(cid)
++        if expected_c - actual_c:
++            missing.append(cid)
++    return agreeing, extra, missing
++
++
++def main() -> int:
++    ap = argparse.ArgumentParser(
++        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
++    )
++    ap.add_argument("--out", type=Path, help="write the sorted disagreeing ids here")
++    ap.add_argument(
++        "--diff",
++        nargs=2,
++        metavar=("BEFORE", "AFTER"),
++        type=Path,
++        help="difference two saved runs instead of parsing anything",
++    )
++    args = ap.parse_args()
++
++    if args.diff:
++        before = set(args.diff[0].read_text().split())
++        after = set(args.diff[1].read_text().split())
++        fixed, broken = sorted(before - after), sorted(after - before)
++        print(f"newly agreeing ({len(fixed)}):")
++        for i in fixed:
++            print(f"  + {i}")
++        print(f"newly disagreeing ({len(broken)}):")
++        for i in broken:
++            print(f"  - {i}")
++        return 1 if broken else 0
++
++    if not TREE_DIR.is_dir():
++        print(
++            "html5lib-tests submodule not checked out; run "
++            "`git submodule update --init`",
++            file=sys.stderr,
++        )
++        return 2
++
++    agreeing, extra, missing = run()
++    disagreeing = sorted(set(extra) | set(missing))
++    total = len(agreeing) + len(disagreeing)
++    print(f"parse-error agreement: {len(agreeing)}/{total}")
++    print(f"  unexpected code emitted (extra):    {len(extra)}")
++    print(f"  expected code never emitted (missing): {len(missing)}")
++    if args.out:
++        args.out.write_text("\n".join(disagreeing) + "\n")
++        print(f"disagreeing ids -> {args.out}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/tests/htmlparse/test_parse_errors.py b/tests/htmlparse/test_parse_errors.py
+index 7750ca1..56c91e7 100644
+--- a/tests/htmlparse/test_parse_errors.py
++++ b/tests/htmlparse/test_parse_errors.py
+@@ -88,63 +88,78 @@ KNOWN_ERROR_MISSES = {
+         "html and body are open at EOF. See the note on _curated_cases"
+     ),
+     "tests1.dat:98": "same _mode_in_head fall-through as tests1.dat:26",
+     "tests1.dat:106": (
+         "the table insertion modes are not implemented, so </table> reaches "
+         "the in-body stack walk and the table is still open at EOF"
+     ),
+ }
+ 
+ 
+-def _curated_cases():
+-    """Corpus cases whose expected errors fall entirely inside our set.
++def _strip_position(line: str) -> str:
++    return line.split(":", 1)[1].strip() if ":" in line else line.strip()
++
++
++def curated_codes(case) -> list[str] | None:
++    """The expected codes for `case` if it is curated, else None.
++
++    A case is curated when its expected errors fall entirely inside our set:
++    it isn't a fragment or script-on case, and every expected code is in
++    TREE_ERROR_CODES.
+ 
+     The selection rule -- "every expected code is in TREE_ERROR_CODES" -- is a
+     proxy for "every expected error is one a tree builder could produce", and
+     the proxy has a known hole. html5lib's `#errors` vocabulary is not
+     partitioned by producer: at least one member of our set,
+     `expected-closing-tag-but-got-eof`, is emitted by html5lib's *tokenizer*
+     too (EOF in the tag-open and close-tag-open states) as well as by its tree
+     builder. A case whose only expected error is a tokenizer-origin instance
+     of such a code is therefore selected by this filter and can never agree,
+     no matter how complete the tree builder becomes. `tests1.dat:37` (`</`) is
+     exactly that case and is xfailed for it.
+ 
+     Measured across all 57 files: 1 of the 474 selected cases is affected. Do
+     not "fix" this by widening or narrowing TREE_ERROR_CODES -- the set
+     describes what the eight modes can produce, which is a different question.
+     Splitting the vocabulary by producer would need a per-code annotation the
+     corpus does not carry.
++
++    Shared with scripts/error_report.py so the whole-corpus sweep can never
++    drift from what this test file actually selects and checks.
+     """
++    if case.fragment is not None or case.script == "on":
++        return None
++    codes = [_strip_position(line) for line in case.errors]
++    if codes and all(c in TREE_ERROR_CODES for c in codes):
++        return codes
++    return None
++
++
++def _curated_cases():
+     try:
+         cases = load_tree_tests("tests1.dat")
+     except FileNotFoundError:
+         return []
+     out = []
+     for case in cases:
+-        if case.fragment is not None or case.script == "on":
++        codes = curated_codes(case)
++        if codes is None:
+             continue
+-        codes = [_strip_position(line) for line in case.errors]
+-        if codes and all(c in TREE_ERROR_CODES for c in codes):
+-            marks = []
+-            if case.id in KNOWN_ERROR_MISSES:
+-                marks.append(
+-                    pytest.mark.xfail(strict=True, reason=KNOWN_ERROR_MISSES[case.id])
+-                )
+-            out.append(pytest.param(case, codes, marks=marks, id=case.id))
++        marks = []
++        if case.id in KNOWN_ERROR_MISSES:
++            marks.append(
++                pytest.mark.xfail(strict=True, reason=KNOWN_ERROR_MISSES[case.id])
++            )
++        out.append(pytest.param(case, codes, marks=marks, id=case.id))
+     return out
+ 
+ 
+-def _strip_position(line: str) -> str:
+-    return line.split(":", 1)[1].strip() if ":" in line else line.strip()
+-
+-
+ @requires_corpus
+ @pytest.mark.parametrize("case,expected", _curated_cases())
+ def test_corpus_error_codes_match_as_a_multiset(case, expected):
+     """Codes only, never positions.
+ 
+     html5lib reports (line, col) at the END of the offending token; our
+     convention points AT the character that caused it. Comparing positions
+     would fail nearly everywhere, and for reasons that are correct.
+     """
+     tb = TreeBuilder(case.data)

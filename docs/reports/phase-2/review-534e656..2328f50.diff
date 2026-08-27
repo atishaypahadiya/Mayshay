@@ -1,0 +1,331 @@
+# Review package: 534e656..2328f50
+
+## Commits
+2328f50 tests: adopt the 855-case DOCTYPE tokenizer corpus; fix quirks rationale
+
+## Files changed
+ src/mayshay/dom/node.py                    |   8 +-
+ src/mayshay/htmlparse/treebuilder.py       |  45 +++++++++--
+ tests/htmlparse/test_html5lib_tokenizer.py | 126 ++++++++++++++++++++++++++++-
+ 3 files changed, 170 insertions(+), 9 deletions(-)
+
+## Diff
+diff --git a/src/mayshay/dom/node.py b/src/mayshay/dom/node.py
+index 6dc77db..929b02e 100644
+--- a/src/mayshay/dom/node.py
++++ b/src/mayshay/dom/node.py
+@@ -2,20 +2,26 @@
+ DOM node types.
+ 
+ Deliberately minimal: parent/child links, no live NodeLists, no event
+ targets, no ranges. The names match the spec because we will be typing them
+ for the rest of the project; the tokenizer's token classes carry a `Token`
+ suffix precisely so they don't collide with these.
+ """
+ 
+ from __future__ import annotations
+ 
++from typing import Literal
++
++# The three document modes the spec defines. Named so a typo in an assignment
++# is a type error rather than a mode that silently matches nothing.
++DocumentMode = Literal["no-quirks", "limited-quirks", "quirks"]
++
+ 
+ class Node:
+     def __init__(self) -> None:
+         self.parent: Node | None = None
+         self.children: list[Node] = []
+ 
+     def append_child(self, node: Node) -> Node:
+         if node.parent is not None:
+             node.parent.remove_child(node)
+         node.parent = self
+@@ -39,21 +45,21 @@ class Node:
+         return node
+ 
+ 
+ class Document(Node):
+     def __init__(self) -> None:
+         super().__init__()
+         # "no-quirks" | "limited-quirks" | "quirks", set by the tree builder's
+         # "initial" insertion mode. Recorded now, acted on in Phase 3 --
+         # unitless lengths and the alternate box model are layout concerns,
+         # not cascade concerns.
+-        self.mode = "no-quirks"
++        self.mode: DocumentMode = "no-quirks"
+ 
+     @property
+     def quirks_mode(self) -> bool:
+         """Derived, and deliberately read-only.
+ 
+         It used to be a plain attribute the tree builder assigned. It is a
+         property now so the two cannot drift: `mode` is the single source of
+         truth and `limited-quirks` is not `quirks`. An assignment here is a
+         bug, and raising AttributeError is how it gets found.
+         """
+diff --git a/src/mayshay/htmlparse/treebuilder.py b/src/mayshay/htmlparse/treebuilder.py
+index 7cb0cd3..8e22a98 100644
+--- a/src/mayshay/htmlparse/treebuilder.py
++++ b/src/mayshay/htmlparse/treebuilder.py
+@@ -13,21 +13,28 @@ absent, in rough order of when they will start to hurt:
+ The scope predicate is written generally rather than as p/li special cases,
+ because every auto-closing rule in the spec -- including the table family --
+ is expressed through it.
+ """
+ 
+ from __future__ import annotations
+ 
+ import time
+ from collections import Counter
+ 
+-from mayshay.dom.node import Comment, Document, DocumentType, Element, Text
++from mayshay.dom.node import (
++    Comment,
++    Document,
++    DocumentMode,
++    DocumentType,
++    Element,
++    Text,
++)
+ from mayshay.htmlparse.tokenizer import (
+     CharacterToken,
+     CommentToken,
+     DoctypeToken,
+     EndTagToken,
+     EOFToken,
+     StartTagToken,
+     Tokenizer,
+     RAWTEXT_ELEMENTS,
+     RCDATA_ELEMENTS,
+@@ -266,38 +273,62 @@ LIMITED_QUIRKS_PREFIXES = (
+ )
+ # The hinge of the whole table: HTML 4.01 (not 4.0) Frameset and Transitional
+ # are quirks when the system identifier is missing OR THE EMPTY STRING, and
+ # limited-quirks when it is a non-empty string. They are deliberately absent
+ # from QUIRKS_PREFIXES above -- the spec lists them in a separate clause, and
+ # folding them in would make every `<!DOCTYPE ... 4.01 Transitional ...
+ # "...dtd">` in the wild quirks instead of limited-quirks.
+ #
+ # The empty-string half is a real divergence from html5lib, which tests
+ # `systemId is None` here and so classifies `PUBLIC "-//W3C//DTD HTML 4.01
+-# Transitional//EN" ""` as limited-quirks. The spec's wording is explicit
+-# ("missing or the empty string" / "neither missing nor the empty string") and
+-# wins. The trailing note in the spec -- "a system identifier whose value is
+-# the empty string is not considered missing" -- governs the *parse error*
+-# condition at the top of the DOCTYPE rules, not these two clauses.
++# Transitional//EN" ""` as limited-quirks. The spec wins, and the two spec
++# sentences behind that agree rather than conflict:
++#
++#   "A system identifier whose value is the empty string is not considered
++#    missing for the purposes of the conditions above."
++#
++# That note applies to ALL the conditions, these two included. It says
++# "missing" never quietly means "missing or empty" -- so a clause that wants
++# to cover the empty string has to say so, and these two do, in as many words:
++# quirks when the system identifier is "missing or the empty string",
++# limited-quirks when it is "neither missing nor the empty string". Hence the
++# truthiness test in the code rather than `is not None`. The same note is why
++# `PUBLIC "..." ""` still trips the parse-error condition at the top of the
++# DOCTYPE rules: an empty system identifier is present, just empty.
+ QUIRKS_UNLESS_SYSTEM_ID = (
+     "-//w3c//dtd html 4.01 frameset//",
+     "-//w3c//dtd html 4.01 transitional//",
+ )
+ 
+ 
+-def classify_document_mode(token: DoctypeToken | None) -> str:
++def classify_document_mode(token: DoctypeToken | None) -> DocumentMode:
+     """Return "no-quirks", "limited-quirks" or "quirks" for a DOCTYPE token.
+ 
+     `token is None` means the document had no DOCTYPE at all, which is quirks.
+ 
+     Clause order is load-bearing and follows the spec's: the quirks conditions
+     are exhausted before either limited-quirks condition is considered.
++
++    Two of the spec's gates on this algorithm are deliberately absent, because
++    neither concept exists in this parser yet:
++
++    - "if the document is not an iframe srcdoc document" -- there is no
++      browsing-context plumbing, so no document can be an srcdoc document. An
++      srcdoc document is always no-quirks regardless of its DOCTYPE.
++    - "and the parser cannot change the mode flag is false" -- that flag is set
++      only by the HTML fragment parsing algorithm and by XML-to-HTML
++      conversion, and there is no fragment entry point yet.
++
++    Both would gate the whole computation, so adding them later means wrapping
++    the call site, not editing the table. Neither affects any corpus case: the
++    html5lib tree-construction corpus has no srcdoc cases, and fragment cases
++    are excluded from our harness for want of a fragment parser.
+     """
+     if token is None:
+         return "quirks"
+     if token.force_quirks or _ascii_lower(token.name or "") != "html":
+         return "quirks"
+ 
+     public = _ascii_lower(token.public_id or "")
+     system = _ascii_lower(token.system_id or "")
+ 
+     if public in QUIRKS_EXACT:
+diff --git a/tests/htmlparse/test_html5lib_tokenizer.py b/tests/htmlparse/test_html5lib_tokenizer.py
+index 3b4c193..5185ef7 100644
+--- a/tests/htmlparse/test_html5lib_tokenizer.py
++++ b/tests/htmlparse/test_html5lib_tokenizer.py
+@@ -21,21 +21,21 @@ from __future__ import annotations
+ import pytest
+ 
+ from mayshay.htmlparse.tokenizer import (
+     CharacterToken,
+     CommentToken,
+     DoctypeToken,
+     EndTagToken,
+     StartTagToken,
+     Tokenizer,
+ )
+-from tests.support.dat import load_tokenizer_tests
++from tests.support.dat import TOKENIZER_DIR, load_tokenizer_tests
+ from tests.support.marks import requires_corpus
+ 
+ # html5lib's initialStates names -> this tokenizer's state strings. Only the
+ # three families Task 3 owns; "Data state", "PLAINTEXT state" and
+ # "CDATA section state" cases are out of scope here.
+ STATE_NAMES = {
+     "RCDATA state": "rcdata",
+     "RAWTEXT state": "rawtext",
+     "Script data state": "script_data",
+ }
+@@ -227,10 +227,134 @@ def test_html5lib_entity_case(source, expected):
+ 
+ 
+ @requires_corpus
+ def test_entity_corpus_is_not_empty():
+     """A loader regression that silently yields nothing must not read green."""
+     cases = list(_entity_cases())
+     assert len(cases) == 4626, (
+         f"expected 4626 entity cases from the pinned corpus, got {len(cases)}; "
+         "if the submodule moved, re-check ENTITY_KNOWN_MISSES before updating this"
+     )
++
++
++# --------------------------------------------------------------------------
++# DOCTYPE corpus: every Data-state case that expects a DOCTYPE token (Task C)
++# --------------------------------------------------------------------------
++#
++# Task C replaced the phase-1 scan-to-'>' DOCTYPE hack with the spec's sixteen
++# DOCTYPE states. Hand-written tests under-constrain that for exactly the
++# reason Task 3's raw-text rewrite needed a corpus: most of them pass against
++# the old hack too, which was crude rather than wrong on well-formed input. The
++# interesting behaviour is all in the malformed cases -- a missing quote, an
++# abrupt '>' inside an identifier, a keyword run together with its identifier,
++# EOF in each of the fifteen non-bogus states -- and there are 855 of those
++# here against roughly a dozen written by hand.
++#
++# SELECTION RULE: initialStates is exactly ["Data state"] and the EXPECTED
++# output contains a DOCTYPE descriptor. Keying on the expected side rather than
++# on the input text keeps the filter independent of what our tokenizer happens
++# to do, so a case we wrongly fail to produce a DOCTYPE for is still selected
++# and still fails.
++#
++# The rule has one hole, measured rather than assumed: six Data-state cases
++# whose input mentions "<!d" expect something other than a DOCTYPE -- bogus
++# comments, `<!doc...`. Five pass. The sixth (test4.test, "<!doc" + NUL) fails
++# on the NUL deviation, and it is a comment-state case rather than a DOCTYPE
++# one, so it belongs to whichever task adopts the comment corpus and is
++# deliberately not laundered through the ledger below.
++#
++# This section does NOT adopt the remaining ~1,550 Data-state cases (tags,
++# attributes, comments, PLAINTEXT); those still need the written ledger the
++# note above ENTITY_FILES describes.
++
++_NUL = (
++    "NUL is passed through rather than replaced with U+FFFD (tokenizer "
++    "deviation #5), so the name or identifier keeps a literal U+0000. Nothing "
++    "DOCTYPE-specific is wrong -- the same deviation fails the equivalent "
++    "cases in the tag-name and attribute states, which are not adopted yet."
++)
++
++# All twelve failures among the 855, and every one is the NUL deviation.
++# Keyed by (filename, description, input) for the same reason as
++# ENTITY_KNOWN_MISSES; uniqueness is asserted below rather than assumed.
++DOCTYPE_KNOWN_MISSES: dict[tuple[str, str, str], str] = {
++    ("test3.test", "<!DOCTYPE\\u0000", "<!DOCTYPE\x00"): _NUL,
++    ("test3.test", "<!DOCTYPE \\u0000", "<!DOCTYPE \x00"): _NUL,
++    ("test3.test", "<!DOCTYPE a\\u0000", "<!DOCTYPE a\x00"): _NUL,
++    ("test3.test", '<!DOCTYPE a PUBLIC"\\u0000', '<!DOCTYPE a PUBLIC"\x00'): _NUL,
++    ("test3.test", "<!DOCTYPE a PUBLIC'\\u0000", "<!DOCTYPE a PUBLIC'\x00"): _NUL,
++    ("test3.test", '<!DOCTYPE a SYSTEM"\\u0000', '<!DOCTYPE a SYSTEM"\x00'): _NUL,
++    ("test3.test", "<!DOCTYPE a SYSTEM'\\u0000", "<!DOCTYPE a SYSTEM'\x00"): _NUL,
++    ("test3.test", "<!DOCTYPEa\\u0000", "<!DOCTYPEa\x00"): _NUL,
++    ("test3.test", '<!DOCTYPEa PUBLIC"\\u0000', '<!DOCTYPEa PUBLIC"\x00'): _NUL,
++    ("test3.test", "<!DOCTYPEa PUBLIC'\\u0000", "<!DOCTYPEa PUBLIC'\x00"): _NUL,
++    ("test3.test", '<!DOCTYPEa SYSTEM"\\u0000', '<!DOCTYPEa SYSTEM"\x00'): _NUL,
++    ("test3.test", "<!DOCTYPEa SYSTEM'\\u0000", "<!DOCTYPEa SYSTEM'\x00"): _NUL,
++}
++
++
++def _doctype_corpus_files() -> list[str]:
++    """Every fixture file, globbed rather than listed.
++
++    Five files carry DOCTYPE cases today. Hardcoding those five would let a
++    corpus bump that adds a sixth pass silently; globbing means the collection
++    count below moves instead, which is the loud failure we want.
++    """
++    if not TOKENIZER_DIR.is_dir():
++        return []
++    return sorted(p.name for p in TOKENIZER_DIR.glob("*.test"))
++
++
++def _expects_doctype(test) -> bool:
++    return any(
++        descriptor and descriptor[0] == "DOCTYPE" for descriptor in test.output
++    )
++
++
++def _doctype_keys_and_tests():
++    for filename in _doctype_corpus_files():
++        for test in load_tokenizer_tests(filename):
++            if test.initial_states != ["Data state"] or not _expects_doctype(test):
++                continue
++            yield (filename, test.description, test.input), test
++
++
++def _doctype_cases():
++    for key, test in _doctype_keys_and_tests():
++        marks = []
++        if key in DOCTYPE_KNOWN_MISSES:
++            marks.append(
++                pytest.mark.xfail(strict=True, reason=DOCTYPE_KNOWN_MISSES[key])
++            )
++        yield pytest.param(
++            test.input, test.output, marks=marks, id=f"{key[0]}: {test.description}"
++        )
++
++
++@requires_corpus
++@pytest.mark.parametrize("source,expected", list(_doctype_cases()))
++def test_html5lib_doctype_case(source, expected):
++    assert _tokenize_data(source) == _coalesce(expected)
++
++
++@requires_corpus
++def test_doctype_corpus_is_not_empty():
++    """A loader regression that silently yields nothing must not read green."""
++    cases = list(_doctype_cases())
++    assert len(cases) == 855, (
++        f"expected 855 DOCTYPE cases from the pinned corpus, got {len(cases)}; "
++        "if the submodule moved, re-check DOCTYPE_KNOWN_MISSES before updating "
++        "this"
++    )
++
++
++@requires_corpus
++def test_doctype_ledger_is_keyed_uniquely_and_has_no_stale_entries():
++    """Two ways this ledger could quietly stop meaning anything.
++
++    A duplicate key would let one entry mask another case; a stale key would
++    xfail nothing at all while still reading as deferred work.
++    """
++    keys = [key for key, _ in _doctype_keys_and_tests()]
++    assert len(keys) == len(set(keys)), "(file, description, input) is not unique"
++    stale = sorted(set(DOCTYPE_KNOWN_MISSES) - set(keys))
++    assert not stale, f"DOCTYPE_KNOWN_MISSES entries match no case: {stale}"

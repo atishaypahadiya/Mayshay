@@ -1,0 +1,373 @@
+# Review package: 7b42fcf..6b7a7c8
+
+## Commits
+6b7a7c8 htmlparse: carry reprocess provenance as a dispatch parameter
+
+## Files changed
+ src/mayshay/htmlparse/treebuilder.py  | 69 +++++++++++++++++++----------------
+ tests/htmlparse/test_html5lib_tree.py | 10 ++++-
+ 2 files changed, 46 insertions(+), 33 deletions(-)
+
+## Diff
+diff --git a/src/mayshay/htmlparse/treebuilder.py b/src/mayshay/htmlparse/treebuilder.py
+index 9cda271..c2ea9c4 100644
+--- a/src/mayshay/htmlparse/treebuilder.py
++++ b/src/mayshay/htmlparse/treebuilder.py
+@@ -178,26 +178,20 @@ class TreeBuilder:
+         self.original_mode = "in_body"
+         self.head: Element | None = None
+         # None entries are scope markers (inserted by applet/object/marquee
+         # and, once they exist, the table modes). Reconstruction never
+         # crosses one.
+         self.active_formatting: list[Element | None] = []
+         # Mirrors Tokenizer.errors. Positions follow the same convention: the
+         # offset points AT the token that caused the error, which is the
+         # token's own `pos`.
+         self.errors: list[tuple[int, str]] = []
+-        # Set by _mode_after_head to the token whose fall-through synthesised
+-        # the <body>. That token is one the spec would have handled in "after
+-        # head", so in-body parse-error rules the spec does not apply there
+-        # must not fire for it. Today only <frameset> is affected: it is
+-        # legitimate in "after head" and a parse error in "in body".
+-        self._after_head_fallthrough: object | None = None
+         self.metrics: Counter[str] = Counter()
+ 
+     # -- parse errors ------------------------------------------------------
+ 
+     def _error(self, code: str, pos: int) -> None:
+         self.errors.append((pos, code))
+         self.metrics["parse_errors"] += 1
+ 
+     # -- stack helpers -----------------------------------------------------
+ 
+@@ -408,29 +402,40 @@ class TreeBuilder:
+         # millisecond, and a timing metric that always reads 0 is not a
+         # timing metric. Microsecond resolution, still expressed in ms.
+         self.metrics["parse_time_ms"] = round(
+             (time.perf_counter() - started) * 1000, 3
+         )
+         # The tokenizer's count, kept distinct from our own. Before this was
+         # split, a page with only tree-construction errors reported zero.
+         self.metrics["tokenizer_parse_errors"] = self.tokenizer.metrics["parse_errors"]
+         return self.document
+ 
+-    def dispatch(self, token) -> None:
+-        getattr(self, f"_mode_{self.mode}")(token)
++    def dispatch(self, token, from_mode: str | None = None) -> None:
++        """Run `token` through the current insertion mode.
++
++        `from_mode` names the mode that handed the token on, and is None for a
++        token arriving straight from the tokenizer. Five modes reprocess a
++        token they could not handle by switching mode and dispatching again,
++        and the spec's rules for the token in its *original* mode are not
++        always the rules of the mode it lands in -- see _in_body_start's
++        <frameset> case. Provenance is a parameter rather than parser state
++        deliberately: it has no lifetime to manage and cannot survive an
++        exception raised mid-reprocess.
++        """
++        getattr(self, f"_mode_{self.mode}")(token, from_mode)
+ 
+     def _is_space(self, token) -> bool:
+         return isinstance(token, CharacterToken) and not token.data.strip()
+ 
+     # -- insertion modes ---------------------------------------------------
+ 
+-    def _mode_initial(self, token) -> None:
++    def _mode_initial(self, token, from_mode: str | None = None) -> None:
+         if isinstance(token, DoctypeToken):
+             self.document.append_child(DocumentType(token.name or "html"))
+             # The quirks-mode *decision* lives here, not in the tokenizer.
+             # DoctypeToken.force_quirks is only the spec's force-quirks error
+             # flag (eof-in-doctype, missing name); the "initial" insertion mode
+             # additionally puts the document in quirks mode when the name is
+             # anything but "html", or when the public/system identifier matches
+             # one of the spec's quirky lists. That last clause is unimplemented:
+             # the tokenizer discards the identifiers (tokenizer deviation #3),
+             # so identifier-driven quirks is a documented gap, not an oversight.
+@@ -446,116 +451,116 @@ class TreeBuilder:
+             elif isinstance(token, CharacterToken):
+                 self._error("expected-doctype-but-got-chars", token.pos)
+             elif isinstance(token, EOFToken):
+                 self._error("expected-doctype-but-got-eof", token.pos)
+             else:
+                 # Doctype, comment, whitespace, start tag, characters and EOF
+                 # are all handled above, so this is an end tag and nothing else.
+                 self._error("expected-doctype-but-got-end-tag", token.pos)
+             self.document.quirks_mode = True
+             self.mode = "before_html"
+-            self.dispatch(token)
++            self.dispatch(token, from_mode="initial")
+ 
+-    def _mode_before_html(self, token) -> None:
++    def _mode_before_html(self, token, from_mode: str | None = None) -> None:
+         if isinstance(token, DoctypeToken):
+             self._error("unexpected-doctype", token.pos)
+             return
+         if isinstance(token, CommentToken):
+             self.document.append_child(Comment(token.data))
+         elif self._is_space(token):
+             pass
+         elif isinstance(token, StartTagToken) and token.name == "html":
+             self.insert_element(token)
+             self.mode = "before_head"
+         else:
+             self.insert_element(StartTagToken("html"))
+             self.mode = "before_head"
+-            self.dispatch(token)
++            self.dispatch(token, from_mode="before_html")
+ 
+-    def _mode_before_head(self, token) -> None:
++    def _mode_before_head(self, token, from_mode: str | None = None) -> None:
+         if isinstance(token, DoctypeToken):
+             self._error("unexpected-doctype", token.pos)
+             return
+         if isinstance(token, CommentToken):
+             self._insertion_point().append_child(Comment(token.data))
+         elif self._is_space(token):
+             pass
+         elif isinstance(token, StartTagToken) and token.name == "head":
+             self.head = self.insert_element(token)
+             self.mode = "in_head"
+         else:
+             self.head = self.insert_element(StartTagToken("head"))
+             self.mode = "in_head"
+-            self.dispatch(token)
++            self.dispatch(token, from_mode="before_head")
+ 
+-    def _mode_in_head(self, token) -> None:
++    def _mode_in_head(self, token, from_mode: str | None = None) -> None:
+         if isinstance(token, DoctypeToken):
+             self._error("unexpected-doctype", token.pos)
+             return
+         if self._is_space(token):
+             self.insert_text(token.data)
+         elif isinstance(token, CommentToken):
+             self._insertion_point().append_child(Comment(token.data))
+         elif isinstance(token, StartTagToken) and token.name in HEAD_ELEMENTS:
+             # title/style/script/noframes get raw-text tokenization *because*
+             # they are head elements, not instead of being checked against the
+             # head element list. textarea, xmp, iframe and noembed are raw text
+             # but are NOT head elements, so they fall through to the else branch
+             # below, close <head>, and are handled in body where they belong.
+             self.insert_element_maybe_raw_text(token)
+         elif isinstance(token, EndTagToken) and token.name == "head":
+             self.pop_until("head")
+             self.mode = "after_head"
+         else:
+             self.pop_until("head")
+             self.mode = "after_head"
+-            self.dispatch(token)
++            self.dispatch(token, from_mode="in_head")
+ 
+-    def _mode_after_head(self, token) -> None:
++    def _mode_after_head(self, token, from_mode: str | None = None) -> None:
+         if isinstance(token, DoctypeToken):
+             self._error("unexpected-doctype", token.pos)
+             return
+         if self._is_space(token):
+             self.insert_text(token.data)
+         elif isinstance(token, CommentToken):
+             self._insertion_point().append_child(Comment(token.data))
+         elif isinstance(token, StartTagToken) and token.name == "body":
+             self.insert_element(token)
+             self.mode = "in_body"
+         else:
+-            self._after_head_fallthrough = token
+             self.insert_element(StartTagToken("body"))
+             self.mode = "in_body"
+-            self.dispatch(token)
+-            self._after_head_fallthrough = None
++            self.dispatch(token, from_mode="after_head")
+ 
+-    def _mode_in_body(self, token) -> None:
++    def _mode_in_body(self, token, from_mode: str | None = None) -> None:
+         if isinstance(token, DoctypeToken):
+             self._error("unexpected-doctype", token.pos)
+             return
+         if isinstance(token, CharacterToken):
+             self.reconstruct_formatting()
+             self.insert_text(token.data)
+         elif isinstance(token, CommentToken):
+             self._insertion_point().append_child(Comment(token.data))
+         elif isinstance(token, StartTagToken):
+-            self._in_body_start(token)
++            self._in_body_start(token, from_mode)
+         elif isinstance(token, EndTagToken):
+             self._in_body_end(token)
+         elif isinstance(token, EOFToken):
+             for element in self.open_elements:
+                 if element.tag_name not in EOF_OK_OPEN:
+                     self._error("expected-closing-tag-but-got-eof", token.pos)
+                     break
+             self.mode = "after_body"
+ 
+-    def _in_body_start(self, token: StartTagToken) -> None:
++    def _in_body_start(
++        self, token: StartTagToken, from_mode: str | None = None
++    ) -> None:
+         """Auto-closing rules first, then one insertion for every path.
+ 
+         The raw-text elements used to be dispatched ahead of all of this, which
+         meant <xmp> never closed an open <p>. Raw-text tokenization is applied
+         by insert_element_maybe_raw_text at the end, after the mode has had its
+         say -- which is the order the spec uses.
+         """
+         name = token.name
+         # Spec: <body> and <frameset> start tags in "in body" are parse errors
+         # (the spec then merges body's attributes, or replaces the body with
+@@ -563,21 +568,23 @@ class TreeBuilder:
+         # the other in-body start-tag parse errors -- html, head, form with the
+         # form pointer set -- wait on rules this parser does not implement.
+         #
+         # <frameset> is only an error when the spec would really be in "in
+         # body" for it. Two of its own modes, both unimplemented here, would
+         # have taken the token first and neither treats it as an error:
+         # "after head" (a document that opens with <frameset>, which reaches
+         # us via _mode_after_head's fall-through) and "in frameset" (a nested
+         # <frameset>, recognisable by one already being on the stack).
+         # Reporting those would invent errors html5lib does not report.
+-        if name == "body" or (name == "frameset" and self._frameset_in_body(token)):
++        if name == "body" or (
++            name == "frameset" and self._frameset_in_body(from_mode)
++        ):
+             self._error("unexpected-start-tag", token.pos)
+         reconstruct = name not in NO_RECONSTRUCT_START
+         if name == "li":
+             if self.has_element_in_scope("li", LIST_ITEM_SCOPE):
+                 self.generate_implied_end_tags(excluding="li")
+                 self.pop_until("li")
+             if self.has_element_in_scope("p", BUTTON_SCOPE):
+                 self.close_p_element(token.pos)
+             reconstruct = False
+         elif name in ("dd", "dt"):
+@@ -607,41 +614,41 @@ class TreeBuilder:
+             self.reconstruct_formatting()
+ 
+         if name in FORMATTING_ELEMENTS:
+             self.push_formatting(self.insert_element(token))
+         elif name in FORMATTING_MARKER_ELEMENTS:
+             self.insert_element(token)
+             self.push_formatting_marker()
+         else:
+             self.insert_element_maybe_raw_text(token)
+ 
+-    def _frameset_in_body(self, token: StartTagToken) -> bool:
++    def _frameset_in_body(self, from_mode: str | None) -> bool:
+         """True when a <frameset> start tag really is an in-body parse error."""
+-        if token is self._after_head_fallthrough:
++        if from_mode == "after_head":
+             return False  # the spec's "after head" frameset case
+         return not any(el.tag_name == "frameset" for el in self.open_elements)
+ 
+     def _in_body_end(self, token: EndTagToken) -> None:
+         name = token.name
+         if name == "p":
+             if not self.has_element_in_scope("p", BUTTON_SCOPE):
+                 # Spec: parse error, then insert an empty <p> and close it.
+                 # (The inserted p makes close_p_element's own check pass, so
+                 # this error is not a duplicate of that one.)
+                 self._error("unexpected-end-tag", token.pos)
+                 self.insert_element(StartTagToken("p"))
+             self.close_p_element(token.pos)
+         elif name == "body":
+             self.mode = "after_body"
+         elif name == "html":
+             self.mode = "after_body"
+-            self.dispatch(token)
++            self.dispatch(token, from_mode="in_body")
+         elif name == "li":
+             # List-item scope, not the default barriers: inside a nested <ul>
+             # a stray </li> must NOT reach out and close the enclosing <li>.
+             if not self.has_element_in_scope("li", LIST_ITEM_SCOPE):
+                 self._error("unexpected-end-tag", token.pos)
+             else:
+                 self.generate_implied_end_tags(excluding="li")
+                 if self.current is not None and self.current.tag_name != "li":
+                     self._error("end-tag-too-early", token.pos)
+                 self.pop_until("li")
+@@ -738,46 +745,46 @@ class TreeBuilder:
+                 self.generate_implied_end_tags(excluding=token.name)
+                 # generate_implied_end_tags stops at node (it is excluded), so
+                 # the stack is still at least index + 1 deep here.
+                 while len(self.open_elements) > index:
+                     self.open_elements.pop()
+                 return
+             if node.tag_name in SPECIAL_ELEMENTS:
+                 self._error("unexpected-end-tag", token.pos)
+                 return  # parse error; ignore the token
+ 
+-    def _mode_text(self, token) -> None:
++    def _mode_text(self, token, from_mode: str | None = None) -> None:
+         if isinstance(token, CharacterToken):
+             self.insert_text(token.data)
+         elif isinstance(token, EndTagToken):
+             self.open_elements.pop()
+             self.mode = self.original_mode
+         elif isinstance(token, EOFToken):
+             self._error("expected-closing-tag-but-got-eof", token.pos)
+             self.open_elements.pop()
+             self.mode = self.original_mode
+-            self.dispatch(token)
++            self.dispatch(token, from_mode="text")
+ 
+-    def _mode_after_body(self, token) -> None:
++    def _mode_after_body(self, token, from_mode: str | None = None) -> None:
+         if isinstance(token, DoctypeToken):
+             self._error("unexpected-doctype", token.pos)
+             return
+         if isinstance(token, CommentToken):
+             self.document.append_child(Comment(token.data))
+         elif isinstance(token, EOFToken):
+             pass
+         elif self._is_space(token):
+             pass
+         elif isinstance(token, EndTagToken) and token.name == "html":
+             # The spec switches to "after after body" here. We have no such
+             # mode, and staying put is behaviourally identical for the token
+             # kinds we handle. Reprocessing would bounce straight back to
+             # _in_body_end, which routes </html> to after_body -- an infinite
+             # recursion; 11 tests1.dat cases crashed on exactly that.
+             pass
+         else:
+             self.mode = "in_body"
+-            self.dispatch(token)
++            self.dispatch(token, from_mode="after_body")
+ 
+ 
+ def parse(source: str) -> Document:
+     return TreeBuilder(source).build()
+diff --git a/tests/htmlparse/test_html5lib_tree.py b/tests/htmlparse/test_html5lib_tree.py
+index 79aed34..8fb15ff 100644
+--- a/tests/htmlparse/test_html5lib_tree.py
++++ b/tests/htmlparse/test_html5lib_tree.py
+@@ -220,22 +220,28 @@ def test_tree_construction(case):
+             {
+                 "case_id": case.id,
+                 "outcome": f"error:{type(exc).__name__}",
+                 "input_chars": len(case.data),
+                 "expected_lines": case.document.count("\n") + 1,
+                 "actual_lines": 0,
+                 "elements": builder.metrics["elements"],
+                 "max_depth": builder.metrics["max_depth"],
+                 "text_nodes": builder.metrics["text_nodes"],
+                 "tree_parse_errors": builder.metrics["parse_errors"],
+-                "tokenizer_parse_errors": builder.metrics[
+-                    "tokenizer_parse_errors"
++                # Read from the tokenizer, not from builder.metrics: build()
++                # copies the count across as its last act, so on this path --
++                # where build() raised -- the copy never happened and the
++                # Counter would hand back a default 0 indistinguishable from a
++                # real one. The tree count above is safe because _error
++                # increments it as errors happen.
++                "tokenizer_parse_errors": builder.tokenizer.metrics[
++                    "parse_errors"
+                 ],
+                 "parse_time_ms": round(
+                     (time.perf_counter() - started) * 1000, 3
+                 ),
+             }
+         )
+         raise
+     _ROWS.append(
+         {
+             "case_id": case.id,

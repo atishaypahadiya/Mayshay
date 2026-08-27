@@ -1,0 +1,526 @@
+# Review package: 81bc45f..39f772b
+
+## Commits
+39f772b cssparse: drop a spurious bad-url parse error, unprefix metrics
+
+## Files changed
+ src/mayshay/cssparse/tokenizer.py | 81 +++++++++++++++++++++++++---------
+ tests/cssparse/test_tokenizer.py  | 92 ++++++++++++++++++++++++++++++++++++---
+ 2 files changed, 147 insertions(+), 26 deletions(-)
+
+## Diff
+diff --git a/src/mayshay/cssparse/tokenizer.py b/src/mayshay/cssparse/tokenizer.py
+index afbd602..42538a6 100644
+--- a/src/mayshay/cssparse/tokenizer.py
++++ b/src/mayshay/cssparse/tokenizer.py
+@@ -54,25 +54,26 @@ Deliberate deviations from the spec, documented so they don't surprise us later:
+    own code in the same file needs `EOF` to be the sentinel.
+ 6. **`metrics["tokenize_time_ms"]` measures time spent inside the tokenizer,
+    not wall time across the stream.** `tokenize()` is a generator, so wall
+    time from first call to EOF would include however long the consumer took
+    between `next()` calls. The cost is two `perf_counter()` calls per token
+    (~5% on a token-dense stylesheet); the alternative is a timing metric that
+    silently measures the tree builder.
+ 7. **`*=`, `~=`, `|=`, `^=`, `$=` and `||` are NOT single tokens.** The 2014
+    CR of css-syntax-3 had <substring-match-token> and friends; the current
+    spec removed them, leaving the match operators to be reassembled by the
+-   selector parser from two delims. This is worth knowing because it is the
+-   one place a spec-correct implementation *disagrees* with tinycss2, which
+-   still implements the 2014 CR -- it is the only structural divergence over
+-   the 21KB of real <style> bodies in data/corpus/ (the other is deviation 4,
+-   int vs float). Task G's selector parser has to join them.
++   selector parser from two delims. Worth knowing because it is one of
++   exactly TWO places a spec-correct implementation disagrees with tinycss2,
++   which still implements the 2014 CR, over the 21KB of real <style> bodies
++   in data/corpus/: this one, the only *structural* divergence, and
++   deviation 4's int-vs-float, which is a representation difference at the
++   same token boundaries. Task G's selector parser has to join them.
+ 8. **NULL and lone surrogates are replaced with U+FFFD during preprocessing**
+    (spec 3.3), unlike `htmlparse`, which deliberately passes NUL through
+    untouched (see deviation 5 there). CSS has no conformance corpus pinning
+    the alternative, and the spec's own algorithms below assume the
+    replacement has already happened.
+ """
+ 
+ from __future__ import annotations
+ 
+ import time
+@@ -335,20 +336,21 @@ class CssTokenizer:
+     us count and time tokens as they stream. It is also why `errors` is empty
+     until `tokenize()` has actually been driven -- constructing a tokenizer
+     parses nothing.
+     """
+ 
+     def __init__(self, source: str) -> None:
+         self.source = self._preprocess(source)
+         self.pos = 0
+         self.errors: list[tuple[int, str]] = []
+         self.metrics: Counter[str] = Counter()
++        self._tokenized = False
+ 
+     @staticmethod
+     def _preprocess(source: str) -> str:
+         """Spec 3.3. CRLF/CR/FF -> LF; NULL and lone surrogates -> U+FFFD."""
+         source = source.replace("\r\n", "\n").replace("\r", "\n").replace("\f", "\n")
+         if "\x00" in source:
+             source = source.replace("\x00", REPLACEMENT)
+         # Lone surrogates cannot appear in text read from a file, but they can
+         # appear in a str built in Python, and every later `ord()` test would
+         # then be operating on a code point the spec says cannot be there.
+@@ -403,21 +405,21 @@ class CssTokenizer:
+         points AT the character that caused the error**, never past it. A site
+         that has just consumed the offender passes `self.pos - 1`. Omitting
+         `pos` records `self.pos`, which is correct only where there is no
+         offending character at all -- the EOF errors, where `self.pos` is
+         `len(self.source)`.
+ 
+         The CSS spec never *fails* to tokenize. Every call site here recovers
+         and emits a token; nothing raises.
+         """
+         self.errors.append((self.pos if pos is None else pos, message))
+-        self.metrics["css_parse_errors"] += 1
++        self.metrics["parse_errors"] += 1
+ 
+     # -- spec predicates ---------------------------------------------------
+ 
+     def _is_valid_escape(self, offset: int = 0) -> bool:
+         """Spec 4.3.8, reading the two code points at `offset`.
+ 
+         Note this is *not* "the next character is a backslash": a backslash
+         followed by a newline is not a valid escape, which is why
+         `a\\<newline>b` is three tokens and not one ident.
+         """
+@@ -449,36 +451,57 @@ class CssTokenizer:
+                 return True
+             return second == "." and (self._at(offset + 2) or "") in DIGITS
+         if first == ".":
+             second = self._at(offset + 1)
+             return second is not EOF and second in DIGITS
+         return first is not EOF and first in DIGITS
+ 
+     # -- main loop ---------------------------------------------------------
+ 
+     def tokenize(self) -> Iterator[CssToken]:
+-        """Yield tokens until and including EOFToken."""
++        """Yield tokens until and including EOFToken.
++
++        **Single use.** A tokenizer owns a cursor, an error list and a metrics
++        Counter, and all three are consumed by one pass: a second call would
++        resume from `pos == len(source)`, yield nothing but EOF, and overwrite
++        `tokenize_time_ms` with the time that took. Raise instead. Construct a
++        new tokenizer, or `list()` the first pass if you need to re-read it.
++
++        Not a generator itself, deliberately: a generator's body does not run
++        until it is first advanced, so the guard would fire at iteration
++        rather than at the offending call, which is the wrong place to be
++        told about it.
++        """
++        if self._tokenized:
++            raise RuntimeError(
++                "CssTokenizer.tokenize() is single-use; construct a new "
++                "CssTokenizer to tokenize the same source again"
++            )
++        self._tokenized = True
++        return self._tokenize()
++
++    def _tokenize(self) -> Iterator[CssToken]:
+         elapsed = 0.0
+         while True:
+             started = time.perf_counter()
+             token = self._consume_token()
+             elapsed += time.perf_counter() - started
+             if isinstance(token, EOFToken):
+                 # Not int(): a stylesheet the size of the ones in data/corpus/
+                 # tokenizes in well under a millisecond, and a timing metric
+                 # that always reads 0 is not a timing metric.
+                 self.metrics["tokenize_time_ms"] = round(elapsed * 1000, 3)
+                 yield token
+                 return
+             # EOF is a sentinel, not a token of the source: counting it would
+             # put every "tokens per byte" ratio off by one.
+-            self.metrics["css_tokens"] += 1
++            self.metrics["tokens"] += 1
+             yield token
+ 
+     # -- 4.3.1 consume a token ---------------------------------------------
+ 
+     def _consume_token(self) -> CssToken:
+         self._consume_comments()
+         start = self.pos
+         ch = self._next()
+ 
+         if ch is EOF:
+@@ -581,24 +604,24 @@ class CssTokenizer:
+ 
+         Called at the top of every `_consume_token`, which is where the spec
+         puts it. A `/` not followed by `*` falls through to the delim branch.
+         """
+         while self._peek(2) == "/*":
+             start = self.pos
+             end = self.source.find("*/", self.pos + 2)
+             if end == -1:
+                 self.pos = len(self.source)
+                 self._error("unterminated comment", start)
+-                self.metrics["css_comments"] += 1
++                self.metrics["comments"] += 1
+                 return
+             self.pos = end + 2
+-            self.metrics["css_comments"] += 1
++            self.metrics["comments"] += 1
+ 
+     # -- 4.3.3 consume a numeric token -------------------------------------
+ 
+     def _consume_numeric(self) -> CssToken:
+         """Spec 4.3.3. Returns Number, Percentage or Dimension."""
+         start = self.pos
+         value, is_integer = self._consume_number()
+         if self._starts_ident_sequence():
+             return Dimension(
+                 value, self._consume_ident_sequence(), is_integer, pos=start
+@@ -621,27 +644,27 @@ class CssTokenizer:
+             # one." Leaves at most one whitespace character in place, which is
+             # what makes the quote test below able to see past it.
+             while len(self._peek(2)) == 2 and set(self._peek(2)) <= WHITESPACE:
+                 self._next()
+             first, second = self._at(0), self._at(1)
+             if first in ('"', "'") or (
+                 first is not EOF and first in WHITESPACE and second in ('"', "'")
+             ):
+                 # `url("a.png")` is a Function token followed by a String. The
+                 # url-token below exists only for the unquoted form.
+-                self.metrics["css_functions"] += 1
++                self.metrics["functions"] += 1
+                 return Function(name, pos=start)
+             return self._consume_url(start)
+ 
+         if self._peek(1) == "(":
+             self._next()
+-            self.metrics["css_functions"] += 1
++            self.metrics["functions"] += 1
+             return Function(name, pos=start)
+ 
+         return Ident(name, pos=start)
+ 
+     # -- 4.3.5 consume a string token --------------------------------------
+ 
+     def _consume_string(self, ending: str, start: int) -> CssToken:
+         """Spec 4.3.5. The opening quote has already been consumed.
+ 
+         `start` is the offset of that quote, so the token points at it rather
+@@ -653,21 +676,21 @@ class CssTokenizer:
+             if ch is EOF:
+                 self._error("eof in string")
+                 return String("".join(out), pos=start)
+             if ch == ending:
+                 return String("".join(out), pos=start)
+             if ch == "\n":
+                 # Reconsume: the newline belongs to whatever follows, so the
+                 # stream recovers instead of swallowing the rest of the file.
+                 self._reconsume(ch)
+                 self._error("newline in string", self.pos)
+-                self.metrics["css_bad_strings"] += 1
++                self.metrics["bad_strings"] += 1
+                 return BadString(pos=start)
+             if ch == "\\":
+                 nxt = self._at()
+                 if nxt is EOF:
+                     continue          # spec: do nothing
+                 if nxt == "\n":
+                     self._next()      # line continuation; contributes nothing
+                     continue
+                 out.append(self._consume_escape())
+                 continue
+@@ -686,38 +709,46 @@ class CssTokenizer:
+         the spec algorithm and it silently accepts input the spec rejects:
+         `url(a b)` would become Url("a b") rather than a BadUrl, and every
+         later consumer would inherit a URL that no browser produces.
+         """
+         out: list[str] = []
+         while (ch := self._at()) is not EOF and ch in WHITESPACE:
+             self._next()
+         while True:
+             ch = self._next()
+             if ch == ")":
+-                self.metrics["css_urls"] += 1
++                self.metrics["urls"] += 1
+                 return Url("".join(out), pos=start)
+             if ch is EOF:
+                 self._error("eof in url")
+-                self.metrics["css_urls"] += 1
++                self.metrics["urls"] += 1
+                 return Url("".join(out), pos=start)
+             if ch in WHITESPACE:
+                 while (nxt := self._at()) is not EOF and nxt in WHITESPACE:
+                     self._next()
+                 if self._at() == ")":
+                     self._next()
+-                    self.metrics["css_urls"] += 1
++                    self.metrics["urls"] += 1
+                     return Url("".join(out), pos=start)
+                 if self._at() is EOF:
+                     self._error("eof in url")
+-                    self.metrics["css_urls"] += 1
++                    self.metrics["urls"] += 1
+                     return Url("".join(out), pos=start)
+-                self._error("whitespace inside unquoted url", self.pos)
++                # NO parse error here, deliberately. 4.3.6's whitespace branch
++                # designates one for the EOF sub-case above and for nothing
++                # else -- unlike the quote/paren/non-printable and invalid-
++                # escape branches below, which each say "this is a parse
++                # error" in so many words. `url(a b)` is malformed and yields
++                # a <bad-url-token>, but the spec does not count it, so
++                # neither do we: `parse_errors` is a conformance signal and
++                # inflating it would corrupt the corpus-wide baseline. The
++                # bad url is still counted, as `bad_urls`.
+                 return self._consume_bad_url_remnants(start)
+             if ch in ('"', "'", "(") or _is_non_printable(ch):
+                 self._error(f"unexpected {ch!r} inside unquoted url", self.pos - 1)
+                 return self._consume_bad_url_remnants(start)
+             if ch == "\\":
+                 if self._is_valid_escape(-1):
+                     out.append(self._consume_escape())
+                     continue
+                 self._error("invalid escape inside url", self.pos - 1)
+                 return self._consume_bad_url_remnants(start)
+@@ -726,38 +757,46 @@ class CssTokenizer:
+     # -- 4.3.7 consume an escaped code point -------------------------------
+ 
+     def _consume_escape(self) -> str:
+         """Spec 4.3.7. The backslash has already been consumed.
+ 
+         This is the CSS analogue of `htmlparse.entities.decode_reference`, and
+         the same three traps apply: the digit run has a maximum length, one
+         trailing whitespace character is part of the escape rather than a
+         separator that survives, and out-of-range values do not raise.
+         """
++        # Counted on every path, including the three that yield U+FFFD. The
++        # counter answers "how many escapes were in this stylesheet", which is
++        # a property of the input; an escape that resolves to the replacement
++        # character was still written, and dropping it would make `escapes`
++        # disagree with `parse_errors` on exactly the inputs worth looking at.
++        self.metrics["escapes"] += 1
+         ch = self._next()
+         if ch is EOF:
++            # Unreachable today: all four call sites check `_is_valid_escape`
++            # first, and a backslash at EOF fails that test, so the caller
++            # emits a Delim and never gets here. Kept because 4.3.7 has the
++            # branch and a fifth caller would need it.
+             self._error("eof in escape")
+             return REPLACEMENT
+         if ch in HEX_DIGITS:
+             digits = ch
+             while len(digits) < 6 and self._peek(1) in HEX_DIGITS:
+                 digits += self._next()
+             # Exactly one whitespace character after the digits is consumed as
+             # part of the escape. `\26  x` is "&" then a real space then "x".
+             if self._peek(1) in WHITESPACE:
+                 self._next()
+             value = int(digits, 16)
+             if value == 0 or value > MAX_CODE_POINT or 0xD800 <= value <= 0xDFFF:
+                 return REPLACEMENT
+-            self.metrics["css_escapes"] += 1
+             return chr(value)
+-        self.metrics["css_escapes"] += 1
+         return ch
+ 
+     # -- 4.3.11 consume an ident sequence ----------------------------------
+ 
+     def _consume_ident_sequence(self) -> str:
+         """Spec 4.3.11. Never returns a parse error; may return ""."""
+         out: list[str] = []
+         while True:
+             ch = self._next()
+             if _is_ident(ch):
+@@ -814,21 +853,21 @@ class CssTokenizer:
+ 
+     def _consume_bad_url_remnants(self, start: int) -> BadUrl:
+         """Spec 4.3.14. Discard input up to and including the closing ')'.
+ 
+         Escapes are consumed rather than scanned past, so a `\\)` inside the
+         junk does not end the bad url early.
+         """
+         while True:
+             ch = self._next()
+             if ch == ")" or ch is EOF:
+-                self.metrics["css_bad_urls"] += 1
++                self.metrics["bad_urls"] += 1
+                 return BadUrl(pos=start)
+             if ch == "\\" and self._is_valid_escape(-1):
+                 self._consume_escape()
+ 
+ 
+ __all__ = [
+     "AtKeyword", "BadString", "BadUrl", "CDC", "CDO", "Colon", "Comma",
+     "CssToken", "CssTokenizer", "Delim", "Dimension", "EOFToken", "Function",
+     "Hash", "Ident", "LBrace", "LBracket", "LParen", "Number", "Percentage",
+     "RBrace", "RBracket", "RParen", "Semicolon", "String", "Url", "Whitespace",
+diff --git a/tests/cssparse/test_tokenizer.py b/tests/cssparse/test_tokenizer.py
+index 7476ee2..45f16de 100644
+--- a/tests/cssparse/test_tokenizer.py
++++ b/tests/cssparse/test_tokenizer.py
+@@ -24,24 +24,31 @@ def toks(src):
+ # --------------------------------------------------------------------------
+ 
+ def test_simple_declaration():
+     got = toks("color: red;")
+     assert isinstance(got[0], Ident) and got[0].value == "color"
+     assert isinstance(got[2], Ident) and got[2].value == "red"
+ 
+ 
+ def test_dimensions_and_percentages():
+     got = toks("10px 50% 1.5em -3px")
++    # The brief asserted only `.value`/`.unit` on the three dimensions, which
++    # any token type carrying those two attributes would satisfy. The types
++    # are the point of the test -- 50% must not be a Dimension with unit "%".
++    assert isinstance(got[0], Dimension)
+     assert (got[0].value, got[0].unit) == (10, "px")
+     assert isinstance(got[1], Percentage) and got[1].value == 50
++    assert not hasattr(got[1], "unit")
++    assert isinstance(got[2], Dimension)
+     assert (got[2].value, got[2].unit) == (1.5, "em")
+-    assert got[3].value == -3
++    assert isinstance(got[3], Dimension)
++    assert (got[3].value, got[3].unit) == (-3, "px")
+ 
+ 
+ def test_numbers_with_exponents():
+     assert toks("1e3")[0].value == 1000
+     assert toks("1.5E-2")[0].value == pytest.approx(0.015)
+ 
+ 
+ def test_hash_and_id_selector():
+     got = toks("#main")
+     assert isinstance(got[0], Hash) and got[0].value == "main"
+@@ -229,23 +236,47 @@ def test_url_with_whitespace_around_unquoted_body():
+     got = toks("url(  a/b.png  )")
+     assert isinstance(got[0], Url) and got[0].value == "a/b.png"
+ 
+ 
+ def test_url_with_internal_space_is_a_bad_url():
+     from mayshay.cssparse.tokenizer import BadUrl
+ 
+     tk = CssTokenizer("url(a b) x")
+     got = [t for t in tk.tokenize() if not isinstance(t, Whitespace)]
+     assert isinstance(got[0], BadUrl)
+-    assert tk.errors
+     # Recovery: the bad-url remnants stop at the ')', so 'x' still tokenizes.
+     assert isinstance(got[1], Ident) and got[1].value == "x"
++    # And NO parse error: 4.3.6's whitespace branch designates one only for
++    # its EOF sub-case. The malformed url is reported as a bad_urls count, not
++    # as a parse error -- see test_bad_url_from_whitespace_is_not_a_parse_error.
++    assert tk.errors == []
++    assert tk.metrics["bad_urls"] == 1
++
++
++def test_bad_url_from_whitespace_is_not_a_parse_error_but_others_are():
++    """4.3.6 designates a parse error on three of its four bad-url paths.
++
++    Getting this wrong in the permissive direction inflates the corpus-wide
++    parse-error rate that task K measures, and a wrong baseline is worse than
++    no baseline -- so the asymmetry is pinned rather than assumed.
++    """
++    from mayshay.cssparse.tokenizer import BadUrl
++
++    quiet = CssTokenizer("url(a b)")
++    assert isinstance([t for t in quiet.tokenize()][0], BadUrl)
++    assert quiet.errors == []
++
++    for src in ("url(a'b)", 'url(a"b)', "url(a(b)", "url(a\\\nb)"):
++        loud = CssTokenizer(src)
++        tokens = list(loud.tokenize())
++        assert any(isinstance(t, BadUrl) for t in tokens), src
++        assert loud.errors, src
+ 
+ 
+ def test_unquoted_url_may_contain_characters_no_other_token_permits():
+     got = toks("url(http://a.example/b?c=d&e=1)")
+     assert isinstance(got[0], Url)
+     assert got[0].value == "http://a.example/b?c=d&e=1"
+ 
+ 
+ def test_url_prefix_matching_is_ascii_case_insensitive():
+     assert isinstance(toks("URL(a.png)")[0], Url)
+@@ -312,29 +343,80 @@ def test_errors_record_an_offset_and_a_message():
+     assert isinstance(message, str) and message
+ 
+ 
+ # --------------------------------------------------------------------------
+ # Metrics
+ # --------------------------------------------------------------------------
+ 
+ def test_metrics_are_populated():
+     tk = CssTokenizer("a { color: red }")
+     tokens = list(tk.tokenize())
+-    assert tk.metrics["css_tokens"] == len(tokens) - 1   # EOF excluded
++    assert tk.metrics["tokens"] == len(tokens) - 1   # EOF excluded
+     assert tk.metrics["tokenize_time_ms"] > 0.0
+-    assert tk.metrics["css_parse_errors"] == 0
++    assert tk.metrics["parse_errors"] == 0
++
++
++def test_metric_keys_are_unprefixed_like_htmlparse():
++    """`metrics.py` is long format with a `stage` column.
++
++    `stage=cssparse, key=css_tokens` says "css" twice, and htmlparse emits
++    bare `start_tags` / `parse_errors`, so a prefix on one side only makes
++    every pivot over (stage, key) special-case this stage.
++    """
++    tk = CssTokenizer(r'a /* c */ { background: url(x) rgb(1,2,3) "\26" }')
++    list(tk.tokenize())
++    assert tk.metrics
++    assert not [key for key in tk.metrics if key.startswith("css_")]
++    for key in ("tokens", "comments", "functions", "urls", "escapes"):
++        assert tk.metrics[key] > 0, key
+ 
+ 
+ def test_parse_error_metric_counts_errors():
+     tk = CssTokenizer("a /* unterminated")
+     list(tk.tokenize())
+-    assert tk.metrics["css_parse_errors"] == len(tk.errors) > 0
++    assert tk.metrics["parse_errors"] == len(tk.errors) > 0
++
++
++def test_escapes_are_counted_even_when_they_yield_the_replacement_char():
++    """Out-of-range, surrogate and NUL escapes are still escapes.
++
++    The counter answers "how many escapes were written in this stylesheet",
++    which is a property of the input, so the three U+FFFD paths must count.
++    Note U+FFFD is itself an ident code point under deviation 2, and each
++    escape eats its own trailing space, so the single-spaced form is ONE
++    ident of three replacement characters -- the same trailing-space rule the
++    brief got wrong in test_escape_sequences, in a second guise.
++    """
++    tk = CssTokenizer(r"\110000 \D800 \0 ")
++    got = [t for t in tk.tokenize() if not isinstance(t, Whitespace)]
++    assert isinstance(got[0], Ident) and got[0].value == "�" * 3
++    assert tk.metrics["escapes"] == 3
++
++    spaced = CssTokenizer(r"\110000  \D800  \0  ")
++    idents = [t for t in spaced.tokenize() if isinstance(t, Ident)]
++    assert [t.value for t in idents] == ["�", "�", "�"]
++    assert spaced.metrics["escapes"] == 3
++
++
++def test_tokenize_is_single_use():
++    """A second pass would resume at EOF and overwrite tokenize_time_ms."""
++    tk = CssTokenizer("a { color: red }")
++    first = list(tk.tokenize())
++    assert len(first) > 1
++    with pytest.raises(RuntimeError, match="single-use"):
++        tk.tokenize()
++    # And it raises at the call, not at the first next(): a generator body
++    # would defer the guard past the point that made the mistake.
++    tk2 = CssTokenizer("a")
++    tk2.tokenize()
++    with pytest.raises(RuntimeError):
++        tk2.tokenize()
+ 
+ 
+ # --------------------------------------------------------------------------
+ # Real corpus input
+ # --------------------------------------------------------------------------
+ 
+ def test_real_style_bodies_from_the_corpus_tokenize_without_error():
+     """Every <style> body in data/corpus/ must tokenize cleanly.
+ 
+     Not a smoke test: a real stylesheet is the only input that exercises the
