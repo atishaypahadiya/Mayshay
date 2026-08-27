@@ -31,3 +31,13 @@ Package root is `src/mayshay/`. Imports look like:
   Upstream removed `tree-construction/` in `224991e`; that pin is the last
   commit that still has the fixtures. Advancing it silently turns tests marked
   `requires_corpus` into skips rather than failures. Never `git submodule update --remote`.
+- Any factual claim about the code — a count, a set membership, a "this is
+  already handled" — is executed before it is written down. Nine instances of
+  assert-from-reading reached review on the phase 2 branch, including one
+  inside the fix for that same defect family. Reading is convincing and cheap;
+  running is one line.
+  This applies to decisions as well as claims: a test deferred as
+  "correct by inspection" is an unexecuted claim wearing a decision's clothes.
+- Non-ASCII in test data is written as an escape (\u212a), never as a literal.
+  Kelvin sign vs ASCII K, NBSP vs space, and combining marks all read
+  identically in a terminal.

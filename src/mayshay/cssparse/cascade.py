@@ -170,7 +170,8 @@ Deliberate deviations and omissions
     together. `tokenizer_parse_errors`
     and `css_parse_errors` include the inline path -- which they did not
     until this commit; malformed CSS in a `style=` attribute read as zero
-    errors, and wikipedia.html has 237 of those attributes. There is no
+    errors, and wikipedia.html carries 237 non-empty `style=` attributes (of
+    340 present; the other 103 are empty). There is no
     per-origin breakdown; if the analysis half needs one, it is a new key,
     not a reinterpretation of these.
 """
@@ -745,8 +746,9 @@ def _parse_inline_style(
     them off `parser.tokenizer` (which tokenized the empty string) was the
     bug: identical malformed CSS recorded 1 tokenizer error and 1 parse
     error as a `<style>` body and 0/0 as a `style=` attribute. Executed
-    both ways before and after; wikipedia.html has 237 inline styles, so
-    this was a real hole in a real measurement.
+    both ways before and after; wikipedia.html carries 237 non-empty `style=`
+    attributes (of 340 present), so this was a real hole in a real measurement.
+    Both figures executed, not counted by eye.
     """
     parser = CssParser("")
     tokenizer = CssTokenizer(source)
