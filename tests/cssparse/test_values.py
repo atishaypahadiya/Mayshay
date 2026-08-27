@@ -2,10 +2,18 @@ import pytest
 
 from mayshay.cssparse.values import (
     AUTO,
+    DROP_INVALID,
+    DROP_REASONS,
+    DROP_UNSUPPORTED_PROPERTY,
+    DROP_UNSUPPORTED_VALUE,
+    DROP_VAR_UNRESOLVED,
+    LONGHANDS_OF,
+    SUPPORTED_PROPERTIES,
     Color,
     Keyword,
     Length,
     Percent,
+    classify_drop,
     expand_shorthand,
     parse_declaration_value as pv,
 )
@@ -355,3 +363,129 @@ def test_property_names_are_normalised_and_the_rule_is_exported():
 
     assert val("BORDER", "1px solid red") == val("border", "1px solid red")
     assert val("Display", "block") == val("display", "block")
+
+
+# --------------------------------------------------------------------------
+# Drop reasons (Phase 3 Task A2, deliverable 1)
+# --------------------------------------------------------------------------
+
+
+def why(name, src):
+    return classify_drop(name, list(CssTokenizer(src).tokenize()))
+
+
+def test_the_property_table_and_its_derived_sets_agree():
+    """`SUPPORTED_PROPERTIES` and `LONGHANDS_OF` are derived from the parser
+    table, so a property in one is in all three. Injection: adding a name to
+    `LONGHANDS_OF` alone trips the module-level assert; adding a parser
+    without a `LONGHANDS_OF` entry trips it the other way.
+
+    The second half is the one that discriminates: `LONGHANDS_OF[name]` must
+    be exactly the keys `parse_declaration_value` produces, not a superset
+    someone wrote out by hand.
+    """
+    assert SUPPORTED_PROPERTIES == set(LONGHANDS_OF)
+    samples = {
+        "display": "block", "width": "10px", "height": "10px",
+        "font-size": "12px", "color": "red", "background-color": "red",
+        "margin": "1px", "padding": "1px", "border": "1px solid red",
+    }
+    assert set(samples) == SUPPORTED_PROPERTIES, (
+        "a property was added to the table without a sample here"
+    )
+    for name, src in samples.items():
+        parsed = val(name, src)
+        assert parsed is not None, name
+        assert set(parsed) == set(LONGHANDS_OF[name]), name
+
+
+def test_an_unknown_property_name_is_unsupported_property_not_invalid():
+    """The value is impeccable CSS; only the name is outside the table.
+    Both sides asserted: the same value under a known name parses."""
+    assert why("mask-image", "none") == DROP_UNSUPPORTED_PROPERTY
+    assert why("padding-right", "4px") == DROP_UNSUPPORTED_PROPERTY
+    assert val("width", "4px") is not None
+
+
+def test_valid_css_this_module_does_not_implement_is_unsupported_value():
+    """`flow-root` and `max-content` are real CSS; `calc()` and `hsl()` are
+    real functions; `thin` is a real border width. None of them is malformed,
+    so none may land in `invalid`."""
+    assert why("display", "flow-root") == DROP_UNSUPPORTED_VALUE
+    assert why("width", "max-content") == DROP_UNSUPPORTED_VALUE
+    assert why("width", "calc(100% - 4px)") == DROP_UNSUPPORTED_VALUE
+    assert why("color", "hsl(0, 0%, 0%)") == DROP_UNSUPPORTED_VALUE
+    assert why("border", "thin solid red") == DROP_UNSUPPORTED_VALUE
+    # ...and the supported spellings of the same properties still parse, so
+    # this is not a test of "everything is unsupported-value".
+    assert val("display", "block") is not None
+    assert val("width", "4px") is not None
+    assert val("color", "rgb(0, 0, 0)") is not None
+    assert val("border", "1px solid red") is not None
+
+
+def test_a_wide_keyword_is_unsupported_value_on_every_property():
+    for keyword in ("inherit", "initial", "unset", "revert"):
+        for prop in ("color", "width", "display", "margin"):
+            assert why(prop, keyword) == DROP_UNSUPPORTED_VALUE, (prop, keyword)
+
+
+def test_a_var_reference_is_var_unresolved():
+    assert why("color", "var(--accent)") == DROP_VAR_UNRESOLVED
+    assert why("color", "var(--accent, #fff)") == DROP_VAR_UNRESOLVED
+    assert why("width", "calc(var(--x) + 4px)") == DROP_VAR_UNRESOLVED
+    # A `var()` on a property outside the table is still the property's
+    # fault: it would be dropped even with substitution working, so calling
+    # it `var-unresolved` would make the var() counter move for a reason
+    # var() cannot fix.
+    assert why("background", "var(--accent)") == DROP_UNSUPPORTED_PROPERTY
+
+
+def test_a_malformed_var_is_invalid_not_var_unresolved():
+    """`var(` must be followed by a `--` identifier. Anything else is a
+    syntax error a browser drops too, and putting it in `var-unresolved`
+    would credit the var() work with a case var() can never recover."""
+    assert why("color", "var(5px)") == DROP_INVALID
+    assert why("color", "var(accent)") == DROP_INVALID
+    assert why("color", "var()") == DROP_INVALID
+
+
+def test_genuinely_malformed_values_are_invalid():
+    """The bucket that must never shrink. Each of these is something a
+    browser drops too."""
+    assert why("width", "banana") == DROP_INVALID
+    assert why("color", "#gg0000") == DROP_INVALID
+    assert why("font-size", "10foo") == DROP_INVALID
+    assert why("margin", "1px 2px 3px 4px 5px") == DROP_INVALID
+    assert why("width", "") == DROP_INVALID
+    assert why("border", "1px 2px solid") == DROP_INVALID
+
+
+def test_a_kelvin_sign_keyword_is_invalid_not_unsupported_value():
+    """Deviation 12's pair, classified. `blocK` and `pinK` are not
+    CSS at all -- `str.lower()` would fold U+212A to `k` and accept both --
+    so they belong in `invalid`, while the ASCII spellings parse and are
+    never classified at all.
+    """
+    assert why("display", "blocK") == DROP_INVALID
+    assert why("color", "pinK") == DROP_INVALID
+    assert val("display", "block") is not None
+    assert val("color", "pink") is not None
+
+
+def test_every_reason_is_one_of_the_four_and_they_are_distinct():
+    """A partition, not a label: `classify_drop` must return a member of
+    `DROP_REASONS`, and the four must be distinguishable from one another on
+    real inputs -- a classifier that returned the same constant for
+    everything would pass a one-input test."""
+    seen = {
+        why(name, src)
+        for name, src in [
+            ("mask-image", "none"),
+            ("display", "flow-root"),
+            ("color", "var(--x)"),
+            ("width", "banana"),
+        ]
+    }
+    assert seen == set(DROP_REASONS)
+    assert len(DROP_REASONS) == 4

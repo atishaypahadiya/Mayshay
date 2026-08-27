@@ -110,9 +110,25 @@ Reproduce from `data/fonts/LiberationSans-Regular.ttf` with `fontTools`;
 flatten `tt["kern"].kernTables` into `{(glyphA, glyphB): adjustment}` in
 font units and add the adjustment between consecutive glyph pairs.
 
-When the Phase 6 comparison harness exists this is the correction factor to
-apply, and the number to report alongside the error distribution -- a
-residual with a known systematic component rather than an unexplained one.
+When the Phase 6 comparison harness exists, the measurement to report is
+**not** an average width error. A 0.137% aggregate alongside `To` at +9.50%
+means the error is not smoothly distributed -- it is near-zero almost
+everywhere and concentrated in exactly the strings where it changes an
+outcome. Averaging it away would hide the finding.
+
+Report it as a **break-point** measurement instead:
+
+* the fraction of laid-out lines whose break point differs from Chrome's,
+* and what share of those differences are attributable to kerning, by
+  re-running the same comparison with kern adjustments applied and seeing
+  which disagreements disappear.
+
+That second half is what makes it a finding rather than an error bar: it
+partitions our divergence into "caused by not kerning" and "caused by
+something else", and the something-else is the part worth fixing. Kern
+pairs cluster in headings -- capitals and `To`/`Yo`/`AV`-shaped pairs --
+so the expectation to test is that heading lines carry most of the
+kerning-attributable breaks while body text carries almost none.
 
 ## Derivations
 

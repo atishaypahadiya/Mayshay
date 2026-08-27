@@ -215,10 +215,13 @@ from mayshay.cssparse.tokenizer import CssTokenizer
 from mayshay.cssparse.ua import UA_CSS
 from mayshay.cssparse.values import (
     AUTO,
+    DROP_REASONS,
+    LONGHANDS_OF,
     Color,
     Keyword,
     Length,
     Percent,
+    classify_drop,
     normalize_property_name,
     parse_declaration_value,
 )
@@ -807,6 +810,52 @@ def _append_qualified_rule(
         )
 
 
+def _cascade_declarations(
+    declarations: list,
+    *,
+    normal_rank: int,
+    important_rank: int,
+    order: object,
+    metrics: Counter[str],
+) -> list[_Declaration]:
+    """Turn parsed declarations into `_Declaration`s, counting what is kept
+    and *why* anything dropped was dropped.
+
+    **The one place a declaration enters or fails to enter the cascade.**
+    This body used to exist twice -- once in `_parse_block` for `<style>`
+    bodies and again in `_parse_inline_style` for `style=` attributes -- and
+    the two drifted: a Phase 2 fix landed in one and silently not the other,
+    so identical malformed CSS was counted differently depending on where it
+    was written. The only difference between the two call sites is which
+    cascade ranks the declarations get, so that is the only thing they still
+    pass in.
+
+    `declarations_dropped` keeps its Phase 2 meaning -- the total -- and the
+    four `declarations_dropped_<reason>` counters partition it exactly. That
+    exactness is the point: a total alone cannot say whether the parser
+    improved or validation loosened. See `values.classify_drop`.
+    """
+    out: list[_Declaration] = []
+    for decl in declarations:
+        metrics["declarations_seen"] += 1
+        longhands = parse_declaration_value(decl.name, decl.value)
+        if longhands is None:
+            # Either a property outside our table, or a value whose grammar
+            # is wrong. Both drop the declaration and keep its siblings,
+            # which is what a browser does.
+            metrics["declarations_dropped"] += 1
+            reason = classify_drop(decl.name, decl.value)
+            metrics[f"declarations_dropped_{reason.replace('-', '_')}"] += 1
+            continue
+        longhands = _reset_omitted_longhands(decl.name, longhands)
+        rank = important_rank if decl.important else normal_rank
+        index = next(order)
+        for prop, value in longhands.items():
+            out.append(_Declaration(prop, value, rank, index))
+        metrics["declarations_kept"] += 1
+    return out
+
+
 def _parse_block(
     parser: CssParser,
     block: list,
@@ -814,23 +863,13 @@ def _parse_block(
     order: object,
     metrics: Counter[str],
 ) -> list[_Declaration]:
-    out: list[_Declaration] = []
-    for decl in parser.parse_declarations(block):
-        metrics["declarations_seen"] += 1
-        longhands = parse_declaration_value(decl.name, decl.value)
-        if longhands is None:
-            # Either a property outside our nine, or a value whose grammar
-            # is wrong. Both drop the declaration and keep its siblings,
-            # which is what a browser does.
-            metrics["declarations_dropped"] += 1
-            continue
-        longhands = _reset_omitted_longhands(decl.name, longhands)
-        rank = (_IMPORTANT_RANK if decl.important else _NORMAL_RANK)[origin]
-        index = next(order)
-        for prop, value in longhands.items():
-            out.append(_Declaration(prop, value, rank, index))
-        metrics["declarations_kept"] += 1
-    return out
+    return _cascade_declarations(
+        parser.parse_declarations(block),
+        normal_rank=_NORMAL_RANK[origin],
+        important_rank=_IMPORTANT_RANK[origin],
+        order=order,
+        metrics=metrics,
+    )
 
 
 def _parse_inline_style(
@@ -853,21 +892,13 @@ def _parse_inline_style(
     tokenizer = CssTokenizer(source)
     tokens = list(tokenizer.tokenize())
     metrics["tokenizer_parse_errors"] += tokenizer.metrics["parse_errors"]
-    out: list[_Declaration] = []
-    for decl in parser.parse_declarations(tokens):
-        metrics["declarations_seen"] += 1
-        longhands = parse_declaration_value(decl.name, decl.value)
-        if longhands is None:
-            metrics["declarations_dropped"] += 1
-            continue
-        longhands = _reset_omitted_longhands(decl.name, longhands)
-        rank = (
-            _RANK_INLINE_IMPORTANT if decl.important else _RANK_INLINE_NORMAL
-        )
-        index = next(order)
-        for prop, value in longhands.items():
-            out.append(_Declaration(prop, value, rank, index))
-        metrics["declarations_kept"] += 1
+    out = _cascade_declarations(
+        parser.parse_declarations(tokens),
+        normal_rank=_RANK_INLINE_NORMAL,
+        important_rank=_RANK_INLINE_IMPORTANT,
+        order=order,
+        metrics=metrics,
+    )
     metrics["css_parse_errors"] += len(parser.errors)
     return out
 
@@ -1116,6 +1147,11 @@ def style_document(
     # whether a given link was supplied.
     metrics["link_stylesheets_skipped"] = 0
     metrics["link_stylesheets_total"] = 0
+    # Same reason: the four drop reasons partition `declarations_dropped`,
+    # and a partition with a missing part is not one. A page that drops
+    # nothing for a given reason must say `0`, not say nothing.
+    for reason in DROP_REASONS:
+        metrics[f"declarations_dropped_{reason.replace('-', '_')}"] = 0
 
     order = _Counter()
     rules = _parse_sheet(UA_CSS, "ua", order, metrics, viewport)
