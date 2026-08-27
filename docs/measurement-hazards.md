@@ -232,7 +232,17 @@ number is reasonable, because it always was.
 ## Instance ten, and what it says about these rules
 
 `boxes_inline_split` counted 34 sites on the corpus and
-`boxes_inline_fragments` counted 2. The split figure was not wrong
+`boxes_inline_fragments` counted 2.
+
+**Those figures have since moved twice more, and the sequence is the
+lesson.** Task C found that the box builder split *atomic* inline-level
+boxes -- `inline-block`, `inline-flex`, `inline-table` -- around block
+children, when CSS Display 3 section 2.1 says only `display: inline` does.
+Three boxes took that path wrongly. The corrected corpus figures are **0
+splits, 0 fragments, 31 dissolved**: there is no genuinely split inline
+anywhere in the corpus. So the same counter has reported 34, then 2, then 0
+for the same three pages, and each reading was arithmetically correct for
+the population it was actually measuring. The split figure was not wrong
 arithmetic -- it was a name covering two different things. 32 of the 34
 were inlines whose children are *all* block-level
 (`<span><table>...</table></span>`, which Hacker News does 30 times); those
