@@ -110,6 +110,14 @@ def test_the_corpus_sweep_is_not_silently_empty():
 def test_the_index_never_drops_a_rule_that_matches_a_real_page():
     """Every element of every corpus page against every selector that page
     ships -- the brute force the index replaces, used to check it.
+
+    Doubling as the "nothing here raises" sweep: selector features the
+    fixtures never exercise -- `:not(.notheme)`, `[dir="rtl"]`, stacked
+    compounds -- reach the matcher only through this loop, and an unhandled
+    branch in any of them is a crash rather than a False. A separate test
+    for that was deleted in fix round 1 rather than repaired: it carried a
+    `break` that ran each selector against `<html>` alone, and de-`break`ing
+    it would only have re-run this exact loop to assert less.
     """
     matched = 0
     for name, elements, selectors in PAGES:
@@ -137,18 +145,3 @@ def test_the_index_narrows_real_pages_by_an_order_of_magnitude():
         brute += len(selectors) * len(elements)
     assert brute > 0
     assert tested / brute < MAX_CANDIDATE_FRACTION, tested / brute
-
-
-def test_matching_a_real_page_does_not_raise():
-    """Selector features the fixtures never exercise -- `:not(.notheme)`,
-    `[dir="rtl"]`, stacked compounds -- reach the matcher here. Any of them
-    hitting an unhandled branch is a crash, not a False.
-    """
-    seen = 0
-    for _, elements, selectors in PAGES:
-        for selector in selectors:
-            for element in elements:
-                assert matches(element, selector) in (True, False)
-                seen += 1
-                break
-    assert seen >= MIN_SELECTORS

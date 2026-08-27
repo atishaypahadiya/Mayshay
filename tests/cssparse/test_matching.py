@@ -106,7 +106,7 @@ def test_rule_index_narrows_candidates():
 WIDE_HTML = """<!DOCTYPE html><html lang="en-GB"><body>
 <div id="Main" class="box  wide"><p>one</p><p class="lead">two</p><span>three</span></div>
 <ul><li>a</li> <li class="sel">b</li> <li>c</li><li>d</li></ul>
-<a href="/x">link</a><a name="anchor">plain</a>
+<a href="/x" rel="NOFOLLOW">link</a><a name="anchor">plain</a>
 <input type="TEXT"><em></em><em>  </em><em><b></b></em>
 <div><div class="x"><section><div class="x"><q>deep</q></div></section></div></div>
 </body></html>"""
@@ -346,6 +346,39 @@ def test_html_case_insensitive_attributes_ignore_value_case():
     assert not matches(find(tree(), "div"), sel('[id="MAIN"]'))
 
 
+@pytest.mark.parametrize("tag,src,expected", [
+    # On the list: value case is ignored...
+    ("input", '[type="text"]', True),
+    ("html", '[lang="EN-gb"]', True),
+    ("a", '[rel="nofollow"]', True),
+    ("a", '[rel="NOFOLLOW"]', True),
+    # ...and the `s` modifier overrides the list in the strict direction.
+    ("input", '[type="text" s]', False),
+    ("a", '[rel="nofollow" s]', False),
+    # Not on the list: value case is significant. `name`, `href`, `id` and
+    # `class` are all absent from it, which is what makes this test about
+    # membership rather than about the mechanism firing at all.
+    ("a", '[name="anchor"]', True),
+    ("a", '[name="ANCHOR"]', False),
+    ("a", '[href="/x"]', True),
+    ("a", '[href="/X"]', False),
+    ("div", '[id="Main"]', True),
+    ("div", '[id="MAIN"]', False),
+    ("div", '[class="box  wide"]', True),
+    ("div", '[class="BOX  WIDE"]', False),
+    # ...unless `i` asks for it, which overrides the list the other way.
+    ("a", '[name="ANCHOR" i]', True),
+    ("div", '[id="MAIN" i]', True),
+])
+def test_attribute_value_case_follows_the_html_list(tag, src, expected):
+    """Deviation 4, pinned from both sides of the membership question: a
+    test that only checked list members would pass against a matcher that
+    compared every attribute value case-insensitively.
+    """
+    doc = wide()
+    assert any(matches(el, sel(src)) for el in find_all(doc, tag)) is expected
+
+
 def test_attribute_names_fold_but_values_do_not():
     doc = tree()
     assert matches(find(doc, "div"), sel("[ID]"))
@@ -370,12 +403,48 @@ def test_attribute_names_fold_but_values_do_not():
     ("0n+3", [2]),
     ("banana", []),
     ("2 of .sel", []),
+    # `'+'? n`, not `'+'? -n`: one sign, and no whitespace across it.
+    # `+-n` alone does not discriminate -- it wrongly parses to (-1, 0),
+    # whose only solutions are indices <= 0, so a broken matcher also
+    # returns []. `+-n+2` is the case that catches it, and is why both are
+    # here rather than the obvious one alone.
+    ("+n", [0, 1, 2, 3]),
+    ("+n+2", [1, 2, 3]),
+    ("+-n", []),
+    ("+-n+2", []),
+    ("+ n", []),
+    # The sign-vs-no-sign forms of deviation 6: the first three are valid,
+    # the fourth is not and is accepted anyway (the tokenizer has already
+    # lost the sign), and the fifth stays rejected because its invalidity
+    # survives tokenization as a negative Number after an explicit sign.
+    ("2n+1", [0, 2]),
+    ("2n + 1", [0, 2]),
+    ("2n +1", [0, 2]),
+    ("2n 1", [0, 2]),
+    ("2n + -1", []),
 ])
 def test_nth_child_formulas(formula, expected):
     doc = wide()
     lis = find_all(doc, "li")
     selector = sel(f"li:nth-child({formula})")
     assert [i for i, li in enumerate(lis) if matches(li, selector)] == expected
+
+
+def test_the_an_b_memo_is_per_selector_and_invisible():
+    """Deviation 14 memoizes the An+B parse onto the selector object. It
+    must not leak between selectors, and it must not disturb the equality or
+    hash that `RuleIndex` keys on -- deviation 10 of `selectors.py`.
+    """
+    doc = wide()
+    lis = find_all(doc, "li")
+    odd, even = sel("li:nth-child(odd)"), sel("li:nth-child(even)")
+    before = (odd == sel("li:nth-child(odd)"), hash(odd))
+    for _ in range(3):
+        assert [i for i, li in enumerate(lis) if matches(li, odd)] == [0, 2]
+        assert [i for i, li in enumerate(lis) if matches(li, even)] == [1, 3]
+    assert (odd == sel("li:nth-child(odd)"), hash(odd)) == before
+    assert odd != even
+    assert len({odd: 1, sel("li:nth-child(odd)"): 2}) == 1
 
 
 def test_nth_child_works_without_annotate_positions():

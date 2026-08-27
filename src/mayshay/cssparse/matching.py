@@ -74,14 +74,28 @@ later:
    deliberately not done here, because "unknown or malformed things never
    match" is already the rule for pseudo-classes generally (deviation 5 of
    `selectors.py`) and this keeps one rule instead of two.
-6. **`An+B` accepts two forms the spec rejects, because our
+6. **`An+B` accepts one family of forms the spec rejects, because our
    `<number-token>` has no "sign character present" flag.** css-syntax's
    `<an+b>` grammar distinguishes `<signed-integer>` from
-   `<signless-integer>`, so `2n+1` is valid and `2n 1` is not; both reach us
-   as `Dimension(2, 'n')`, `Whitespace`, `Number(1)`. We accept both, and
-   likewise accept `2n + 1` where the spec wants the second half signless.
-   The failure mode is leniency on input no author writes, and the fix
-   belongs in the tokenizer if it ever matters.
+   `<signless-integer>`: `2n+1` and `2n +1` are both valid
+   (`<n-dimension> <signed-integer>`, and whitespace between component
+   values is allowed), while `2n 1` is not, since a signless integer may
+   only follow an explicit `+`/`-` of its own. All three reach us as
+   `Dimension(2, 'n')`, `Whitespace`, `Number(1)` -- the sign has already
+   been folded into the number's value and its presence is not recorded --
+   so we accept all three. `2n + 1` is **valid** and is accepted for that
+   reason rather than by leniency; an earlier draft of this deviation
+   miscalled it invalid.
+
+   The boundary is what the tokens can still tell us. A form whose
+   invalidity survives tokenization is rejected: `2n + -1` (a signed
+   integer where the grammar wants a signless one, visible as a negative
+   `Number` after an explicit sign delim), `+ n` (whitespace across the
+   `†` no-whitespace marker, visible as a `Whitespace` token) and `+-n`
+   (two signs, visible as a `Delim` before a `-`-initial ident) all parse
+   to None. Only the sign-vs-no-sign distinction is unrecoverable, and the
+   fix for that belongs in the tokenizer if it ever matters -- the failure
+   mode is leniency on input no author writes.
 7. **`:nth-child(... of S)` is not supported and never matches.** Selectors
    4 section 6.6.5.2 allows a selector argument that filters what gets
    counted; nothing downstream needs it, and accepting the `of` keyword
@@ -113,6 +127,27 @@ later:
    element". They differ only for a detached subtree, where the spec says
    nothing useful and the parent-free reading is the one a fragment matcher
    wants.
+14. **The `An+B` parse is memoized as an attribute on the
+   `PseudoClassSelector` itself** (`_an_b_memo`), rather than in a table
+   here. `_nth` otherwise re-parses the argument once per element tested,
+   which is per-element work inside the module that exists to avoid
+   per-element work.
+
+   A module-level dict keyed on the selector is the obvious alternative and
+   is not cheaper: `PseudoClassSelector.__hash__` walks every argument token
+   through `_token_key` (deviation 10 of `selectors.py`), which costs about
+   what the parse costs. Keying on `id()` is unsafe -- ids are reused after
+   a selector is freed, and a stale hit would silently answer with another
+   selector's formula.
+
+   Writing an attribute onto another module's dataclass is the cost, and it
+   is safe in exactly the way that matters: `_an_b_memo` is a pure function
+   of `name` and `argument`, and `PseudoClassSelector`'s equality and hash
+   are computed from those fields alone, so a memoized selector still
+   compares, hashes and keys a dict identically to a fresh one. It does mean
+   deviation 10's "must not be mutated afterwards" now has one sanctioned
+   exception, which is why it is written down here.
+
 13. **`candidates()` returns rules in the order they were given to
    `RuleIndex`.** Bucket order would be an implementation detail leaking
    into the cascade's tie-breaking, and iteration over `class_list` -- a
@@ -479,8 +514,16 @@ _PSEUDO_CLASSES: dict[str, Callable[[Element, PseudoClassSelector], bool]] = {
 
 
 def _nth(selector: PseudoClassSelector, index: int) -> bool:
-    """Does the 1-based `index` satisfy this pseudo-class's An+B argument?"""
-    parsed = _parse_an_b(selector.argument)
+    """Does the 1-based `index` satisfy this pseudo-class's An+B argument?
+
+    The parse is memoized on the selector -- see deviation 14. Without it,
+    `:nth-child(2n+1)` re-parses its own grammar once per element tested,
+    inside the one module whose whole purpose is not doing per-element work.
+    """
+    try:
+        parsed = selector._an_b_memo
+    except AttributeError:
+        parsed = selector._an_b_memo = _parse_an_b(selector.argument)
     if parsed is None:
         # Missing or malformed argument: never matches. See deviation 5.
         return False
@@ -531,10 +574,18 @@ def _parse_an_b(argument: Iterable[CssToken] | None) -> tuple[int, int] | None:
 
     if isinstance(first, Delim) and first.value == "+":
         # `+n`, `+n+1`, ... The spec forbids whitespace between the `+` and
-        # the `n`, which is why this is a delim and not part of the ident.
+        # the `n`, which is why this is a delim and not part of the ident;
+        # a `Whitespace` here fails the `Ident` test below, which is how
+        # `+ n` is rejected.
         if not rest or not isinstance(rest[0], Ident):
             return None
-        return _parse_n_ident(_ascii_lower(rest[0].value), rest[1:])
+        ident = _ascii_lower(rest[0].value)
+        if ident.startswith("-"):
+            # `'+'? n`, not `'+'? -n`: `+-n` carries two signs and is not a
+            # production. Found in review; see deviation 6 for why this one
+            # is rejected where the signless forms are not.
+            return None
+        return _parse_n_ident(ident, rest[1:])
 
     if isinstance(first, Dimension):
         if not first.is_integer:
