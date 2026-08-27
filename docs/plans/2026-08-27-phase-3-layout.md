@@ -367,7 +367,13 @@ three routes:
     max_content_width(box) -> float     # no wrapping at all
 
 Both are built on Task D's single `measure(text, style) -> float` seam and
-on nothing else, so the font decision stays in one place. CSS 2.1 §10.3.5's
+on nothing else. That is not only about avoiding duplicate code: every
+decision in `docs/fonts.md` lands at that seam and nowhere else — `hmtx`
+rather than `PIL.getlength`, `hhea` rather than the two `OS/2` conventions
+for line boxes, and kerning deliberately omitted at a measured +0.137%.
+Three call sites would mean three places for one of those to drift, and a
+drifted vertical-metric choice is a systematic offset that looks like a
+layout bug. CSS 2.1 §10.3.5's
 shrink-to-fit formula then has one implementation that all three consumers
 call:
 
