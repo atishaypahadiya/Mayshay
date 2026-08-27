@@ -15,6 +15,9 @@ Package root is `src/mayshay/`. Imports look like:
   data table (2231 entries). It is data -- the WHATWG named reference list --
   not a parser. All matching logic (longest match, the legacy semicolon rule,
   numeric remapping) is hand-rolled in `htmlparse/entities.py`.
+- CSS tokenization and parsing are hand-rolled. `tinycss2`, `cssutils` and
+  `cssselect` are forbidden in `src/mayshay/`. The same rule as the HTML
+  parser, for the same reason: the point is to write it.
 - BeautifulSoup allowed ONLY in scripts/ for corpus collection, never in src/mayshay/.
 - Every stage emits timing + size metrics to data/metrics/. Stages populate
   `self.metrics`; `src/mayshay/metrics.py` writes them, and entry points call
