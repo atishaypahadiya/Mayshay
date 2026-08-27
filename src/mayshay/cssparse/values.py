@@ -16,7 +16,8 @@ forces a premature resolution (treating `auto` as `0`, treating `50%` as
 exists to prevent, and the mistake would not surface until layout produces
 visibly wrong boxes.
 
-Two entry points, matching the task brief:
+Two entry points, matching the task brief (plus one added later --
+`normalize_property_name`, below them):
 
     parse_declaration_value(name, tokens) -> dict[str, object] | None
         Parses one declaration's value. Returns `None` -- dropping the
@@ -35,6 +36,16 @@ Two entry points, matching the task brief:
         `{"width"/"style"/"color": value}` for `border`. One shape across
         every shorthand, deliberately -- see `expand_shorthand`'s own
         docstring for why an earlier list-vs-dict split was replaced.
+
+**Property names reaching this module are normalised, and that is part of
+the interface, not an implementation detail.** `parse_declaration_value`
+ASCII-lowercases its `name` argument before dispatching, so `BORDER` and
+`border` parse identically. A caller that makes its own decision keyed on a
+property name -- Task J's shorthand-reset table is the one that exists --
+must apply the same normalisation, and `normalize_property_name` is exported
+so it can do so from this module's rule rather than from a guess. Leaving
+this implicit is what let `p { BORDER: solid blue }` parse correctly and
+skip its reset; see deviation 12.
 
 Deliberate deviations and omissions, documented so they don't surprise
 Task J or Phase 3 later:
@@ -114,6 +125,42 @@ Task J or Phase 3 later:
     counting, not a nested tree -- sufficient here because the only bracketed
     construct any of these nine properties' values can contain is a
     `<color>` function's argument list.
+12. **Property names and identifier keywords are matched
+    ASCII-case-insensitively, via `_ascii_lower`, not `str.lower()`.** CSS
+    defines its case-insensitivity as ASCII-only; `str.lower()` folds the
+    full Unicode table, and this module used it at ten sites until this was
+    caught. Executed before the fix: `display: bloc<U+212A KELVIN SIGN>`
+    parsed as `Keyword("block")` and `color: pin<U+212A>` as
+    `Color(255,192,203)`; a browser rejects both. Executed after: both
+    return `None`, and the ASCII spellings still parse. The property-name
+    normalisation is additionally exposed as `normalize_property_name` --
+    see the note above the deviation list for the bug that made that
+    necessary.
+13. **The nine supported properties include three shorthands
+    (`margin`, `padding`, `border`) but none of their longhands.**
+    `parse_declaration_value("margin-top", ...)`,
+    `("padding-right", ...)`, `("border-top", ...)`,
+    `("border-top-width", ...)`, `("border-width"/"-style"/"-color", ...)`
+    and `("background", ...)` all return `None`, so the only way to set
+    `ComputedStyle.margin_top` is to write the shorthand. This is a
+    consequence of the dispatch chain rather than a decision anyone made,
+    and it is recorded here because it is the largest slice of the corpus's
+    dropped declarations that no other deviation covers: executed over
+    `data/corpus/wikipedia.html`, 85 of the 313 dropped declarations are in
+    this family (15 `padding-right`, 14 `margin-top`, 12 `background`,
+    8 `margin-bottom`, 7 `border-left`, and a long tail). Adding them is
+    mechanical -- the component parsers the shorthands already use are the
+    same ones a longhand needs -- and is left to a phase that needs them.
+    `test_longhands_of_the_supported_shorthands_are_not_supported` pins the
+    current boundary so it cannot drift silently.
+14. **`display` is a closed keyword allow-list** (20 entries, above --
+    counted by `len(_DISPLAY_KEYWORDS)`, not by eye). A `display` value
+    outside it is invalid rather than passed through, for
+    the same reason the color table had to be complete: a keyword this
+    module does not know must not reach the cascade as an unresolved
+    string. `flow-root` is the one such keyword in the corpus (1 drop on
+    wikipedia, executed). Widening the list is a one-line change once a
+    layout mode exists that can honour the new value.
 """
 
 from __future__ import annotations
@@ -133,6 +180,38 @@ from mayshay.cssparse.tokenizer import (
     RParen,
     Whitespace,
 )
+
+
+def _ascii_lower(text: str) -> str:
+    """ASCII-only case fold. Duplicated from `tokenizer.py` for the reason
+    that module's copy states: importing another module's private name is
+    the worse coupling.
+
+    `str.lower()` is wrong here for the same reason it is wrong there. CSS
+    identifier and property-name matching is ASCII-case-insensitive, but
+    Python's `str.lower()` folds the whole Unicode case table: U+212A KELVIN
+    SIGN becomes `k`, so `display: bloc<U+212A>` would be accepted as
+    `block` and `color: pin<U+212A>` as `pink`. A browser rejects both.
+    Verified against this module before the fix -- both were accepted.
+    """
+    return "".join(chr(ord(ch) + 0x20) if "A" <= ch <= "Z" else ch for ch in text)
+
+
+def normalize_property_name(name: str) -> str:
+    """The canonical spelling of a CSS property name: ASCII-lowercased.
+
+    **This is the module's normalisation contract, exposed rather than left
+    implicit.** `parse_declaration_value` applies it to its own `name`
+    argument, so a caller may pass `BORDER` and get correct longhands back.
+    That was silently *not* enough for Task J's cascade, which keyed its
+    shorthand-reset table on the raw `Declaration.name` and so skipped the
+    reset for `BORDER` while accepting the value -- a wrong computed value
+    with no error anywhere. A caller that makes its own decision from a
+    property name must normalise it through this function first; that is
+    what it exists to say.
+    """
+    return _ascii_lower(name)
+
 
 # --------------------------------------------------------------------------
 # Value types
@@ -376,7 +455,7 @@ def _split_args(tokens: list[CssToken]) -> list[list[CssToken]]:
 
 def _parse_length(tok: CssToken) -> Length | None:
     if isinstance(tok, Dimension):
-        unit = tok.unit.lower()
+        unit = _ascii_lower(tok.unit)
         if unit in _LENGTH_UNITS:
             return Length(tok.value, unit)
         return None
@@ -389,7 +468,7 @@ def _parse_length(tok: CssToken) -> Length | None:
 def _parse_length_percentage(tok: CssToken, *, allow_auto: bool) -> object | None:
     if isinstance(tok, Percentage):
         return Percent(tok.value)
-    if allow_auto and isinstance(tok, Ident) and tok.value.lower() == "auto":
+    if allow_auto and isinstance(tok, Ident) and _ascii_lower(tok.value) == "auto":
         return AUTO
     return _parse_length(tok)
 
@@ -440,7 +519,7 @@ def _alpha(tok: CssToken) -> float | None:
 def _parse_color_function(group: list[CssToken]) -> Color | None:
     if not group or not isinstance(group[0], Function):
         return None
-    name = group[0].value.lower()
+    name = _ascii_lower(group[0].value)
     if name not in ("rgb", "rgba"):
         return None
     if not isinstance(group[-1], RParen):
@@ -482,7 +561,7 @@ def _parse_color(tokens: list[CssToken]) -> object | None:
     if len(group) == 1:
         tok = group[0]
         if isinstance(tok, Ident):
-            name = tok.value.lower()
+            name = _ascii_lower(tok.value)
             if name == "transparent":
                 return Color(0, 0, 0, 0.0)
             if name == "currentcolor":
@@ -510,8 +589,8 @@ def _single_token(tokens: list[CssToken]) -> CssToken | None:
 
 def _parse_display(tokens: list[CssToken]) -> Keyword | None:
     tok = _single_token(tokens)
-    if isinstance(tok, Ident) and tok.value.lower() in _DISPLAY_KEYWORDS:
-        return Keyword(tok.value.lower())
+    if isinstance(tok, Ident) and _ascii_lower(tok.value) in _DISPLAY_KEYWORDS:
+        return Keyword(_ascii_lower(tok.value))
     return None
 
 
@@ -519,8 +598,8 @@ def _parse_font_size(tokens: list[CssToken]) -> object | None:
     tok = _single_token(tokens)
     if tok is None:
         return None
-    if isinstance(tok, Ident) and tok.value.lower() in _FONT_SIZE_KEYWORDS:
-        return Keyword(tok.value.lower())
+    if isinstance(tok, Ident) and _ascii_lower(tok.value) in _FONT_SIZE_KEYWORDS:
+        return Keyword(_ascii_lower(tok.value))
     return _parse_length_percentage(tok, allow_auto=False)
 
 
@@ -598,7 +677,7 @@ def _parse_border(tokens: list[CssToken]) -> dict[str, object] | None:
     width = style = color = None
     for group in groups:
         if len(group) == 1 and isinstance(group[0], Ident):
-            keyword = group[0].value.lower()
+            keyword = _ascii_lower(group[0].value)
             if keyword in _BORDER_STYLE_KEYWORDS:
                 if style is not None:
                     return None
@@ -686,7 +765,7 @@ def parse_declaration_value(name: str, tokens: list[CssToken]) -> dict[str, obje
     siblings, exactly as an unsupported/malformed declaration behaves in a
     real browser.
     """
-    name = name.lower()
+    name = normalize_property_name(name)
     # EOFToken only ever appears here because a caller (this module's own
     # tests, most obviously) drove a `CssTokenizer` straight through to
     # completion rather than going through `cssparse.parser`, whose
@@ -732,5 +811,6 @@ __all__ = [
     "Length",
     "Percent",
     "expand_shorthand",
+    "normalize_property_name",
     "parse_declaration_value",
 ]

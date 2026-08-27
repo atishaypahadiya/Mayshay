@@ -46,18 +46,24 @@ Deliberate deviations from the spec, documented so they don't surprise us later:
    Python type, so `Number(3).value` is `3` and not `3.0`. The type flag
    (`is_integer`) remains authoritative: `1e3` has an integral value but its
    flag is False, because the spec's flag records *how it was written*, which
-   is what `<integer>` value parsing will need in task I.
+   is what `<integer>` parsing needs. The consumer is **task H**
+   (`matching.py`, five sites, all in the `An+B` parser), not task I: none of
+   the nine properties `values.py` handles has an `<integer>` grammar, and
+   `values.py` reads the flag nowhere. An earlier draft of this deviation
+   said task I; grepped, and it is task H.
 5. **The EOF token class is `EOFToken`, not `EOF`.** `EOF` is the end-of-input
    sentinel (`None`), exactly as in `htmlparse/tokenizer.py`, and the two
    cannot share a name -- `_consume_escape`'s `ch is EOF` test needs the
    sentinel. The task brief's interface list named the token `EOF`; the brief's
    own code in the same file needs `EOF` to be the sentinel.
 6. **`metrics["tokenize_time_ms"]` measures time spent inside the tokenizer,
-   not wall time across the stream.** `tokenize()` is a generator, so wall
-   time from first call to EOF would include however long the consumer took
-   between `next()` calls. The cost is two `perf_counter()` calls per token
-   (~5% on a token-dense stylesheet); the alternative is a timing metric that
-   silently measures the tree builder.
+   not wall time across the stream.** `tokenize()` returns a generator (it is
+   a plain method wrapping the `_tokenize()` generator -- see its docstring
+   for why the two are split), so wall time from the call to EOF would
+   include however long the consumer took between `next()` calls. The cost
+   is two `perf_counter()` calls per token (~5% on a token-dense
+   stylesheet); the alternative is a timing metric that silently measures
+   the tree builder.
 7. **`*=`, `~=`, `|=`, `^=`, `$=` and `||` are NOT single tokens.** The 2014
    CR of css-syntax-3 had <substring-match-token> and friends; the current
    spec removed them, leaving the match operators to be reassembled by the

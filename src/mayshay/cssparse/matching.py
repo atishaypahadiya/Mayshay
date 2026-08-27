@@ -80,12 +80,22 @@ later:
    `<signless-integer>`: `2n+1` and `2n +1` are both valid
    (`<n-dimension> <signed-integer>`, and whitespace between component
    values is allowed), while `2n 1` is not, since a signless integer may
-   only follow an explicit `+`/`-` of its own. All three reach us as
-   `Dimension(2, 'n')`, `Whitespace`, `Number(1)` -- the sign has already
-   been folded into the number's value and its presence is not recorded --
-   so we accept all three. `2n + 1` is **valid** and is accepted for that
-   reason rather than by leniency; an earlier draft of this deviation
-   miscalled it invalid.
+   only follow an explicit `+`/`-` of its own. Tokenized against our own
+   `CssTokenizer` rather than assumed, the three are **not** identical:
+
+       2n+1   ->  Dimension(2, 'n'), Number(1)
+       2n +1  ->  Dimension(2, 'n'), Whitespace, Number(1)
+       2n 1   ->  Dimension(2, 'n'), Whitespace, Number(1)
+
+   `2n+1` has no `Whitespace` at all (an earlier draft of this deviation
+   claimed the three-token run for all three forms, which is wrong). What
+   *is* true of all three, and is the thing the leniency rests on, is that
+   the sign has already been folded into the number's value and its presence
+   is not recorded -- `+1` and `1` both arrive as `Number(1)` -- so the only
+   pair we could still tell apart (`2n+1` vs the other two) differs by a
+   whitespace token that the grammar permits anyway. We accept all three.
+   `2n + 1` is **valid** and is accepted for that reason rather than by
+   leniency; an earlier draft of this deviation miscalled it invalid.
 
    The boundary is what the tokens can still tell us. A form whose
    invalidity survives tokenization is rejected: `2n + -1` (a signed
@@ -93,7 +103,9 @@ later:
    `Number` after an explicit sign delim), `+ n` (whitespace across the
    `†` no-whitespace marker, visible as a `Whitespace` token) and `+-n`
    (two signs, visible as a `Delim` before a `-`-initial ident) all parse
-   to None. Only the sign-vs-no-sign distinction is unrecoverable, and the
+   to None -- executed through `_parse_an_b`, not reasoned about. (So do
+   the acceptances: `2n+1`, `2n +1`, `2n 1` and `2n + 1` all yield
+   `(2, 1)`.) Only the sign-vs-no-sign distinction is unrecoverable, and the
    fix for that belongs in the tokenizer if it ever matters -- the failure
    mode is leniency on input no author writes.
 7. **`:nth-child(... of S)` is not supported and never matches.** Selectors
@@ -127,6 +139,13 @@ later:
    element". They differ only for a detached subtree, where the spec says
    nothing useful and the parent-free reading is the one a fragment matcher
    wants.
+13. **`candidates()` returns rules in the order they were given to
+   `RuleIndex`.** Bucket order would be an implementation detail leaking
+   into the cascade's tie-breaking, and iteration over `class_list` -- a
+   `frozenset` -- is not even stable between runs, so an order-dependent
+   caller would be flaky rather than merely wrong. The cascade must still
+   sort by its own explicit source index; this only makes that sort's input
+   deterministic.
 14. **The `An+B` parse is memoized as an attribute on the
    `PseudoClassSelector` itself** (`_an_b_memo`), rather than in a table
    here. `_nth` otherwise re-parses the argument once per element tested,
@@ -146,15 +165,9 @@ later:
    are computed from those fields alone, so a memoized selector still
    compares, hashes and keys a dict identically to a fresh one. It does mean
    deviation 10's "must not be mutated afterwards" now has one sanctioned
-   exception, which is why it is written down here.
-
-13. **`candidates()` returns rules in the order they were given to
-   `RuleIndex`.** Bucket order would be an implementation detail leaking
-   into the cascade's tie-breaking, and iteration over `class_list` -- a
-   `frozenset` -- is not even stable between runs, so an order-dependent
-   caller would be flaky rather than merely wrong. The cascade must still
-   sort by its own explicit source index; this only makes that sort's input
-   deterministic.
+   exception. That exception is also recorded in `selectors.py` beside the
+   rule it bends, because a reader of that module alone would otherwise
+   have no way to know this one had been granted it.
 """
 
 from __future__ import annotations

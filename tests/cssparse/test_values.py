@@ -260,3 +260,98 @@ def test_color_keyword_table_is_complete():
     }
     for name, expected in checks.items():
         assert val("color", name)["color"] == expected
+
+
+# --------------------------------------------------------------------------
+# The module's stated boundaries, pinned so they cannot drift silently.
+# --------------------------------------------------------------------------
+
+
+def test_longhands_of_the_supported_shorthands_are_not_supported():
+    """Deviation 13. The nine properties include `margin`, `padding` and
+    `border` but none of their longhands, so the *only* way to set
+    `ComputedStyle.margin_top` is to write the shorthand.
+
+    This is a consequence of the dispatch chain rather than a decision, and
+    it was undocumented and untested until the deviation was written. It is
+    the largest slice of the corpus's dropped declarations that no other
+    deviation covers: executed over `data/corpus/wikipedia.html`, 85 of the
+    313 dropped declarations are in this family. Widening the set is a
+    deliberate act; this test is what makes it one.
+    """
+    for name, src in [
+        ("margin-top", "5px"),
+        ("margin-right", "5px"),
+        ("margin-bottom", "5px"),
+        ("margin-left", "5px"),
+        ("padding-top", "5px"),
+        ("padding-right", "5px"),
+        ("border-top", "1px solid red"),
+        ("border-top-width", "5px"),
+        ("border-top-style", "solid"),
+        ("border-top-color", "red"),
+        ("border-width", "5px"),
+        ("border-style", "solid"),
+        ("border-color", "red"),
+        ("background", "red"),
+    ]:
+        assert val(name, src) is None, f"{name} is now supported -- update deviation 13"
+
+    # ...while the shorthands themselves still work, so this test fails for
+    # the right reason if the dispatch table is broken outright.
+    assert val("margin", "5px")["margin-top"] == Length(5, "px")
+    assert val("border", "1px solid red")["border-top-width"] == Length(1, "px")
+
+
+def test_display_is_a_closed_keyword_allow_list():
+    """Deviation 14. A `display` value the module does not know is invalid
+    rather than passed through as a string the cascade would have to guess
+    at. `flow-root` is the one such keyword in the corpus (1 drop on
+    wikipedia, executed).
+    """
+    from mayshay.cssparse.values import _DISPLAY_KEYWORDS
+
+    assert len(_DISPLAY_KEYWORDS) == 20
+    assert val("display", "flow-root") is None
+    assert val("display", "ruby-text") is None
+    assert val("display", "block")["display"] == Keyword("block")
+    assert val("width", "5Q")["width"] == Length(5, "q")  # deviation 1's Q/q
+
+
+def test_identifier_matching_is_ascii_case_insensitive_not_unicode():
+    """Deviation 12. CSS case-insensitivity is ASCII-only. Python's
+    `str.lower()` folds the whole Unicode table -- U+212A KELVIN SIGN goes
+    to `k` -- and this module used `str.lower()` at ten sites, so
+    `display: bloc\\u212a` parsed as `Keyword("block")` and
+    `color: pin\\u212a` as pink. A browser rejects both. Executed before the
+    fix: both were accepted; after: both are None.
+    """
+    kelvin = "\u212a"  # KELVIN SIGN, not ASCII K
+    assert kelvin.lower() == "k"          # the trap, stated outright
+    assert val("display", "bloc" + kelvin) is None
+    assert val("color", "pin" + kelvin) is None
+    assert val("border", "1px solid pin" + kelvin) is None
+
+    # ASCII case-insensitivity itself is untouched.
+    assert val("display", "BLOCK")["display"] == Keyword("block")
+    assert val("color", "PINK") == val("color", "pink")
+    assert val("width", "5PX")["width"] == Length(5, "px")
+    assert val("color", "RGB(1, 2, 3)")["color"] == Color(1, 2, 3, 1.0)
+
+
+def test_property_names_are_normalised_and_the_rule_is_exported():
+    """The normalisation `parse_declaration_value` applies to its `name`
+    argument is part of the interface, not an implementation detail: Task
+    J's cascade keys its shorthand-reset table on a property name and has
+    to fold it the same way. `normalize_property_name` exists so it can do
+    that from this module's rule rather than from a guess.
+    """
+    from mayshay.cssparse.values import normalize_property_name
+
+    assert normalize_property_name("BORDER") == "border"
+    assert normalize_property_name("Margin-Top") == "margin-top"
+    # ASCII only, here too.
+    assert normalize_property_name("BORDER\u212a") == "border\u212a"
+
+    assert val("BORDER", "1px solid red") == val("border", "1px solid red")
+    assert val("Display", "block") == val("display", "block")

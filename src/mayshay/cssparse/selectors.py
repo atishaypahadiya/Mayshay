@@ -151,7 +151,17 @@ later:
    These are mutable objects carrying a value hash, the hazard
    `dataclasses` names `unsafe_hash`: a structure used as a dict key must
    not be mutated afterwards. The parser builds each one once and never
-   touches it again, and nothing else should start.
+   touches it again.
+
+   **One sanctioned exception, granted after this rule was written**:
+   `matching.py` (its deviation 14) caches an `An+B` parse on a
+   `PseudoClassSelector` as `_an_b_memo`. That is legal precisely because
+   it adds a *new* attribute rather than touching one `_key()` reads
+   (`name`, `argument`, `selectors`), so a memoized selector still compares,
+   hashes and keys a dict identically to a fresh one -- executed both ways,
+   `==` and `hash()` agree before and after the memo is written. Any
+   mutation of those three fields remains forbidden; the exception is the
+   shape above, not a general licence.
 
    This departs from `parser.py`, whose `pos` does participate in
    equality, and the difference is what the objects are for: a

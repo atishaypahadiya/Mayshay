@@ -154,6 +154,25 @@ Deliberate deviations and omissions
     role is standing in for the external sheets a `<link>` in `<head>`
     would have pulled in -- which do precede in-document `<style>` on the
     overwhelming majority of pages. Within each group, source order holds.
+11. **`declarations_applied` counts *longhands written onto a
+    `ComputedStyle`*, not declarations parsed.** A shorthand contributes one
+    per longhand it sets (four for `margin`, twelve for `border`), and the
+    same longhand re-declared on the same element contributes once, because
+    the cascade has already picked a winner by then. `font-size` counts one
+    when it resolved and zero when it did not -- an unresolvable one is
+    `font_size_unresolvable` instead. That last clause is a fix, not a
+    description of how it always was: `font-size` contributed nothing at all
+    until the counter was corrected, so any `declarations_applied` figure in
+    a CSV written before this commit is low by the number of `font-size`
+    declarations that page applied.
+12. **Every declaration and error counter is a whole-document total** --
+    `<style>` bodies, `style=` attributes and the UA sheet summed
+    together. `tokenizer_parse_errors`
+    and `css_parse_errors` include the inline path -- which they did not
+    until this commit; malformed CSS in a `style=` attribute read as zero
+    errors, and wikipedia.html has 237 of those attributes. There is no
+    per-origin breakdown; if the analysis half needs one, it is a new key,
+    not a reinterpretation of these.
 """
 
 from __future__ import annotations
@@ -178,6 +197,7 @@ from mayshay.cssparse.values import (
     Keyword,
     Length,
     Percent,
+    normalize_property_name,
     parse_declaration_value,
 )
 from mayshay.dom.node import Element, Node, Text, annotate_positions
@@ -289,8 +309,17 @@ def _reset_omitted_longhands(name: str, longhands: dict[str, object]) -> dict[st
     value rule always produces all four), so in practice only `border` is
     affected; they are in the table so a future shorthand cannot be added
     without a decision, and so the invariant is stated rather than assumed.
+
+    **`name` is normalised here, not by the caller.** CSS property names are
+    ASCII-case-insensitive, and `parse_declaration_value` lowercases its own
+    copy, so `p { BORDER: solid blue }` used to parse into correct longhands
+    and then miss this table entirely -- the reset silently no-opped and the
+    earlier `border: 5px solid red` kept its 5px width. Executed before the
+    fix: `border`/`BORDER` gave 3px/5px for `border-top-width`; after, both
+    give 3px. Normalising inside the function rather than at the two call
+    sites is deliberate: a third call site cannot reintroduce the bug.
     """
-    governed = _SHORTHAND_LONGHANDS.get(name)
+    governed = _SHORTHAND_LONGHANDS.get(normalize_property_name(name))
     if governed is None:
         return longhands
     for prop in governed:
@@ -707,9 +736,22 @@ def _parse_block(
 def _parse_inline_style(
     source: str, order: object, metrics: Counter[str]
 ) -> list[_Declaration]:
-    """The `style=` attribute: a declaration list, no selector, own rank."""
+    """The `style=` attribute: a declaration list, no selector, own rank.
+
+    The tokenizer is constructed on `source` and the parser on `""` -- the
+    parser is only ever handed the token list, never asked to tokenize --
+    so the two error counters come from *different objects* here, unlike
+    `_parse_sheet` where `parser.tokenizer` is the one that ran. Reading
+    them off `parser.tokenizer` (which tokenized the empty string) was the
+    bug: identical malformed CSS recorded 1 tokenizer error and 1 parse
+    error as a `<style>` body and 0/0 as a `style=` attribute. Executed
+    both ways before and after; wikipedia.html has 237 inline styles, so
+    this was a real hole in a real measurement.
+    """
     parser = CssParser("")
-    tokens = list(CssTokenizer(source).tokenize())
+    tokenizer = CssTokenizer(source)
+    tokens = list(tokenizer.tokenize())
+    metrics["tokenizer_parse_errors"] += tokenizer.metrics["parse_errors"]
     out: list[_Declaration] = []
     for decl in parser.parse_declarations(tokens):
         metrics["declarations_seen"] += 1
@@ -725,6 +767,7 @@ def _parse_inline_style(
         for prop, value in longhands.items():
             out.append(_Declaration(prop, value, rank, index))
         metrics["declarations_kept"] += 1
+    metrics["css_parse_errors"] += len(parser.errors)
     return out
 
 
@@ -867,8 +910,16 @@ def _compute_style(
         parent_font_px=parent.font_size_px,
         root_font_px=root_font_px,
     )
+    font_size_applied = 0
     if font_size is not None:
         style.font_size = font_size
+        # Counted here because `_compute_rest` `continue`s past `font-size`
+        # and so never sees it. Until this line existed, every successfully
+        # applied `font-size` was missing from `declarations_applied` --
+        # an emitted metric that was systematically low with nothing
+        # saying so. Verified: `p{font-size:20px}` moved 12 -> 13, matching
+        # what `color` and `width` each contribute.
+        font_size_applied = 1
     elif "font-size" in declared:
         # Declared but not computable -- a viewport-relative font-size. Keep
         # the inherited value rather than store a length no child could
@@ -902,7 +953,9 @@ def _compute_style(
         root_font_px=root_font_px,
         own_color=style.color,
     )
-    metrics["declarations_applied"] += applied + int("color" in declared)
+    metrics["declarations_applied"] += (
+        applied + int("color" in declared) + font_size_applied
+    )
 
     # 4. A border with no style has no width, whatever the width said.
     _zero_widths_of_borderless_sides(style)

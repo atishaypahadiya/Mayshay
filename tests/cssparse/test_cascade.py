@@ -1180,3 +1180,194 @@ def test_rem_is_defined_by_the_root_element_not_by_a_stray_orphan():
     assert find(doc, "div").computed_style.font_size == Length(40, "px")
     # 1rem is the ROOT's 20px, not the stray parent's 40px.
     assert inner.computed_style.width == Length(20, "px")
+
+
+# --- the !important x shorthand-reset axis -------------------------------
+#
+# Deferred as correct-by-inspection in an earlier round. That was wrong:
+# `_reset_omitted_longhands` was carrying a silent bug (the uppercase-name
+# case below) three lines from the reset, and nothing in the suite tied a
+# shorthand reset to the *rank* of the declaration that caused it. Every
+# expectation here was executed against the implementation before being
+# written down, and each is what a browser does.
+
+
+def test_a_normal_shorthand_after_an_important_one_resets_nothing():
+    """Ordering 1. The reset happens *before* the cascade sorts, so the
+    later normal declaration still carries a full set of longhands -- and
+    every one of them must lose to the earlier `!important` one.
+
+    Injected bug that this catches: applying the reset after the sort, or
+    letting a reset longhand skip the rank comparison, hands `medium` to
+    `border-top-width` here instead of the important 5px.
+    """
+    style = style_of(
+        BODY_P, "p", "p { border: 5px solid red !important } p { border: solid blue }"
+    )
+    assert style.border_top_width == Length(5, "px")
+    assert style.border_top_color == Color(255, 0, 0, 1.0)
+
+
+def test_an_important_shorthand_after_a_normal_one_does_reset():
+    """Ordering 2, the mirror. The important declaration wins, so its reset
+    is the one that lands and the earlier 5px becomes `medium`."""
+    style = style_of(
+        BODY_P, "p", "p { border: 5px solid red } p { border: solid blue !important }"
+    )
+    assert style.border_top_width == Length(3, "px")
+    assert style.border_top_color == Color(0, 0, 255, 1.0)
+
+
+def test_specificity_still_breaks_ties_between_two_important_shorthands():
+    """Ordering 3. `!important` raises the origin rank; it does not flatten
+    specificity within that rank. `p#x` beats `p` even though `p` is later
+    in source order, and it is `p#x`'s reset that applies.
+    """
+    style = style_of(
+        '<!DOCTYPE html><body><p id="x">hi</p></body>',
+        "p",
+        "p#x { border: solid blue !important } p { border: 5px solid red !important }",
+    )
+    assert style.border_top_width == Length(3, "px")
+    assert style.border_top_color == Color(0, 0, 255, 1.0)
+
+
+def test_an_important_author_shorthand_beats_a_normal_style_attribute():
+    """Ordering 4. Rank 3 (author important) over rank 2 (inline normal) --
+    the one place the cascade table is counter-intuitive, and the reason
+    `style=` gets its own rank rather than a fake `(1,0,0)` specificity.
+    """
+    style = style_of(
+        '<!DOCTYPE html><body><p style="border: 9px solid green">hi</p></body>',
+        "p",
+        "p { border: 5px solid red !important }",
+    )
+    assert style.border_top_width == Length(5, "px")
+    assert style.border_top_color == Color(255, 0, 0, 1.0)
+
+
+def test_an_important_style_attribute_beats_an_important_author_rule():
+    """Ordering 5. Rank 4 over rank 3, and the winning declaration is a
+    *partial* shorthand, so its reset is what zeroes the author's 5px.
+    """
+    style = style_of(
+        '<!DOCTYPE html><body><p style="border: solid green !important">hi</p></body>',
+        "p",
+        "p { border: 5px solid red !important }",
+    )
+    assert style.border_top_width == Length(3, "px")
+    assert style.border_top_color == Color(0, 128, 0, 1.0)
+
+
+def test_currentcolor_propagates_through_an_important_shorthand_reset():
+    """The reset writes `border-*-color`'s *specified* initial value, which
+    is `currentcolor`, not a resolved colour. It must resolve against this
+    element's own `color` at compute time -- blue here, not the black that
+    a reset writing `Color(0,0,0)` directly would produce, and not the red
+    the earlier shorthand set.
+    """
+    style = style_of(
+        BODY_P, "p", "p { color: blue; border: 5px solid red } p { border: solid !important }"
+    )
+    assert style.border_top_width == Length(3, "px")
+    assert style.border_top_color == Color(0, 0, 255, 1.0)
+
+
+def test_the_shorthand_reset_fires_on_an_uppercase_property_name():
+    """CSS property names are ASCII case-insensitive, and `values.py`
+    lowercases its own copy -- so `BORDER: solid blue` parsed into correct
+    longhands while `_SHORTHAND_LONGHANDS.get(decl.name)` missed the table
+    entirely and skipped the reset. Executed before the fix: `border` gave
+    3px and `BORDER` gave 5px off the same pair of rules.
+
+    `_reset_omitted_longhands` now normalises its own argument, so a third
+    call site cannot reintroduce this.
+    """
+    lower = style_of(BODY_P, "p", "p { border: 5px solid red } p { border: solid blue }")
+    upper = style_of(BODY_P, "p", "p { border: 5px solid red } p { BORDER: solid blue }")
+    assert lower.border_top_width == Length(3, "px")
+    assert upper.border_top_width == lower.border_top_width
+    assert upper.border_top_color == Color(0, 0, 255, 1.0)
+
+
+def test_an_uppercase_shorthand_resets_at_important_rank_too():
+    """The two fixes above meet here: case-folding on the reset lookup and
+    rank propagation through the reset are independent, and this is the
+    only test that exercises both at once.
+    """
+    style = style_of(
+        BODY_P, "p", "p { border: 5px solid red } p { BORDER: solid blue !important }"
+    )
+    assert style.border_top_width == Length(3, "px")
+    assert style.border_top_color == Color(0, 0, 255, 1.0)
+
+
+def test_an_uppercase_margin_shorthand_expands_to_all_four_sides():
+    """End-to-end cover for `values.py`'s name normalisation, through the
+    cascade rather than through `parse_declaration_value` directly.
+
+    Stated honestly, because it was checked: this test does *not* catch the
+    reset bug. `margin` can never leave a side unset, so skipping its reset
+    is invisible -- injecting the un-normalised lookup left this test green
+    while the two `border` tests above failed. What it pins is that the
+    uppercase path reaches the same expansion at all.
+    """
+    lower = style_of(BODY_P, "p", "p { margin: 1px 2px }")
+    upper = style_of(BODY_P, "p", "p { MARGIN: 1px 2px }")
+    assert upper.margin_top == lower.margin_top == Length(1, "px")
+    assert upper.margin_right == lower.margin_right == Length(2, "px")
+
+
+# --- the declaration metrics --------------------------------------------
+
+
+def test_declarations_applied_counts_font_size():
+    """`_compute_rest` `continue`s past `font-size`, so until the counter
+    was corrected every successfully applied `font-size` was missing from
+    `declarations_applied` -- a committed measurement that was
+    systematically low with nothing documenting the exclusion.
+
+    Executed before the fix: `font-size` moved the count by 0 where `color`
+    and `width` each moved it by 1.
+    """
+    base = metrics_for(BODY_P)["declarations_applied"]
+    for css in ("p { color: red }", "p { width: 10px }", "p { font-size: 20px }"):
+        assert metrics_for(BODY_P, css)["declarations_applied"] == base + 1, css
+    both = metrics_for(BODY_P, "p { font-size: 20px; color: red; width: 10px }")
+    assert both["declarations_applied"] == base + 3
+
+
+def test_an_unresolvable_font_size_counts_as_unresolvable_not_applied():
+    """The other half of the same counter: a viewport-relative `font-size`
+    is declared, parsed and then deliberately not stored, so it must land
+    in `font_size_unresolvable` and nowhere else. Counting it as applied
+    would make the fix above wrong in the opposite direction.
+    """
+    base = metrics_for(BODY_P)["declarations_applied"]
+    m = metrics_for(BODY_P, "p { font-size: 10vw }")
+    assert m["font_size_unresolvable"] == 1
+    assert m["declarations_applied"] == base
+
+
+def test_parse_errors_in_a_style_attribute_are_recorded():
+    """`_parse_inline_style` tokenizes with one object and parses with
+    another, and read its error counts off the parser's tokenizer -- which
+    had been constructed on the empty string. Identical malformed CSS
+    therefore recorded 1/1 as a `<style>` body and 0/0 as a `style=`
+    attribute. wikipedia.html has 237 inline styles.
+
+    The body below is chosen so both paths see exactly the same errors: a
+    newline inside a string (tokenizer) and a declaration with no colon
+    (parser), with the block still balanced.
+    """
+    bad = 'color: red; width 10px; foo: "ab\ncd'
+    sheet = metrics_for(
+        "<!DOCTYPE html><body><style>p{" + bad + "}</style><p>hi</p></body>"
+    )
+    inline = metrics_for(
+        '<!DOCTYPE html><body><p style="' + bad.replace('"', "&quot;") + '">hi</p></body>'
+    )
+    assert sheet["tokenizer_parse_errors"] == 1
+    assert sheet["css_parse_errors"] == 1
+    assert inline["tokenizer_parse_errors"] == sheet["tokenizer_parse_errors"]
+    assert inline["css_parse_errors"] == sheet["css_parse_errors"]

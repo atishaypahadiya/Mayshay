@@ -34,10 +34,15 @@ set grows.
 Deliberate omissions *inside* the nine properties, so a reviewer can tell a
 decision from an oversight:
 
-- **No `display` for the replaced/embedded elements** (`img`, `input`,
-  `button`, `select`, `textarea`, `iframe`, `canvas`, `video`). They are
+- **No `display` for the form and embedded-content elements** (`input`,
+  `button`, `select`, `textarea`, `iframe`, `canvas`, `video`; grepped
+  against `UA_CSS` -- none of the seven appears in any selector). They are
   `inline` by initial value, which is right, and their real behaviour is
-  `inline-block`-ish sizing that only layout can express.
+  `inline-block`-ish sizing that only layout can express. `img`, `picture`,
+  `map` and `area` *are* named, in the `display: inline` block, which
+  changes nothing behaviourally -- the block exists to state intent against
+  a future reset, as its own comment says -- but they are not omissions and
+  an earlier version of this bullet wrongly listed `img` as one.
 - **No `display: none` for `base`, `param`, `source`, `track`, `datalist`,
   `template`, `noscript`.** The brief names exactly six -- `head`, `style`,
   `script`, `link`, `title`, `meta` -- and those six are the ones that
