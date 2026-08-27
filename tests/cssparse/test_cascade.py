@@ -1542,3 +1542,81 @@ def test_an_unsupported_property_and_a_malformed_value_are_counted_apart():
     assert unsupported["invalid"] == 0
     assert malformed["invalid"] == 1
     assert malformed["unsupported-property"] == 0
+
+
+# --------------------------------------------------------------------------
+# Box-model longhands (Phase 3 Task A2, deliverable 2)
+# --------------------------------------------------------------------------
+
+
+def test_a_one_sided_border_shorthand_resets_only_its_own_sides_omissions():
+    """The bug the brief warned about. `border-left: solid blue` sets three
+    longhands and leaves the width omitted, so `border-left-width` must fall
+    back to `medium` (3px) -- and the *other three* sides must keep the 5px
+    the earlier `border` shorthand gave them.
+
+    Injection: giving `border-left` all twelve longhands in `LONGHANDS_OF`
+    (the shape `border` has) resets every side to 3px, which reads as
+    correct on any assertion that only inspects the left edge. That is why
+    all four sides are asserted here and not just the one that changed.
+    """
+    style = style_of(
+        BODY_P, "p", "p { border: 5px solid red } p { border-left: solid blue }"
+    )
+    assert style.border_left_width == Length(3, "px")
+    assert style.border_left_color == Color(0, 0, 255, 1.0)
+    for side in ("top", "right", "bottom"):
+        assert style.get(f"border-{side}-width") == Length(5, "px"), side
+        assert style.get(f"border-{side}-color") == Color(255, 0, 0, 1.0), side
+
+
+def test_a_four_value_border_shorthand_resets_only_its_own_kind():
+    """`border-style` governs the four style longhands and nothing else, so
+    it must not disturb widths or colours the previous rule set."""
+    style = style_of(
+        BODY_P, "p", "p { border: 5px solid red } p { border-style: dotted }"
+    )
+    assert style.border_top_style == "dotted"
+    assert style.border_top_width == Length(5, "px")
+    assert style.border_top_color == Color(255, 0, 0, 1.0)
+
+
+def test_a_longhand_beats_an_earlier_shorthand_and_loses_to_a_later_one():
+    """Source order between a shorthand and one of its longhands. Both
+    directions asserted: a longhand that always won, or always lost, would
+    pass a one-direction test."""
+    later_longhand = style_of(
+        BODY_P, "p", "p { margin: 1px } p { margin-left: 9px }"
+    )
+    assert later_longhand.margin_left == Length(9, "px")
+    assert later_longhand.margin_top == Length(1, "px")
+
+    later_shorthand = style_of(
+        BODY_P, "p", "p { margin-left: 9px } p { margin: 1px }"
+    )
+    assert later_shorthand.margin_left == Length(1, "px")
+
+
+def test_margin_left_auto_centring_is_reachable():
+    """`margin-left: auto` was unreachable before the longhands existed, and
+    centring is not optional for the corpus pages."""
+    style = style_of(BODY_P, "p", "p { margin-left: auto; margin-right: auto }")
+    assert style.margin_left is AUTO
+    assert style.margin_right is AUTO
+    # The UA sheet's `p { margin: 1em 0 }` still owns the block axis, which
+    # is what makes this a test of two longhands rather than of a shorthand
+    # that happened to set everything.
+    assert style.margin_top == Length(16, "px")
+
+
+def test_border_longhands_survive_the_borderless_width_zeroing():
+    """CSS 2.1 8.5.1 applies per side: a side whose style stayed `none` has
+    width 0 however wide its own `border-*-width` declaration was, and a
+    side with a style keeps it. Both sides of the rule asserted."""
+    style = style_of(
+        BODY_P, "p",
+        "p { border-top-width: 7px; border-left-width: 7px;"
+        " border-left-style: solid }",
+    )
+    assert style.border_top_width == Length(0, "px")
+    assert style.border_left_width == Length(7, "px")

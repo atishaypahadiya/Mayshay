@@ -69,6 +69,7 @@ Task J or Phase 3 later:
    and its declaration is dropped; if Task J needs them it will have to
    intercept the keyword before calling into this module, not expect this
    module to pass it through.
+   (Task A2 reverses part of this -- see deviation 15.)
 4. **The named-color table is the full CSS Color Level 4 extended-keyword
    list -- 148 entries** (the 147-keyword CSS3 SVG-derived list plus
    `rebeccapurple`), transcribed and verified against the spec's hex values
@@ -136,23 +137,29 @@ Task J or Phase 3 later:
     normalisation is additionally exposed as `normalize_property_name` --
     see the note above the deviation list for the bug that made that
     necessary.
-13. **The nine supported properties include three shorthands
-    (`margin`, `padding`, `border`) but none of their longhands.**
-    `parse_declaration_value("margin-top", ...)`,
-    `("padding-right", ...)`, `("border-top", ...)`,
-    `("border-top-width", ...)`, `("border-width"/"-style"/"-color", ...)`
-    and `("background", ...)` all return `None`, so the only way to set
-    `ComputedStyle.margin_top` is to write the shorthand. This is a
-    consequence of the dispatch chain rather than a decision anyone made,
-    and it is recorded here because it is the largest slice of the corpus's
-    dropped declarations that no other deviation covers: executed over
-    `data/corpus/wikipedia.html`, 85 of the 313 dropped declarations are in
-    this family (15 `padding-right`, 14 `margin-top`, 12 `background`,
-    8 `margin-bottom`, 7 `border-left`, and a long tail). Adding them is
-    mechanical -- the component parsers the shorthands already use are the
-    same ones a longhand needs -- and is left to a phase that needs them.
-    `test_longhands_of_the_supported_shorthands_are_not_supported` pins the
-    current boundary so it cannot drift silently.
+13. **The box-model longhands are supported, and `background` is not.**
+    Through Phase 2 the table held three shorthands (`margin`, `padding`,
+    `border`) and none of their longhands, so the only way to set
+    `ComputedStyle.margin_top` was to write the shorthand. That was a
+    consequence of the old `if name == ...` dispatch chain rather than a
+    decision anyone made, and it was the largest slice of the corpus's
+    dropped declarations no other deviation covered -- 395 declarations,
+    with `margin-left: auto` centring unreachable. Phase 3 Task A2 added
+    **27** property names: the eight `margin-`/`padding-` longhands, the
+    twelve `border-{side}-{width,style,color}` longhands, the three
+    `border-width`/`-style`/`-color` four-value shorthands and the four
+    `border-{side}` shorthands. (27, not the 28 the Phase 3 plan quoted --
+    that figure counted `background` alongside them. Executed:
+    `len(SUPPORTED_PROPERTIES)` is 36, of which 9 predate Task A2.)
+
+    None of the 27 needed a new component parser: a longhand is its
+    shorthand's component grammar with the one-to-four rule removed, and
+    `border-width`/`-style`/`-color` are that rule over one component kind.
+    `_four_sided` is where the rule now lives, once.
+
+    `background` is still outside the table and still dropped --
+    `test_the_box_model_longhands_are_supported` asserts both halves so the
+    new boundary cannot drift any more quietly than the old one did.
 14. **`display` is a closed keyword allow-list** (20 entries, above --
     counted by `len(_DISPLAY_KEYWORDS)`, not by eye). A `display` value
     outside it is invalid rather than passed through, for
@@ -641,6 +648,43 @@ def _sides_from_values(values: list[object]) -> dict[str, object]:
     return {"top": top, "right": right, "bottom": bottom, "left": left}
 
 
+def _four_sided(tokens: list[CssToken], parse_component) -> dict[str, object] | None:
+    """The one-to-four-value rule over any component parser.
+
+    `margin`, `padding`, `border-width`, `border-style` and `border-color`
+    are the same shorthand shape with five different component grammars, so
+    the rule lives here once. `parse_component` takes a *component* -- a
+    list of tokens, since a `<color>` component can be `rgb(0, 0, 0)` and is
+    not one token -- and returns its value or None.
+    """
+    groups = _split_top_level(tokens)
+    if not (1 <= len(groups) <= 4):
+        return None
+    values: list[object] = []
+    for group in groups:
+        value = parse_component(group)
+        if value is None:
+            return None
+        values.append(value)
+    return _sides_from_values(values)
+
+
+def _one_token(parse_token):
+    """Adapt a single-token parser to `_four_sided`'s component signature."""
+
+    def parse_component(group: list[CssToken]) -> object | None:
+        return parse_token(group[0]) if len(group) == 1 else None
+
+    return parse_component
+
+
+def _parse_border_style_component(group: list[CssToken]) -> Keyword | None:
+    if len(group) != 1 or not isinstance(group[0], Ident):
+        return None
+    keyword = _ascii_lower(group[0].value)
+    return Keyword(keyword) if keyword in _BORDER_STYLE_KEYWORDS else None
+
+
 def _parse_margin_or_padding(
     tokens: list[CssToken], *, allow_auto: bool
 ) -> dict[str, object] | None:
@@ -649,18 +693,10 @@ def _parse_margin_or_padding(
     hand `expand_shorthand` the same kind of thing. See `expand_shorthand`'s
     docstring for why that uniformity was made a deliberate decision here.
     """
-    groups = _split_top_level(tokens)
-    if not (1 <= len(groups) <= 4):
-        return None
-    values: list[object] = []
-    for group in groups:
-        if len(group) != 1:
-            return None
-        value = _parse_length_percentage(group[0], allow_auto=allow_auto)
-        if value is None:
-            return None
-        values.append(value)
-    return _sides_from_values(values)
+    return _four_sided(
+        tokens,
+        _one_token(lambda tok: _parse_length_percentage(tok, allow_auto=allow_auto)),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -706,13 +742,20 @@ def _parse_border(tokens: list[CssToken]) -> dict[str, object] | None:
     return {"width": width, "style": style, "color": color}
 
 
-def _expand_border(parsed: dict[str, object]) -> dict[str, object]:
+def _expand_border(parsed: dict[str, object], sides: tuple[str, ...]) -> dict[str, object]:
+    """`border`'s three components fanned out over `sides`.
+
+    `sides` is all four for the `border` shorthand and exactly one for
+    `border-top`/`-right`/`-bottom`/`-left`. Missing components stay missing
+    -- deviation 7 -- and the cascade fills them from the initial-value
+    table for *that side only*.
+    """
     result: dict[str, object] = {}
     for kind in ("width", "style", "color"):
         value = parsed.get(kind)
         if value is None:
             continue
-        for side in _SIDES:
+        for side in sides:
             result[f"border-{side}-{kind}"] = value
     return result
 
@@ -752,8 +795,13 @@ def expand_shorthand(name: str, parsed: dict[str, object]) -> dict[str, object]:
     """
     if name in ("margin", "padding"):
         return {f"{name}-{side}": parsed[side] for side in _SIDES}
+    if name in ("border-width", "border-style", "border-color"):
+        kind = name.split("-", 1)[1]
+        return {f"border-{side}-{kind}": parsed[side] for side in _SIDES}
     if name == "border":
-        return _expand_border(parsed)
+        return _expand_border(parsed, _SIDES)
+    if name in _BORDER_SIDE_SHORTHANDS:
+        return _expand_border(parsed, (name.split("-", 1)[1],))
     raise ValueError(f"{name!r} is not a shorthand this module expands")
 
 
@@ -795,6 +843,28 @@ def _border_shorthand(tokens: list[CssToken]) -> dict[str, object] | None:
     return None if parsed is None else expand_shorthand("border", parsed)
 
 
+def _border_side(side: str):
+    """`border-top` and friends: `<width> || <style> || <color>`, one side."""
+
+    def parse_side(tokens: list[CssToken]) -> dict[str, object] | None:
+        parsed = _parse_border(tokens)
+        return None if parsed is None else expand_shorthand(f"border-{side}", parsed)
+
+    return parse_side
+
+
+def _four(name: str, parse_component):
+    """`border-width`/`-style`/`-color`: the one-to-four rule over one kind."""
+
+    def parse_four(tokens: list[CssToken]) -> dict[str, object] | None:
+        parsed = _four_sided(tokens, parse_component)
+        return None if parsed is None else expand_shorthand(name, parsed)
+
+    return parse_four
+
+
+_BORDER_SIDE_SHORTHANDS: frozenset[str] = frozenset(f"border-{s}" for s in _SIDES)
+
 _PROPERTY_PARSERS: dict[str, object] = {
     "display": _one("display", _parse_display),
     "width": _one("width", _parse_width_height),
@@ -805,6 +875,65 @@ _PROPERTY_PARSERS: dict[str, object] = {
     "margin": _sides("margin", allow_auto=True),
     "padding": _sides("padding", allow_auto=False),
     "border": _border_shorthand,
+    # The box-model longhands. Every one of them reuses the component parser
+    # its shorthand already used -- `margin-left` is `margin`'s component
+    # grammar with the one-to-four rule removed, not a second implementation
+    # of `<length-percentage> | auto`. Deviation 13 recorded their absence as
+    # a consequence of the old dispatch chain rather than a decision; 395
+    # declarations across the corpus depended on it, so the decision is now
+    # made the other way.
+    **{
+        f"margin-{side}": _one(
+            f"margin-{side}",
+            lambda tokens: (
+                None
+                if (tok := _single_token(tokens)) is None
+                else _parse_length_percentage(tok, allow_auto=True)
+            ),
+        )
+        for side in _SIDES
+    },
+    # `padding` does not take `auto`; `margin` does. Deviation 9, and the one
+    # asymmetry between the two families.
+    **{
+        f"padding-{side}": _one(
+            f"padding-{side}",
+            lambda tokens: (
+                None
+                if (tok := _single_token(tokens)) is None
+                else _parse_length_percentage(tok, allow_auto=False)
+            ),
+        )
+        for side in _SIDES
+    },
+    **{
+        f"border-{side}-width": _one(
+            f"border-{side}-width",
+            lambda tokens: (
+                None
+                if (tok := _single_token(tokens)) is None
+                else _parse_length(tok)
+            ),
+        )
+        for side in _SIDES
+    },
+    **{
+        f"border-{side}-style": _one(
+            f"border-{side}-style",
+            lambda tokens: _parse_border_style_component(_split_top_level(tokens)[0])
+            if len(_split_top_level(tokens)) == 1
+            else None,
+        )
+        for side in _SIDES
+    },
+    **{
+        f"border-{side}-color": _one(f"border-{side}-color", _parse_color)
+        for side in _SIDES
+    },
+    "border-width": _four("border-width", _one_token(_parse_length)),
+    "border-style": _four("border-style", _parse_border_style_component),
+    "border-color": _four("border-color", _parse_color),
+    **{f"border-{side}": _border_side(side) for side in _SIDES},
 }
 
 # Which longhands each supported property sets -- *all* of them, including
@@ -828,6 +957,32 @@ LONGHANDS_OF: dict[str, tuple[str, ...]] = {
         for kind in ("width", "style", "color")
         for side in _SIDES
     ),
+    # A longhand governs itself.
+    **{f"margin-{side}": (f"margin-{side}",) for side in _SIDES},
+    **{f"padding-{side}": (f"padding-{side}",) for side in _SIDES},
+    **{
+        f"border-{side}-{kind}": (f"border-{side}-{kind}",)
+        for side in _SIDES
+        for kind in ("width", "style", "color")
+    },
+    # The four-value shorthands: one kind, every side.
+    **{
+        f"border-{kind}": tuple(f"border-{side}-{kind}" for side in _SIDES)
+        for kind in ("width", "style", "color")
+    },
+    # `border-left` governs three longhands and **only its own side's**. The
+    # cascade's shorthand reset reads this table, and giving `border-left`
+    # all twelve here would make `p { border: 5px solid red }
+    # p { border-left: solid blue }` reset the *top* border's width too --
+    # the same family of bug as the one `_reset_omitted_longhands` was
+    # written to fix, arriving through the table instead of through the
+    # lookup.
+    **{
+        f"border-{side}": tuple(
+            f"border-{side}-{kind}" for kind in ("width", "style", "color")
+        )
+        for side in _SIDES
+    },
 }
 
 # Every property `parse_declaration_value` can accept. Derived, never
@@ -913,9 +1068,16 @@ _KNOWN_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
     "height": frozenset({
         "min-content", "max-content", "fit-content", "stretch", "content",
     }),
-    # Deviation 8: `border-width` takes only `<length>` here, not the
-    # spec's keyword trio.
-    "border": frozenset({"thin", "medium", "thick"}),
+    # Deviation 8: border widths take only `<length>` here, not the spec's
+    # `thin | medium | thick` trio -- on every property that can carry one.
+    **{
+        prop: frozenset({"thin", "medium", "thick"})
+        for prop in (
+            ("border", "border-width")
+            + tuple(f"border-{side}" for side in _SIDES)
+            + tuple(f"border-{side}-width" for side in _SIDES)
+        )
+    },
 }
 
 # Properties whose grammar admits an open-ended `<custom-ident>` or

@@ -275,40 +275,99 @@ def test_color_keyword_table_is_complete():
 # --------------------------------------------------------------------------
 
 
-def test_longhands_of_the_supported_shorthands_are_not_supported():
-    """Deviation 13. The nine properties include `margin`, `padding` and
-    `border` but none of their longhands, so the *only* way to set
-    `ComputedStyle.margin_top` is to write the shorthand.
+def test_the_box_model_longhands_are_supported():
+    """Deviation 13, reversed. `margin-top`, `padding-right`,
+    `border-left-width` and the other 24 were dropped purely because the old
+    dispatch chain had no branch for them -- 395 declarations across the
+    corpus, and `margin-left: auto` centring unreachable.
 
-    This is a consequence of the dispatch chain rather than a decision, and
-    it was undocumented and untested until the deviation was written. It is
-    the largest slice of the corpus's dropped declarations that no other
-    deviation covers: executed over `data/corpus/wikipedia.html`, 85 of the
-    313 dropped declarations are in this family. Widening the set is a
-    deliberate act; this test is what makes it one.
+    Executed: 27 property names were added, not 28. The plan's "28 distinct
+    properties" counted `background` alongside them, which is a background
+    shorthand rather than a box-model longhand and is deliberately still
+    unsupported -- asserted below so the boundary stays where it was drawn.
     """
-    for name, src in [
-        ("margin-top", "5px"),
-        ("margin-right", "5px"),
-        ("margin-bottom", "5px"),
-        ("margin-left", "5px"),
-        ("padding-top", "5px"),
-        ("padding-right", "5px"),
-        ("border-top", "1px solid red"),
-        ("border-top-width", "5px"),
-        ("border-top-style", "solid"),
-        ("border-top-color", "red"),
-        ("border-width", "5px"),
-        ("border-style", "solid"),
-        ("border-color", "red"),
-        ("background", "red"),
-    ]:
-        assert val(name, src) is None, f"{name} is now supported -- update deviation 13"
+    supported = {
+        "margin-top": "5px", "margin-right": "5px",
+        "margin-bottom": "5px", "margin-left": "auto",
+        "padding-top": "5px", "padding-right": "5px",
+        "padding-bottom": "5px", "padding-left": "5px",
+        "border-top-width": "5px", "border-right-style": "solid",
+        "border-bottom-color": "red", "border-left-width": "0",
+        "border-width": "1px 2px", "border-style": "solid dotted",
+        "border-color": "red blue",
+        "border-top": "1px solid red", "border-right": "solid",
+        "border-bottom": "0", "border-left": "10px solid #b32424",
+    }
+    for name, src in supported.items():
+        assert val(name, src) is not None, name
 
-    # ...while the shorthands themselves still work, so this test fails for
-    # the right reason if the dispatch table is broken outright.
-    assert val("margin", "5px")["margin-top"] == Length(5, "px")
-    assert val("border", "1px solid red")["border-top-width"] == Length(1, "px")
+    assert len(SUPPORTED_PROPERTIES) == 36
+    added = SUPPORTED_PROPERTIES - {
+        "display", "width", "height", "font-size", "color",
+        "background-color", "margin", "padding", "border",
+    }
+    assert len(added) == 27, sorted(added)
+
+    # `background` is still outside the table, so a value that is perfectly
+    # good CSS is still dropped for the property's sake.
+    assert val("background", "red") is None
+    assert "background" not in SUPPORTED_PROPERTIES
+
+
+def test_padding_longhands_reject_auto_and_margin_longhands_accept_it():
+    """Deviation 9 holds per-side, not only for the shorthands. Both sides
+    asserted: the same token is accepted on one family and rejected on the
+    other, so this cannot pass with `allow_auto` wired to a constant."""
+    for side in ("top", "right", "bottom", "left"):
+        assert val(f"margin-{side}", "auto")[f"margin-{side}"] is AUTO
+        assert val(f"padding-{side}", "auto") is None
+        # ...and both take a length, so the difference is `auto` alone.
+        assert val(f"margin-{side}", "5px")[f"margin-{side}"] == Length(5, "px")
+        assert val(f"padding-{side}", "5px")[f"padding-{side}"] == Length(5, "px")
+
+
+def test_a_one_sided_border_shorthand_expands_to_that_side_only():
+    """`border-left: 10px solid red` sets three longhands, all of them
+    `border-left-*`. Injection: reusing `border`'s four-side fan-out here
+    sets all twelve, which reads correctly on any test that only inspects
+    the left side."""
+    parsed = val("border-left", "10px solid red")
+    assert set(parsed) == {
+        "border-left-width", "border-left-style", "border-left-color",
+    }
+    assert parsed["border-left-width"] == Length(10, "px")
+    assert parsed["border-left-style"] == Keyword("solid")
+    assert parsed["border-left-color"] == Color(255, 0, 0, 1.0)
+    # The four-side shorthand still fans out to all twelve, so the
+    # difference above is the side restriction and not a broken expander.
+    assert len(val("border", "10px solid red")) == 12
+
+
+def test_the_four_value_border_shorthands_use_the_one_to_four_rule():
+    """`border-width: 1px 2px` is top/bottom 1px, right/left 2px -- the same
+    rule `margin` uses, over a different component grammar."""
+    widths = val("border-width", "1px 2px")
+    assert widths["border-top-width"] == Length(1, "px")
+    assert widths["border-right-width"] == Length(2, "px")
+    assert widths["border-bottom-width"] == Length(1, "px")
+    assert widths["border-left-width"] == Length(2, "px")
+
+    styles = val("border-style", "solid dotted dashed")
+    assert styles["border-top-style"] == Keyword("solid")
+    assert styles["border-right-style"] == Keyword("dotted")
+    assert styles["border-bottom-style"] == Keyword("dashed")
+    assert styles["border-left-style"] == Keyword("dotted")
+
+    colors = val("border-color", "red")
+    assert set(colors.values()) == {Color(255, 0, 0, 1.0)}
+    assert len(colors) == 4
+
+    # Each rejects the other's components, so the three are not one parser
+    # that accepts anything.
+    assert val("border-width", "solid") is None
+    assert val("border-style", "1px") is None
+    assert val("border-color", "solid") is None
+    assert val("border-width", "1px 2px 3px 4px 5px") is None
 
 
 def test_display_is_a_closed_keyword_allow_list():
@@ -389,9 +448,18 @@ def test_the_property_table_and_its_derived_sets_agree():
         "display": "block", "width": "10px", "height": "10px",
         "font-size": "12px", "color": "red", "background-color": "red",
         "margin": "1px", "padding": "1px", "border": "1px solid red",
+        "border-width": "1px", "border-style": "solid", "border-color": "red",
     }
+    for side in ("top", "right", "bottom", "left"):
+        samples[f"margin-{side}"] = "1px"
+        samples[f"padding-{side}"] = "1px"
+        samples[f"border-{side}"] = "1px solid red"
+        samples[f"border-{side}-width"] = "1px"
+        samples[f"border-{side}-style"] = "solid"
+        samples[f"border-{side}-color"] = "red"
     assert set(samples) == SUPPORTED_PROPERTIES, (
-        "a property was added to the table without a sample here"
+        "a property was added to the table without a sample here: "
+        f"{set(samples) ^ set(SUPPORTED_PROPERTIES)}"
     )
     for name, src in samples.items():
         parsed = val(name, src)
@@ -403,7 +471,7 @@ def test_an_unknown_property_name_is_unsupported_property_not_invalid():
     """The value is impeccable CSS; only the name is outside the table.
     Both sides asserted: the same value under a known name parses."""
     assert why("mask-image", "none") == DROP_UNSUPPORTED_PROPERTY
-    assert why("padding-right", "4px") == DROP_UNSUPPORTED_PROPERTY
+    assert why("background", "red") == DROP_UNSUPPORTED_PROPERTY
     assert val("width", "4px") is not None
 
 

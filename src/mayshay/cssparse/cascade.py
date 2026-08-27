@@ -320,13 +320,12 @@ INITIAL_SPECIFIED: dict[str, object] = {
     **{prop: Keyword("currentcolor") for prop in _BORDER_COLOR_PROPS},
 }
 
-# Which longhands each shorthand governs -- *all* of them, not just the ones
-# a given declaration happened to mention. See `_reset_omitted_longhands`.
-_SHORTHAND_LONGHANDS: dict[str, tuple[str, ...]] = {
-    "margin": tuple(f"margin-{side}" for side in _SIDES),
-    "padding": tuple(f"padding-{side}" for side in _SIDES),
-    "border": _BORDER_WIDTH_PROPS + _BORDER_STYLE_PROPS + _BORDER_COLOR_PROPS,
-}
+# Which longhands each property governs -- *all* of them, not just the ones
+# a given declaration happened to mention -- comes from `values.LONGHANDS_OF`,
+# which is derived from the same table the value parser dispatches on. It used
+# to be a second hand-written table here (`_SHORTHAND_LONGHANDS`), listing only
+# `margin`, `padding` and `border`; a shorthand added to `values.py` and
+# forgotten here silently skipped its reset. See `_reset_omitted_longhands`.
 
 
 def _reset_omitted_longhands(name: str, longhands: dict[str, object]) -> dict[str, object]:
@@ -359,7 +358,7 @@ def _reset_omitted_longhands(name: str, longhands: dict[str, object]) -> dict[st
     give 3px. Normalising inside the function rather than at the two call
     sites is deliberate: a third call site cannot reintroduce the bug.
     """
-    governed = _SHORTHAND_LONGHANDS.get(normalize_property_name(name))
+    governed = LONGHANDS_OF.get(normalize_property_name(name))
     if governed is None:
         return longhands
     for prop in governed:
