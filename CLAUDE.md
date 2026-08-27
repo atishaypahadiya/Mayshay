@@ -19,6 +19,19 @@ Package root is `src/mayshay/`. Imports look like:
   `cssselect` are forbidden in `src/mayshay/`. The same rule as the HTML
   parser, for the same reason: the point is to write it.
 - BeautifulSoup allowed ONLY in scripts/ for corpus collection, never in src/mayshay/.
+- `fontTools` is permitted in `src/mayshay/layout/` for reading font metrics
+  -- glyph advances from `hmtx`, vertical metrics from `hhea` and `OS/2`. It
+  is a binary format reader over vendored data, in the same category as
+  `html.entities.html5`. It must not make layout decisions: text measurement
+  is the only thing it is asked for, behind a single `measure()` interface.
+  Line breaking, white-space collapsing, baseline alignment and every box
+  position stay hand-rolled. Pillow is permitted in `paint/` for
+  rasterization only. Neither may be imported by `htmlparse` or `cssparse`.
+  The font is pinned: Liberation Sans 2.1.5, vendored at
+  `data/fonts/LiberationSans-Regular.ttf` with its SHA-256 and the exact
+  derivation of every metric recorded in `docs/fonts.md`. Every layout
+  number depends on that file; changing it changes them.
+
 - Every stage emits timing + size metrics to data/metrics/. Stages populate
   `self.metrics`; `src/mayshay/metrics.py` writes them, and entry points call
   the writer — never a parse method. `htmlparse` emits TWO stage values,

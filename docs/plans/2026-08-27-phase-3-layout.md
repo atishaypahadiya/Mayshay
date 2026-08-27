@@ -92,8 +92,21 @@ deliberate change rather than nine incidental ones.
 (`values.py` deviation 3). `revert` stays unsupported and counted -- it
 needs origin-level rollback the cascade does not model.
 
-Done when: the corpus-wide drop rate is reported before and after, per
-page. The number to move is Wikipedia's 70%.
+Done when: the drop **reasons** are reported alongside the rate, per page,
+before and after. A rate alone is ambiguous -- it falls when the parser
+improves and it also falls when validation loosens, and those are opposite
+outcomes. So the report is a breakdown by cause, in the shape of Phase 2's
+curated error-code set:
+
+    unsupported-property     the property is not in values.py's table
+    unsupported-value        the property is known, the value is not
+    var-unresolved           var() we chose not to substitute, by sub-reason
+    invalid                  genuinely malformed, a browser would drop it too
+
+`invalid` must not shrink. If it does, validation loosened and something
+that should have been dropped is now being accepted -- which is a
+regression wearing an improvement's clothes. The number to move is
+Wikipedia's 70%, via `unsupported-property` and `var-unresolved`.
 
 ### Task B — box tree construction
 
