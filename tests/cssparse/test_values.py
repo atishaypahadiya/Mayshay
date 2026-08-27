@@ -43,7 +43,15 @@ def test_color_keyword_hash_and_function():
 
 
 def test_display_keywords():
-    assert val("display", "block")["display"].name == "block"
+    """Strengthened in fix round 1: the brief's original body only ever
+    checked 'block', which a hardcoded `return Keyword("block")`
+    implementation would also pass. Checking a second, different keyword
+    (and that it differs from the first) is what actually exercises
+    keyword *recognition* rather than a single lucky constant.
+    """
+    assert val("display", "block")["display"] == Keyword("block")
+    assert val("display", "inline")["display"] == Keyword("inline")
+    assert val("display", "block")["display"] != val("display", "inline")["display"]
 
 
 @pytest.mark.parametrize("src,expected", [
@@ -160,22 +168,41 @@ def test_width_rejects_multiple_tokens():
     assert val("width", "10px 20px") is None
 
 
-def test_expand_shorthand_margin_one_to_four_value_rule_directly():
+def test_expand_shorthand_is_dict_in_dict_out_for_every_shorthand():
     """Exercise expand_shorthand itself, not only through parse_declaration_value,
-    since it is documented as a public entry point in its own right."""
-    one = expand_shorthand("margin", [Length(1, "px")])
+    since it is documented as a public entry point in its own right.
+
+    Fix round 1: `parsed` used to be a `list` for margin/padding and a
+    `dict` for border. Both are `dict[str, object]` now -- margin/padding
+    keyed by side, border by component kind -- so this pins the unified
+    input shape, not just the output.
+    """
+    one = expand_shorthand("margin", {
+        "top": Length(1, "px"), "right": Length(1, "px"),
+        "bottom": Length(1, "px"), "left": Length(1, "px"),
+    })
     assert one == {
         "margin-top": Length(1, "px"),
         "margin-right": Length(1, "px"),
         "margin-bottom": Length(1, "px"),
         "margin-left": Length(1, "px"),
     }
-    three = expand_shorthand("padding", [Length(1, "px"), Length(2, "px"), Length(3, "px")])
+    three = expand_shorthand("padding", {
+        "top": Length(1, "px"), "right": Length(2, "px"),
+        "bottom": Length(3, "px"), "left": Length(2, "px"),
+    })
     assert three == {
         "padding-top": Length(1, "px"),
         "padding-right": Length(2, "px"),
         "padding-bottom": Length(3, "px"),
         "padding-left": Length(2, "px"),
+    }
+    border = expand_shorthand("border", {"style": Keyword("solid")})
+    assert border == {
+        "border-top-style": Keyword("solid"),
+        "border-right-style": Keyword("solid"),
+        "border-bottom-style": Keyword("solid"),
+        "border-left-style": Keyword("solid"),
     }
 
 
@@ -185,3 +212,51 @@ def test_margin_percent_and_auto_mixed():
     assert got["margin-bottom"] == Percent(10)
     assert got["margin-right"] is AUTO
     assert got["margin-left"] is AUTO
+
+
+# --------------------------------------------------------------------------
+# Fix round 1: minor coverage gaps the review flagged as "correct by
+# inspection" rather than tested -- exactly the shape of the four vacuous
+# tests this file already had before that round.
+# --------------------------------------------------------------------------
+
+
+def test_padding_percent():
+    got = val("padding", "10%")
+    assert got["padding-top"] == Percent(10)
+    assert got["padding-left"] == Percent(10)
+
+
+def test_font_size_percent():
+    assert val("font-size", "150%")["font-size"] == Percent(150)
+
+
+def test_border_color_currentcolor():
+    got = val("border", "1px solid currentcolor")
+    assert got["border-top-color"] == Keyword("currentcolor")
+
+
+def test_color_keyword_table_is_complete():
+    """Fix round 1: the table shipped with 22 entries against the spec's
+    148 (16 CSS1 keywords + a handful of common extras), which silently
+    drops a declaration for any of the ~126 missing names on a real page --
+    the exact failure mode the symbolic-value discipline elsewhere in this
+    module exists to prevent. Pins the count and spot-checks several
+    non-famous entries by full round trip through the public API, not just
+    the private table, so a typo in the *lookup path* (not just the data)
+    would also be caught.
+    """
+    from mayshay.cssparse.values import _COLOR_KEYWORDS
+
+    assert len(_COLOR_KEYWORDS) == 148
+
+    checks = {
+        "rebeccapurple": Color(102, 51, 153, 1.0),
+        "papayawhip": Color(255, 239, 213, 1.0),
+        "mediumspringgreen": Color(0, 250, 154, 1.0),
+        "darkslategrey": Color(47, 79, 79, 1.0),
+        "cadetblue": Color(95, 158, 160, 1.0),
+        "lightgoldenrodyellow": Color(250, 250, 210, 1.0),
+    }
+    for name, expected in checks.items():
+        assert val("color", name)["color"] == expected

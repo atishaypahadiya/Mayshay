@@ -29,9 +29,12 @@ Two entry points, matching the task brief:
     expand_shorthand(name, parsed) -> dict[str, object]
         The expansion step above, exposed on its own so a caller that
         already has the shorthand's *parsed* components -- not raw tokens --
-        can still get the longhand dict. `parsed` is a `list[object]` of 1-4
-        values for `margin`/`padding` (the one-to-four-value rule), or a
-        `dict` with any subset of `"width"/"style"/"color"` for `border`.
+        can still get the longhand dict. `parsed` is always a
+        `dict[str, object]`: `{"top"/"right"/"bottom"/"left": value}` for
+        `margin`/`padding` (always all four keys), or any subset of
+        `{"width"/"style"/"color": value}` for `border`. One shape across
+        every shorthand, deliberately -- see `expand_shorthand`'s own
+        docstring for why an earlier list-vs-dict split was replaced.
 
 Deliberate deviations and omissions, documented so they don't surprise
 Task J or Phase 3 later:
@@ -55,14 +58,20 @@ Task J or Phase 3 later:
    and its declaration is dropped; if Task J needs them it will have to
    intercept the keyword before calling into this module, not expect this
    module to pass it through.
-4. **The named-color table is not the full ~148-keyword CSS Color Level 4
-   list.** It has the 16 original CSS1/HTML keywords (deliberately including
-   the `green`/`lime` trap: CSS `green` is `#008000`, not the bright green
-   most people picture, which is `lime`) plus a handful of common extras
-   (`orange`, `pink`, `brown`, `cyan`, `magenta`, `grey`) and the two special
-   keywords `transparent` and `currentcolor`. A name outside this table is
-   invalid, even if some browser would resolve it. Extending the table is a
-   pure data change (`_COLOR_KEYWORDS`) whenever a corpus case needs it.
+4. **The named-color table is the full CSS Color Level 4 extended-keyword
+   list -- 148 entries** (the 147-keyword CSS3 SVG-derived list plus
+   `rebeccapurple`), transcribed and verified against the spec's hex values
+   (`test_color_keyword_table_is_complete` pins the count and spot-checks
+   several non-famous entries: `rebeccapurple`, `papayawhip`,
+   `mediumspringgreen`, `darkslategrey`, `cadetblue`). This table was
+   originally shipped with only 22 entries -- correct as far as they went,
+   but a missing keyword silently drops a declaration on a real page, which
+   is the exact failure mode the "computed values are not used values"
+   discipline elsewhere in this module exists to prevent; a merely-plausible
+   subset was the wrong bar for a table like this. `transparent` and
+   `currentcolor` are handled separately (deviation 5) and are not part of
+   this 148-entry table, matching how the spec itself treats them as
+   special keywords rather than named colors.
 5. **`currentcolor` is preserved as `Keyword("currentcolor")`, not resolved
    to a `Color`.** It names *this element's `color` value*, which is a
    cascade-time fact this module does not have -- the same "computed value
@@ -206,17 +215,86 @@ _FONT_SIZE_KEYWORDS = frozenset({
     "x-large", "xx-large", "xxx-large", "smaller", "larger",
 })
 
-# See deviation 4: the 16 original CSS1/HTML keywords -- correctly, `green`
-# is #008000 -- plus a handful of common extras. NOT the full CSS4 table.
+# See deviation 4: the full 148-entry CSS Color Level 4 extended-keyword
+# list (the 147-keyword CSS3 SVG-derived table plus `rebeccapurple`).
+# Deliberately includes the `green`/`lime` trap correctly: CSS `green` is
+# #008000, not the bright green most people picture, which is `lime`.
+# `transparent`/`currentcolor` are handled separately, not here.
 _COLOR_KEYWORDS: dict[str, tuple[int, int, int]] = {
-    "black": (0, 0, 0), "silver": (192, 192, 192), "gray": (128, 128, 128),
-    "white": (255, 255, 255), "maroon": (128, 0, 0), "red": (255, 0, 0),
-    "purple": (128, 0, 128), "fuchsia": (255, 0, 255), "green": (0, 128, 0),
-    "lime": (0, 255, 0), "olive": (128, 128, 0), "yellow": (255, 255, 0),
-    "navy": (0, 0, 128), "blue": (0, 0, 255), "teal": (0, 128, 128),
-    "aqua": (0, 255, 255),
-    "orange": (255, 165, 0), "pink": (255, 192, 203), "brown": (165, 42, 42),
-    "cyan": (0, 255, 255), "magenta": (255, 0, 255), "grey": (128, 128, 128),
+    "aliceblue": (240, 248, 255), "antiquewhite": (250, 235, 215),
+    "aqua": (0, 255, 255), "aquamarine": (127, 255, 212),
+    "azure": (240, 255, 255), "beige": (245, 245, 220),
+    "bisque": (255, 228, 196), "black": (0, 0, 0),
+    "blanchedalmond": (255, 235, 205), "blue": (0, 0, 255),
+    "blueviolet": (138, 43, 226), "brown": (165, 42, 42),
+    "burlywood": (222, 184, 135), "cadetblue": (95, 158, 160),
+    "chartreuse": (127, 255, 0), "chocolate": (210, 105, 30),
+    "coral": (255, 127, 80), "cornflowerblue": (100, 149, 237),
+    "cornsilk": (255, 248, 220), "crimson": (220, 20, 60),
+    "cyan": (0, 255, 255), "darkblue": (0, 0, 139),
+    "darkcyan": (0, 139, 139), "darkgoldenrod": (184, 134, 11),
+    "darkgray": (169, 169, 169), "darkgreen": (0, 100, 0),
+    "darkgrey": (169, 169, 169), "darkkhaki": (189, 183, 107),
+    "darkmagenta": (139, 0, 139), "darkolivegreen": (85, 107, 47),
+    "darkorange": (255, 140, 0), "darkorchid": (153, 50, 204),
+    "darkred": (139, 0, 0), "darksalmon": (233, 150, 122),
+    "darkseagreen": (143, 188, 143), "darkslateblue": (72, 61, 139),
+    "darkslategray": (47, 79, 79), "darkslategrey": (47, 79, 79),
+    "darkturquoise": (0, 206, 209), "darkviolet": (148, 0, 211),
+    "deeppink": (255, 20, 147), "deepskyblue": (0, 191, 255),
+    "dimgray": (105, 105, 105), "dimgrey": (105, 105, 105),
+    "dodgerblue": (30, 144, 255), "firebrick": (178, 34, 34),
+    "floralwhite": (255, 250, 240), "forestgreen": (34, 139, 34),
+    "fuchsia": (255, 0, 255), "gainsboro": (220, 220, 220),
+    "ghostwhite": (248, 248, 255), "gold": (255, 215, 0),
+    "goldenrod": (218, 165, 32), "gray": (128, 128, 128),
+    "green": (0, 128, 0), "greenyellow": (173, 255, 47),
+    "grey": (128, 128, 128), "honeydew": (240, 255, 240),
+    "hotpink": (255, 105, 180), "indianred": (205, 92, 92),
+    "indigo": (75, 0, 130), "ivory": (255, 255, 240),
+    "khaki": (240, 230, 140), "lavender": (230, 230, 250),
+    "lavenderblush": (255, 240, 245), "lawngreen": (124, 252, 0),
+    "lemonchiffon": (255, 250, 205), "lightblue": (173, 216, 230),
+    "lightcoral": (240, 128, 128), "lightcyan": (224, 255, 255),
+    "lightgoldenrodyellow": (250, 250, 210), "lightgray": (211, 211, 211),
+    "lightgreen": (144, 238, 144), "lightgrey": (211, 211, 211),
+    "lightpink": (255, 182, 193), "lightsalmon": (255, 160, 122),
+    "lightseagreen": (32, 178, 170), "lightskyblue": (135, 206, 250),
+    "lightslategray": (119, 136, 153), "lightslategrey": (119, 136, 153),
+    "lightsteelblue": (176, 196, 222), "lightyellow": (255, 255, 224),
+    "lime": (0, 255, 0), "limegreen": (50, 205, 50),
+    "linen": (250, 240, 230), "magenta": (255, 0, 255),
+    "maroon": (128, 0, 0), "mediumaquamarine": (102, 205, 170),
+    "mediumblue": (0, 0, 205), "mediumorchid": (186, 85, 211),
+    "mediumpurple": (147, 112, 219), "mediumseagreen": (60, 179, 113),
+    "mediumslateblue": (123, 104, 238), "mediumspringgreen": (0, 250, 154),
+    "mediumturquoise": (72, 209, 204), "mediumvioletred": (199, 21, 133),
+    "midnightblue": (25, 25, 112), "mintcream": (245, 255, 250),
+    "mistyrose": (255, 228, 225), "moccasin": (255, 228, 181),
+    "navajowhite": (255, 222, 173), "navy": (0, 0, 128),
+    "oldlace": (253, 245, 230), "olive": (128, 128, 0),
+    "olivedrab": (107, 142, 35), "orange": (255, 165, 0),
+    "orangered": (255, 69, 0), "orchid": (218, 112, 214),
+    "palegoldenrod": (238, 232, 170), "palegreen": (152, 251, 152),
+    "paleturquoise": (175, 238, 238), "palevioletred": (219, 112, 147),
+    "papayawhip": (255, 239, 213), "peachpuff": (255, 218, 185),
+    "peru": (205, 133, 63), "pink": (255, 192, 203),
+    "plum": (221, 160, 221), "powderblue": (176, 224, 230),
+    "purple": (128, 0, 128), "rebeccapurple": (102, 51, 153),
+    "red": (255, 0, 0), "rosybrown": (188, 143, 143),
+    "royalblue": (65, 105, 225), "saddlebrown": (139, 69, 19),
+    "salmon": (250, 128, 114), "sandybrown": (244, 164, 96),
+    "seagreen": (46, 139, 87), "seashell": (255, 245, 238),
+    "sienna": (160, 82, 45), "silver": (192, 192, 192),
+    "skyblue": (135, 206, 235), "slateblue": (106, 90, 205),
+    "slategray": (112, 128, 144), "slategrey": (112, 128, 144),
+    "snow": (255, 250, 250), "springgreen": (0, 255, 127),
+    "steelblue": (70, 130, 180), "tan": (210, 180, 140),
+    "teal": (0, 128, 128), "thistle": (216, 191, 216),
+    "tomato": (255, 99, 71), "turquoise": (64, 224, 208),
+    "violet": (238, 130, 238), "wheat": (245, 222, 179),
+    "white": (255, 255, 255), "whitesmoke": (245, 245, 245),
+    "yellow": (255, 255, 0), "yellowgreen": (154, 205, 50),
 }
 
 _HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
@@ -448,26 +526,15 @@ def _parse_width_height(tokens: list[CssToken]) -> object | None:
 # --------------------------------------------------------------------------
 
 
-def _parse_margin_or_padding(
-    tokens: list[CssToken], *, allow_auto: bool
-) -> list[object] | None:
-    groups = _split_top_level(tokens)
-    if not (1 <= len(groups) <= 4):
-        return None
-    values: list[object] = []
-    for group in groups:
-        if len(group) != 1:
-            return None
-        value = _parse_length_percentage(group[0], allow_auto=allow_auto)
-        if value is None:
-            return None
-        values.append(value)
-    return values
+_SIDES = ("top", "right", "bottom", "left")
 
 
-def _expand_sides(prefix: str, values: list[object]) -> dict[str, object]:
-    """The one-to-four-value rule: 1 -> all sides; 2 -> vertical, horizontal;
-    3 -> top, horizontal, bottom; 4 -> top, right, bottom, left.
+def _sides_from_values(values: list[object]) -> dict[str, object]:
+    """The one-to-four-value rule, expressed as a `{side: value}` dict: 1 ->
+    all sides; 2 -> vertical, horizontal; 3 -> top, horizontal, bottom;
+    4 -> top, right, bottom, left. Always returns all four keys -- unlike
+    border's components, a margin/padding shorthand can never leave a side
+    unset.
     """
     n = len(values)
     if n == 1:
@@ -481,20 +548,35 @@ def _expand_sides(prefix: str, values: list[object]) -> dict[str, object]:
     elif n == 4:
         top, right, bottom, left = values
     else:
-        raise ValueError(f"{prefix} shorthand needs 1-4 values, got {n}")
-    return {
-        f"{prefix}-top": top,
-        f"{prefix}-right": right,
-        f"{prefix}-bottom": bottom,
-        f"{prefix}-left": left,
-    }
+        raise ValueError(f"need 1-4 values, got {n}")
+    return {"top": top, "right": right, "bottom": bottom, "left": left}
+
+
+def _parse_margin_or_padding(
+    tokens: list[CssToken], *, allow_auto: bool
+) -> dict[str, object] | None:
+    """Returns a `{"top"/"right"/"bottom"/"left": value}` dict -- the same
+    `dict[str, object]` shape `_parse_border` returns, so both shorthands
+    hand `expand_shorthand` the same kind of thing. See `expand_shorthand`'s
+    docstring for why that uniformity was made a deliberate decision here.
+    """
+    groups = _split_top_level(tokens)
+    if not (1 <= len(groups) <= 4):
+        return None
+    values: list[object] = []
+    for group in groups:
+        if len(group) != 1:
+            return None
+        value = _parse_length_percentage(group[0], allow_auto=allow_auto)
+        if value is None:
+            return None
+        values.append(value)
+    return _sides_from_values(values)
 
 
 # --------------------------------------------------------------------------
 # border
 # --------------------------------------------------------------------------
-
-_BORDER_SIDES = ("top", "right", "bottom", "left")
 
 
 def _parse_border(tokens: list[CssToken]) -> dict[str, object] | None:
@@ -537,12 +619,12 @@ def _parse_border(tokens: list[CssToken]) -> dict[str, object] | None:
 
 def _expand_border(parsed: dict[str, object]) -> dict[str, object]:
     result: dict[str, object] = {}
-    for kind, key in (("width", "width"), ("style", "style"), ("color", "color")):
+    for kind in ("width", "style", "color"):
         value = parsed.get(kind)
         if value is None:
             continue
-        for side in _BORDER_SIDES:
-            result[f"border-{side}-{key}"] = value
+        for side in _SIDES:
+            result[f"border-{side}-{kind}"] = value
     return result
 
 
@@ -553,19 +635,36 @@ def _expand_border(parsed: dict[str, object]) -> dict[str, object]:
 _SHORTHANDS = frozenset({"margin", "padding", "border"})
 
 
-def expand_shorthand(name: str, parsed: object) -> dict[str, object]:
+def expand_shorthand(name: str, parsed: dict[str, object]) -> dict[str, object]:
     """Expand a shorthand's already-*parsed* components into longhand keys.
 
-    `parsed` for `"margin"`/`"padding"` is a `list[object]` of 1-4 values
-    (the one-to-four-value rule). `parsed` for `"border"` is a `dict` with
-    any subset of `"width"/"style"/"color"` keys.
+    `parsed` is always a `dict[str, object]` -- one uniform shape across
+    every shorthand this module knows about, deliberately, rather than a
+    positional `list` for margin/padding and a `dict` for border (an
+    earlier version of this module had exactly that split, and it left no
+    obvious home for a third shorthand). For `"margin"`/`"padding"`,
+    `parsed` has all four of `"top"/"right"/"bottom"/"left"` -- a
+    margin/padding shorthand can never leave a side unset, since the
+    one-to-four-value rule always produces a value for every side. For
+    `"border"`, `parsed` has any subset of `"width"/"style"/"color"` --
+    border's components genuinely can be partially specified
+    (`border: solid` sets only style).
+
+    The two shorthands still fan out differently *within* that uniform
+    input shape, and that difference is real, not accidental: a
+    margin/padding key maps to exactly one longhand
+    (`"top"` -> `margin-top`), while a border key maps to four
+    (`"width"` -> `border-{top,right,bottom,left}-width`), because that is
+    what the CSS properties themselves do -- one border-width applies
+    uniformly to all sides, while margin's four values are independently
+    four different longhands. Unifying the *dict-shaped* input was the
+    fix; unifying the fan-out itself would paper over an actual difference
+    in what the shorthands mean.
     """
-    if name == "margin":
-        return _expand_sides("margin", parsed)  # type: ignore[arg-type]
-    if name == "padding":
-        return _expand_sides("padding", parsed)  # type: ignore[arg-type]
+    if name in ("margin", "padding"):
+        return {f"{name}-{side}": parsed[side] for side in _SIDES}
     if name == "border":
-        return _expand_border(parsed)  # type: ignore[arg-type]
+        return _expand_border(parsed)
     raise ValueError(f"{name!r} is not a shorthand this module expands")
 
 
@@ -602,12 +701,12 @@ def parse_declaration_value(name: str, tokens: list[CssToken]) -> dict[str, obje
         return None if value is None else {name: value}
 
     if name == "margin":
-        values = _parse_margin_or_padding(tokens, allow_auto=True)
-        return None if values is None else expand_shorthand("margin", values)
+        sides = _parse_margin_or_padding(tokens, allow_auto=True)
+        return None if sides is None else expand_shorthand("margin", sides)
 
     if name == "padding":
-        values = _parse_margin_or_padding(tokens, allow_auto=False)
-        return None if values is None else expand_shorthand("padding", values)
+        sides = _parse_margin_or_padding(tokens, allow_auto=False)
+        return None if sides is None else expand_shorthand("padding", sides)
 
     if name == "border":
         parsed = _parse_border(tokens)
