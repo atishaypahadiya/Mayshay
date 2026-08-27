@@ -13,6 +13,8 @@ from mayshay.cssparse.values import (
     Keyword,
     Length,
     Percent,
+    WideKeyword,
+    bare_wide_keyword,
     classify_drop,
     expand_shorthand,
     parse_declaration_value as pv,
@@ -580,3 +582,51 @@ def test_every_reason_is_one_of_the_four_and_they_are_distinct():
     }
     assert seen == set(DROP_REASONS)
     assert len(DROP_REASONS) == 4
+
+
+def test_the_three_accepted_wide_keywords_parse_and_revert_does_not():
+    """`inherit`/`initial`/`unset` reach the cascade as `WideKeyword`s;
+    `revert` is dropped. All four asserted, since accepting three and
+    rejecting one cannot be told from accepting all four by a test that
+    only checks the three."""
+    for keyword in ("inherit", "initial", "unset"):
+        assert val("color", keyword) == {"color": WideKeyword(keyword)}
+    assert val("color", "revert") is None
+    assert why("color", "revert") == DROP_UNSUPPORTED_VALUE
+
+
+def test_a_wide_keyword_is_not_a_property_keyword():
+    """`WideKeyword` is deliberately a separate type from `Keyword`. A
+    caller that confused them would store the string `"inherit"` as a
+    colour, which is exactly the shape of value the cascade's
+    `_KEYWORD_VALUED` allow-list exists to prevent."""
+    assert WideKeyword("inherit") != Keyword("inherit")
+    assert not isinstance(val("color", "inherit")["color"], Keyword)
+
+
+def test_a_shorthands_wide_keyword_expands_to_every_longhand_it_governs():
+    assert val("margin", "initial") == {
+        f"margin-{side}": WideKeyword("initial")
+        for side in ("top", "right", "bottom", "left")
+    }
+    assert len(val("border", "inherit")) == 12
+    assert set(val("border-left", "unset")) == {
+        "border-left-width", "border-left-style", "border-left-color",
+    }
+
+
+def test_wide_keywords_are_matched_case_insensitively_but_only_as_ascii():
+    """`INHERIT` is the same keyword; `inheri<U+212A>` is not a keyword at
+    all. Written as an escape -- see the fold test above."""
+    assert val("color", "INHERIT") == {"color": WideKeyword("inherit")}
+    assert val("color", "inheri" + "\u212a") is None
+    assert val("color", "inheri" + "\u212a") != val("color", "inherit")
+    assert bare_wide_keyword(list(CssTokenizer("INITIAL").tokenize())) == "initial"
+    assert bare_wide_keyword(list(CssTokenizer("red").tokenize())) is None
+
+
+def test_a_wide_keyword_must_be_the_whole_value():
+    """`margin: inherit 5px` is not a wide keyword and is not valid margin
+    either, so it is dropped rather than half-interpreted."""
+    assert val("margin", "inherit 5px") is None
+    assert val("border", "1px solid inherit") is None

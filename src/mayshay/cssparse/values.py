@@ -310,6 +310,30 @@ class _Auto:
 AUTO = _Auto()
 
 
+@dataclass(frozen=True)
+class WideKeyword:
+    """A CSS-wide keyword -- `inherit`, `initial` or `unset` -- surviving to
+    the cascade unresolved.
+
+    Deliberately *not* a `Keyword`. A `Keyword` is a property-specific value
+    this module recognised and chose not to resolve further; a `WideKeyword`
+    is valid on every property and cannot be resolved here at all, because
+    `inherit` needs the parent's computed value and `initial` needs the
+    property's initial-value table, neither of which this module has. A
+    caller that treats one as the other would silently store the string
+    `"inherit"` as a colour.
+
+    `revert` is not among them: it needs origin-level rollback the cascade
+    does not model, so it stays unsupported and counted rather than faked.
+    """
+
+    name: str
+
+
+# `revert` is absent on purpose -- see `WideKeyword`.
+_ACCEPTED_WIDE_KEYWORDS = frozenset({"inherit", "initial", "unset"})
+
+
 # --------------------------------------------------------------------------
 # Keyword / unit tables
 # --------------------------------------------------------------------------
@@ -1200,6 +1224,19 @@ assert set(LONGHANDS_OF) == SUPPORTED_PROPERTIES, (
 )
 
 
+def bare_wide_keyword(tokens: list[CssToken]) -> str | None:
+    """The CSS-wide keyword this value consists of, or None.
+
+    All four are recognised, `revert` included, because a caller counting
+    what it refused needs to name it. `parse_declaration_value` accepts only
+    the three in `_ACCEPTED_WIDE_KEYWORDS`.
+    """
+    tok = _single_token([t for t in tokens if not isinstance(t, EOFToken)])
+    if isinstance(tok, Ident) and _ascii_lower(tok.value) in _WIDE_KEYWORDS:
+        return _ascii_lower(tok.value)
+    return None
+
+
 def parse_declaration_value(name: str, tokens: list[CssToken]) -> dict[str, object] | None:
     """Parse one declaration's value tokens for property `name`.
 
@@ -1212,6 +1249,19 @@ def parse_declaration_value(name: str, tokens: list[CssToken]) -> dict[str, obje
     parse = _PROPERTY_PARSERS.get(name)
     if parse is None:
         return None
+    # **The wide keywords are intercepted before the per-property parser
+    # sees them.** They are valid on every property, so no property's
+    # grammar should have to know about them, and none of them can be
+    # resolved without the cascade -- `inherit` needs the parent's computed
+    # value and `initial` needs the initial-value table. A shorthand's wide
+    # keyword sets every longhand it governs, which is why this reads
+    # `LONGHANDS_OF` rather than calling `expand_shorthand`: there are no
+    # components to expand.
+    keyword = bare_wide_keyword(tokens)
+    if keyword is not None:
+        if keyword not in _ACCEPTED_WIDE_KEYWORDS:
+            return None  # `revert`, deliberately
+        return {prop: WideKeyword(keyword) for prop in LONGHANDS_OF[name]}
     # EOFToken only ever appears here because a caller (this module's own
     # tests, most obviously) drove a `CssTokenizer` straight through to
     # completion rather than going through `cssparse.parser`, whose
@@ -1371,6 +1421,8 @@ __all__ = [
     "Keyword",
     "Length",
     "Percent",
+    "WideKeyword",
+    "bare_wide_keyword",
     "classify_drop",
     "expand_shorthand",
     "normalize_property_name",

@@ -105,10 +105,20 @@ for the first one to lose to -- where a browser resets it to `medium`. See
 Deliberate deviations and omissions
 -----------------------------------
 
-1. **`inherit`, `initial`, `unset`, `revert` are not supported.** `values.py`
-   rejects them (its deviation 3), so a declaration using one is dropped and
-   counted in `declarations_dropped`. Implementing them means intercepting
-   the keyword before the value parser sees it; it is a listed Phase 3 gap.
+1. **`inherit`, `initial` and `unset` are supported; `revert` is not.**
+   `values.py` intercepts the three before any per-property parser sees
+   them and hands back a `WideKeyword`; `_resolve_wide_keywords` decides
+   what each names, which is the earliest point either the parent's
+   computed value or `INITIAL_SPECIFIED` exists. A shorthand's wide keyword
+   sets every longhand it governs.
+
+   `revert` needs origin-level rollback this cascade does not model -- it
+   would have to re-run the cascade with the declaration's own origin and
+   everything above it removed, and the cascade keeps no per-origin
+   history. Faking it as `unset` is wrong in the common case (an author
+   `revert` should fall back to the UA rule, not to the initial value), so
+   it stays dropped, classified `unsupported-value`, and counted in
+   `wide_keyword_revert`.
 2. **`@media` is evaluated when a `viewport` is passed; every other at-rule
    is counted and skipped** -- `at_rules_skipped`, and `at_rule_<name>` per
    name. Rules inside a non-matching `@media` are absent from the cascade
@@ -236,6 +246,8 @@ from mayshay.cssparse.values import (
     Keyword,
     Length,
     Percent,
+    WideKeyword,
+    bare_wide_keyword,
     classify_drop,
     normalize_property_name,
     parse_declaration_value,
@@ -947,6 +959,13 @@ def _cascade_declarations(
             metrics["declarations_dropped"] += 1
             reason = classify_drop(decl.name, decl.value)
             metrics[f"declarations_dropped_{reason.replace('-', '_')}"] += 1
+            if bare_wide_keyword(decl.value) == "revert":
+                # Named rather than merely counted: `revert` is the one
+                # wide keyword this cascade refuses, and it refuses it for a
+                # reason (origin-level rollback it does not model) rather
+                # than for want of a branch. A number is how that stays a
+                # decision instead of becoming an absence.
+                metrics["wide_keyword_revert"] += 1
             continue
         longhands = _reset_omitted_longhands(decl.name, longhands)
         rank = important_rank if decl.important else normal_rank
@@ -1108,6 +1127,7 @@ def _compute_style(
     """Compute one element's style. The order of the three steps below is
     the whole subject of this module."""
     style = _inherit_from(parent)
+    declared = _resolve_wide_keywords(declared, parent)
 
     # 1. font-size, against the PARENT's. Nothing else may be computed
     #    first, because everything else needs the answer.
@@ -1182,6 +1202,41 @@ def _zero_widths_of_borderless_sides(style: ComputedStyle) -> None:
     for style_prop, width_prop in zip(_BORDER_STYLE_PROPS, _BORDER_WIDTH_PROPS):
         if style.get(style_prop) in _BORDERLESS_STYLES:
             style.set(width_prop, _ZERO_LENGTH)
+
+
+def _resolve_wide_keywords(
+    declared: dict[str, object], parent: ComputedStyle
+) -> dict[str, object]:
+    """Replace every `WideKeyword` with the value it names.
+
+    `values.py` cannot do this -- `inherit` needs the parent's computed
+    value and `initial` needs `INITIAL_SPECIFIED`, and it has neither -- so
+    it hands the keyword through and this is where the three are decided:
+
+        initial   the property's initial *specified* value, which then
+                  computes normally (`border-*-color: initial` is
+                  `currentcolor`, and resolves to this element's colour).
+        inherit   the parent's *computed* value, taken as-is.
+        unset     `inherit` for an inherited property, `initial` otherwise.
+
+    Running the parent's already-computed value back through
+    `_computed_value` is harmless -- a px `Length` resolves to itself, and
+    every other computed shape falls through untouched -- so the two paths
+    do not need to be kept apart the way the two `em` bases do.
+    """
+    if not any(isinstance(v, WideKeyword) for v in declared.values()):
+        return declared
+    out: dict[str, object] = {}
+    for prop, value in declared.items():
+        if not isinstance(value, WideKeyword):
+            out[prop] = value
+        elif value.name == "inherit" or (
+            value.name == "unset" and prop in INHERITED
+        ):
+            out[prop] = parent.get(prop)
+        else:
+            out[prop] = INITIAL_SPECIFIED[prop]
+    return out
 
 
 def _inherit_from(parent: ComputedStyle) -> ComputedStyle:

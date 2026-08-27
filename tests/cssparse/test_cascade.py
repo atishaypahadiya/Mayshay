@@ -1776,3 +1776,104 @@ def test_font_family_is_recorded_as_a_list_in_source_order():
     # The initial value says "unspecified", and is distinguishable from any
     # declared family.
     assert ComputedStyle().font_family == ()
+
+
+# --------------------------------------------------------------------------
+# The CSS-wide keywords (Phase 3 Task A2, deliverable 5)
+# --------------------------------------------------------------------------
+
+
+def test_inherit_takes_the_parents_computed_value_on_a_non_inherited_property():
+    """`width` does not inherit, so `width: inherit` is the only way a child
+    gets its parent's. Injection: treating `inherit` as `initial` leaves the
+    child `auto`; treating it as "do nothing" leaves it `auto` too, which is
+    why the parent's value is a concrete 100px rather than the initial."""
+    doc = styled(NESTED, "div { width: 100px } span { width: inherit }")
+    assert find(doc, "span").computed_style.width == Length(100, "px")
+    # ...and without the declaration the child is back at the initial value,
+    # so this is a test of `inherit` and not of `width` inheriting.
+    plain = styled(NESTED, "div { width: 100px }")
+    assert find(plain, "span").computed_style.width is AUTO
+
+
+def test_initial_beats_an_inherited_value_and_an_earlier_declaration():
+    """Both the paths `initial` has to cut through: inheritance, and a
+    winning declaration on the element itself."""
+    doc = styled(NESTED, "div { color: red } span { color: initial }")
+    assert find(doc, "span").computed_style.color == Color(0, 0, 0, 1.0)
+
+    style = style_of(BODY_P, "p", "p { color: red } p { color: initial }")
+    assert style.color == Color(0, 0, 0, 1.0)
+
+
+def test_unset_is_inherit_for_an_inherited_property_and_initial_otherwise():
+    """The whole definition of `unset`, and it needs both halves in one
+    document: a single property cannot distinguish it from either of the
+    other two keywords."""
+    doc = styled(
+        NESTED,
+        "div { color: red; width: 100px }"
+        " span { color: unset; width: unset }",
+    )
+    span = find(doc, "span").computed_style
+    assert span.color == Color(255, 0, 0, 1.0)   # inherited -> inherit
+    assert span.width is AUTO                    # not inherited -> initial
+
+
+def test_a_shorthands_wide_keyword_sets_every_longhand_it_governs():
+    """`border: initial` is twelve longhands, not zero. Injection: returning
+    `{name: WideKeyword(...)}` keyed on the shorthand itself sets nothing at
+    all, because no `ComputedStyle` field is called `border`."""
+    style = style_of(
+        BODY_P, "p", "p { border: 5px solid red } p { border: initial }"
+    )
+    for side in ("top", "right", "bottom", "left"):
+        assert style.get(f"border-{side}-style") == "none", side
+        assert style.get(f"border-{side}-width") == Length(0, "px"), side
+
+    inherited = find(
+        styled(NESTED, "div { margin: 7px } span { margin: inherit }"), "span"
+    ).computed_style
+    assert inherited.margin_top == Length(7, "px")
+    assert inherited.margin_left == Length(7, "px")
+
+
+def test_font_size_inherit_and_initial_resolve_against_the_right_base():
+    """`font-size` is the one property with its own computed-value path, so
+    the wide keywords have to work there too and not only in
+    `_compute_rest`."""
+    doc = styled(NESTED, "div { font-size: 20px } span { font-size: inherit }")
+    assert find(doc, "span").computed_style.font_size == Length(20, "px")
+
+    doc = styled(NESTED, "div { font-size: 20px } span { font-size: initial }")
+    assert find(doc, "span").computed_style.font_size == Length(16, "px")
+
+
+def test_revert_is_still_dropped_and_named():
+    """It needs origin-level rollback the cascade does not model, and faking
+    it as `unset` is wrong in the common case -- an author `revert` should
+    fall back to the UA rule, not to the initial value. Dropped, classified,
+    and counted rather than silently absent.
+
+    Both sides asserted: `revert` leaves the earlier declaration standing
+    where `initial` would not.
+    """
+    m = metrics_for(BODY_P, "p { color: revert }")
+    assert m["wide_keyword_revert"] == 1
+    assert m["declarations_dropped_unsupported_value"] == 1
+
+    reverted = style_of(BODY_P, "p", "p { color: red } p { color: revert }")
+    assert reverted.color == Color(255, 0, 0, 1.0)
+    initialled = style_of(BODY_P, "p", "p { color: red } p { color: initial }")
+    assert initialled.color == Color(0, 0, 0, 1.0)
+    assert metrics_for(BODY_P, "p { color: initial }")["wide_keyword_revert"] == 0
+
+
+def test_a_wide_keyword_on_the_root_element_falls_back_to_the_initial_value():
+    """The root has no parent to inherit from, so `inherit` there is the
+    initial value -- and must not raise looking for one."""
+    doc = styled("<!DOCTYPE html><html><body></body></html>",
+                 "html { color: inherit; font-size: inherit }")
+    html = find(doc, "html").computed_style
+    assert html.color == Color(0, 0, 0, 1.0)
+    assert html.font_size == Length(16, "px")
