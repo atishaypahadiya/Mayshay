@@ -17,9 +17,12 @@ hide an equal-sized swap.
     .venv/bin/python scripts/error_report.py --diff before.txt after.txt
 
 "Curated" cases and TREE_ERROR_CODES are not redefined here: both come from
-tests/htmlparse/test_parse_errors.py, imported rather than reimplemented, so
-this report can never select a different set of cases than the pytest suite
-actually checks.
+tests/support/parse_errors.py, imported rather than reimplemented, so this
+report can never select a different set of cases than the pytest suite
+(tests/htmlparse/test_parse_errors.py, which imports the same module) actually
+checks. That module is deliberately pytest-free -- importing a test_*.py file
+here would drag in pytest and pay for that module's test-collection side
+effects (building its parametrize list) just to run a measurement script.
 
 Agreement is a multiset comparison of codes, positions never compared (see
 test_corpus_error_codes_match_as_a_multiset for why). A disagreeing case is
@@ -29,6 +32,13 @@ classified into one or both of:
 Task B found these call for opposite responses -- stop emitting the wrong
 thing, versus start emitting the missing thing -- so they are always reported
 and diffed separately, never collapsed into one "wrong" bucket.
+
+A TreeBuilder crash is treated as emitting no codes at all, which -- since a
+curated case's expected codes are never empty -- always lands the case in
+"missing" and never in "extra". This convention is a judgement call (there is
+no surviving artifact of Task B's original throwaway script to confirm it
+matches); note it here so a future reader does not have to guess at it the
+way this task had to guess at Task B's.
 """
 
 from __future__ import annotations
@@ -42,8 +52,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src")]
 
 from mayshay.htmlparse.treebuilder import TreeBuilder  # noqa: E402
-from tests.htmlparse.test_parse_errors import curated_codes  # noqa: E402
 from tests.support.dat import TREE_DIR, load_tree_tests  # noqa: E402
+from tests.support.parse_errors import curated_codes  # noqa: E402
 
 
 def case_id(test) -> str:
@@ -56,15 +66,16 @@ def case_id(test) -> str:
     return f"{path.parent.name}/{path.name}:{test.index}"
 
 
-def run() -> tuple[list[str], list[str], list[str]]:
-    """Return (agreeing, extra, missing) case ids, across the whole corpus.
+def run(files: tuple[str, ...]) -> tuple[list[str], list[str], list[str]]:
+    """Return (agreeing, extra, missing) case ids, across the given files (or
+    the whole corpus if `files` is empty).
 
     extra and missing are not mutually exclusive: a single disagreeing case
     can both emit a code the corpus doesn't expect and fail to emit one it
     does, and would then show up in both lists.
     """
     agreeing, extra, missing = [], [], []
-    for case in load_tree_tests():
+    for case in load_tree_tests(*files):
         expected = curated_codes(case)
         if expected is None:
             continue
@@ -74,7 +85,7 @@ def run() -> tuple[list[str], list[str], list[str]]:
             tb.build()
             actual = [code for _, code in tb.errors]
         except Exception:
-            actual = []  # a crash agrees with nothing
+            actual = []  # a crash agrees with nothing; see module docstring
         actual_c = collections.Counter(actual)
         expected_c = collections.Counter(expected)
         if actual_c == expected_c:
@@ -92,6 +103,9 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--out", type=Path, help="write the sorted disagreeing ids here")
+    ap.add_argument(
+        "--files", nargs="*", default=[], help="limit to these .dat file names"
+    )
     ap.add_argument(
         "--diff",
         nargs=2,
@@ -121,7 +135,7 @@ def main() -> int:
         )
         return 2
 
-    agreeing, extra, missing = run()
+    agreeing, extra, missing = run(tuple(args.files))
     disagreeing = sorted(set(extra) | set(missing))
     total = len(agreeing) + len(disagreeing)
     print(f"parse-error agreement: {len(agreeing)}/{total}")
