@@ -244,6 +244,36 @@ That is the unstated-population shape again, and it happened **four commits
 after this file was written**, in code by the person who wrote it, while
 the rule was fresh.
 
+### Instance eleven, one message later
+
+Planning Task C, the coordinator was told:
+
+> A percentage margin resolving to zero is still a margin for adjoining
+> purposes — it doesn't make a block "empty" for the collapse-through rule
+> the way no margin at all would.
+
+Measured against Chrome 151 before it went into a brief: false. No declared
+margin, `margin: 0` and `margin: 0%` behave identically, because CSS 2.1
+section 8.3.1's collapse-through condition names borders, padding, height
+and line boxes and says nothing about the box's own margins. All three give
+a 30px gap between siblings with `margin: 30px 0`.
+
+Two things make this worth recording rather than quietly fixing.
+
+It was asserted from **reading** section 8.3.1 rather than running it —
+the exact defect CLAUDE.md's first rule names, from someone who knows the
+rule well. And it arrived in the same message that argued for keeping the
+checks mechanical rather than relying on vigilance. The message was right
+and its own example proved it in the same breath.
+
+The correction was also an improvement: the *non-zero* percentage margin on
+an empty block is a better test than the zero case, because it requires the
+percentage-against-width resolution and the collapse-through chain to be
+correct simultaneously. Measuring did not just reject the claim, it
+produced the fixture the plan actually needed. That is the usual pattern
+here and it is worth expecting: the second derivation tends to pay for
+itself twice.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -255,6 +285,7 @@ Every instance in this document was caught by **measurement**:
 | 3 `getBoxModel` | asking `getContentQuads` the same question |
 | 4 var() denominator | an implementer reproducing the figure and disagreeing |
 | 10 `boxes_inline_split` | noticing 34 splits produced 2 fragments, and looking |
+| 11 zero-margin collapse-through | probing Chrome before writing the claim into a brief |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced
