@@ -227,7 +227,8 @@ def _consume_balanced(
     Shared body for 5.5.7 (simple block, closer is `}`/`]`/`)`) and 5.5.8
     (function, closer is always `)`). `include_closer` is False only for the
     outermost `{...}` of a rule's block, whose contents the caller wants
-    without the surrounding braces -- see deviation 2.
+    without the surrounding braces -- see the representation note under
+    deviation 1 in the module docstring (this is not itself a deviation).
     """
     out: list[CssToken] = []
     while True:
@@ -251,7 +252,8 @@ def _consume_component_value(
 
     A plain token returns itself. A bracket opener or a function token
     returns itself plus every token of its matching group -- see deviation 1
-    for why that group is a flat list rather than a nested object.
+    (component values as flat token lists, not a nested tree) for why that
+    group is a flat list rather than a nested object.
     """
     tok = cursor.next()
     if isinstance(tok, Function):
@@ -385,8 +387,9 @@ def _consume_list_of_declarations(
         if isinstance(tok, AtKeyword):
             cursor.next()
             # Consumed for its side effect on the cursor only -- see
-            # deviation 3. A malformed or unknown at-rule here still cannot
-            # break the declarations before or after it.
+            # deviation 2 (parse_declarations's list[Declaration] return type
+            # has no room for a nested at-rule). A malformed or unknown
+            # at-rule here still cannot break the declarations before or after it.
             _consume_at_rule(cursor, tok, errors, metrics)
             continue
         if isinstance(tok, Ident):
@@ -489,7 +492,8 @@ class CssParser:
         rules = CssParser(source).parse_stylesheet()
 
     Mirrors `htmlparse.TreeBuilder`: owns a `CssTokenizer` (`self.tokenizer`)
-    but keeps its own `errors`/`metrics` -- see deviation 6.
+    but keeps its own `errors`/`metrics` -- see deviation 5 (errors/metrics
+    kept separate from the `CssTokenizer` it drives).
     """
 
     def __init__(self, source: str) -> None:
