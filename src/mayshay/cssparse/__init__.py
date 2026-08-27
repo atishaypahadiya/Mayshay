@@ -5,8 +5,8 @@ The documented entry point, per CLAUDE.md:
 
     from mayshay.cssparse import CssTokenizer, CssParser, parse_stylesheet
 
-Re-exports only; every name below is defined in `tokenizer.py` or
-`parser.py`.
+Re-exports only; every name below is defined in `tokenizer.py`,
+`parser.py` or `selectors.py`.
 
 Hand-rolled, and required to stay that way: `tinycss2`, `cssutils` and
 `cssselect` are forbidden in `src/mayshay/`.
@@ -19,6 +19,22 @@ from mayshay.cssparse.parser import (
     QualifiedRule,
     parse_declarations,
     parse_stylesheet,
+)
+from mayshay.cssparse.selectors import (
+    AttributeSelector,
+    ClassSelector,
+    Complex,
+    Compound,
+    IdSelector,
+    PseudoClassSelector,
+    PseudoElementSelector,
+    SelectorList,
+    SelectorParseError,
+    Simple,
+    TypeSelector,
+    UniversalSelector,
+    parse_selector_list,
+    specificity,
 )
 from mayshay.cssparse.tokenizer import (
     AtKeyword,
@@ -53,12 +69,16 @@ from mayshay.cssparse.tokenizer import (
 __all__ = [
     "AtKeyword",
     "AtRule",
+    "AttributeSelector",
     "BadString",
     "BadUrl",
     "CDC",
     "CDO",
+    "ClassSelector",
     "Colon",
     "Comma",
+    "Complex",
+    "Compound",
     "CssParser",
     "CssToken",
     "CssTokenizer",
@@ -68,20 +88,30 @@ __all__ = [
     "EOFToken",
     "Function",
     "Hash",
+    "IdSelector",
     "Ident",
     "LBrace",
     "LBracket",
     "LParen",
     "Number",
     "Percentage",
+    "PseudoClassSelector",
+    "PseudoElementSelector",
     "QualifiedRule",
     "RBrace",
     "RBracket",
     "RParen",
+    "SelectorList",
+    "SelectorParseError",
     "Semicolon",
+    "Simple",
     "String",
+    "TypeSelector",
+    "UniversalSelector",
     "Url",
     "Whitespace",
     "parse_declarations",
+    "parse_selector_list",
     "parse_stylesheet",
+    "specificity",
 ]
