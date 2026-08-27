@@ -320,7 +320,21 @@ def _build(
     for child in node.children:
         children.extend(_build(child, ids, metrics, non_comparable))
 
-    if box.is_inline_level:
+    # `display: inline` splits around a block-level child; the *atomic*
+    # inline-level boxes do not. `inline-block`, `inline-flex` and
+    # `inline-table` are inline-level on the outside and block containers on
+    # the inside (CSS Display 3 section 2.1) -- they establish their own
+    # formatting context, so a block child stays inside rather than breaking
+    # them in two. `INLINE_LEVEL` is the wrong test here and was the test
+    # used: it answers "does this participate in an inline formatting
+    # context?", not "is this an inline box?".
+    #
+    # Measured on the corpus by wrapping the split function: 3 boxes took
+    # the splitting path that should not have -- 2 `inline-flex` and 1
+    # `inline-block`, all on Wikipedia -- so one of the two boxes Task B
+    # reported as `boxes_inline_split` and one of the two it reported as
+    # `boxes_inline_dissolved` were neither.
+    if box.display == "inline":
         box.children = children
         return _split_inline_around_blocks(box, metrics, non_comparable)
 

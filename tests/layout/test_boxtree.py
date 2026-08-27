@@ -188,6 +188,47 @@ def test_an_inline_containing_a_block_is_split_around_it():
     assert len({f.path for f in frags}) == 1
 
 
+def test_an_atomic_inline_level_box_is_not_split_around_a_block_child():
+    """`inline-block`, `inline-flex` and `inline-table` are inline-level on
+    the outside and block containers on the inside (CSS Display 3 section
+    2.1). A block-level child stays inside one; it does not break it in two
+    and it does not dissolve it.
+
+    The original test was `box.is_inline_level`, which answers "does this
+    participate in an inline formatting context?" -- true for all four
+    inline-level displays -- rather than "is this an inline box?", which is
+    true only of `display: inline`. Measured on the corpus by wrapping the
+    split function: 3 boxes took the splitting path wrongly, 2 `inline-flex`
+    and 1 `inline-block`, all on Wikipedia. One of them was one of the two
+    boxes counted as `boxes_inline_split` and another was one of the two
+    counted as `boxes_inline_dissolved`, so both of those figures were
+    over-counts.
+
+    The negative half is `test_an_inline_containing_a_block_is_split_around_it`
+    above: the same markup with `display: inline` still splits, so this is
+    not a test of "nothing splits any more".
+    """
+    for display in ("inline-block", "inline-flex", "inline-table"):
+        root, metrics = built(
+            "<div><span id=a>a<div>b</div>c</span></div>",
+            f"#a {{ display: {display} }}",
+        )
+        assert metrics["boxes_inline_split"] == 0, display
+        assert metrics["boxes_inline_fragments"] == 0, display
+        assert metrics["boxes_inline_dissolved"] == 0, display
+        # One box, keeping its identity, with the block child inside it.
+        boxes = [b for b in root.walk() if b.path and b.path.endswith("/span[1]")]
+        assert len(boxes) == 1, display
+        assert boxes[0].display == display
+        assert boxes[0].fragment == 0
+        # And it is a block container inside: the two inline runs around the
+        # block child are wrapped, exactly as in any block container.
+        assert [b.display for b in boxes[0].children] == ["block", "block", "block"]
+        assert [b.origin for b in boxes[0].children] == [
+            "anonymous", "element", "anonymous",
+        ]
+
+
 def test_an_inline_containing_only_inlines_is_not_split():
     root, metrics = built("<div><span>a<em>b</em>c</span></div>")
     assert metrics["boxes_inline_split"] == 0
@@ -272,8 +313,14 @@ def test_an_inline_with_only_block_children_dissolves_rather_than_splits():
     no inline content to break. The span contributes no box at all.
 
     Counted separately from a real split because one name for both
-    over-claims: the corpus has 34 of these shapes and only 2 of them
-    produce a fragment. It matters for the Chrome comparison too -- a
+    over-claims. Re-measured in Task C after atomic inline-level boxes
+    stopped taking the splitting path: the corpus now has **31 dissolved
+    inlines and no splits at all** (hn 30, Wikipedia 1, example.com 0) --
+    down from 32 dissolved and 2 splits, because 2 `inline-flex` boxes and
+    1 `inline-block` were being split or dissolved and are neither. The 34
+    figure in `docs/measurement-hazards.md` predates both corrections and
+    describes a third population again. It matters for the Chrome
+    comparison too -- a
     dissolved inline has no box on our side while CDP still answers
     getBoxModel for that node, so it is a known non-comparable rather than
     a mismatch.
