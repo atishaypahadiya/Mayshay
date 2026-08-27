@@ -80,16 +80,6 @@ def simples(src, index=0):
     return sel(src).selectors[0].compounds[index].simples
 
 
-def shape(src):
-    """A selector list reduced to structure alone, dropping the source
-    positions -- so two spellings of the same selector can be compared.
-    """
-    return [
-        ([c.simples for c in selector.compounds], selector.combinators)
-        for selector in sel(src).selectors
-    ]
-
-
 # Whitespace. The brief's two whitespace tests are satisfied by an
 # implementation that strips whitespace and one that keeps too much of it, so
 # each direction is pinned by structure and not only by a combinator list.
@@ -120,7 +110,7 @@ def test_whitespace_around_an_explicit_combinator_is_absorbed():
     spaced = sel("div > p").selectors[0]
     assert spaced.combinators == [">"]
     assert len(spaced.compounds) == 2
-    assert shape("div > p") == shape("div>p") == shape("div\n\t>\n\tp")
+    assert sel("div > p") == sel("div>p") == sel("div\n\t>\n\tp")
 
 
 def test_whitespace_around_commas_is_not_a_combinator():
@@ -348,8 +338,8 @@ def test_a_prelude_without_a_trailing_eof_token_parses_identically():
 
 
 def test_leading_and_trailing_whitespace_is_not_a_combinator():
-    assert shape("  div > p  ") == shape("div>p")
-    assert shape("\n a , b \n") == shape("a,b")
+    assert sel("  div > p  ") == sel("div>p")
+    assert sel("\n a , b \n") == sel("a,b")
 
 
 def test_specificity_accepts_simple_and_compound_selectors():
@@ -364,6 +354,95 @@ def test_specificity_rejects_a_selector_list():
     """
     with pytest.raises(TypeError):
         specificity(sel("a, b"))
+
+
+def test_bare_where_is_an_unknown_pseudo_class_not_the_functional_one():
+    """Only the *functional* `:where()` has zero specificity (Selectors 4
+    section 17). A bare `:where`, with no argument, is just an unknown
+    pseudo-class that will never match, and counts (0, 1, 0) like any
+    other. `selectors is not None` -- not the name -- is the test for
+    "written with an argument list".
+    """
+    assert specificity(sel(":where").selectors[0]) == (0, 1, 0)
+    assert specificity(sel(":where()").selectors[0]) == (0, 0, 0)
+    assert specificity(sel(":where(a)").selectors[0]) == (0, 0, 0)
+    assert specificity(sel(":not").selectors[0]) == (0, 1, 0)
+    assert specificity(sel(":is").selectors[0]) == (0, 1, 0)
+
+
+def test_matches_is_an_alias_for_is():
+    """The pre-`:is()` spelling, still shipped everywhere -- same nested
+    parse, same specificity, same forgiving argument list.
+    """
+    assert specificity(sel(":matches(#i, p)").selectors[0]) == (1, 0, 0)
+    assert len(simples(":matches(p, %%bad%%)")[0].selectors.selectors) == 1
+
+
+def test_unterminated_functional_pseudo_element_blames_the_right_thing():
+    """`::part(x` is rejected because `::part()` is unsupported, not
+    because its argument is unterminated -- it is not a pseudo-class and
+    its argument is not why we reject it.
+    """
+    for src in ("::part(x)", "::part(x"):
+        with pytest.raises(SelectorParseError) as excinfo:
+            sel(src)
+        assert "functional pseudo-element" in str(excinfo.value)
+    # ...but a real unterminated pseudo-*class* argument still says so.
+    with pytest.raises(SelectorParseError) as excinfo:
+        sel(":not(a")
+    assert "unterminated" in str(excinfo.value)
+
+
+# Equality and hashing -- deviation 10. Task H keys rules by their rightmost
+# compound, so these are load-bearing, not cosmetic.
+
+
+def test_pos_is_excluded_from_equality_but_still_recorded():
+    assert sel("p") == sel("   p")
+    assert sel("p").selectors[0].pos == 0
+    assert sel("   p").selectors[0].pos == 3
+    assert sel("p").selectors[0].compounds[0].pos == 0
+    assert sel("   p").selectors[0].compounds[0].pos == 3
+
+
+@pytest.mark.parametrize("src", [
+    "*", "p", ".c", "#i", "[a]", '[a~="v" i]', ":hover", ":nth-child(2n+1)",
+    ":not(.a, #b)", "::before", "div > p .c + a", "a, b, c",
+])
+def test_every_selector_structure_is_hashable(src):
+    """A plain `@dataclass` with `eq=True` sets `__hash__` to None; each
+    structure defines its own.
+    """
+    parsed = sel(src)
+    hash(parsed)
+    for selector in parsed.selectors:
+        hash(selector)
+        for compound in selector.compounds:
+            hash(compound)
+            for simple in compound.simples:
+                hash(simple)
+
+
+def test_equal_selectors_hash_equal_and_key_the_same_dict_entry():
+    a, b = sel("  div > p.c  ").selectors[0], sel("div>p.c").selectors[0]
+    assert a == b and hash(a) == hash(b)
+    assert len({a, b}) == 1
+    assert {a: "rule"}[b] == "rule"
+    # The rightmost compound is what task H will index on.
+    assert {a.compounds[-1]: 1}[sel("span p.c").selectors[0].compounds[-1]] == 1
+
+
+def test_different_selectors_are_not_conflated_by_the_hash():
+    """The hash is allowed to collide; equality is not allowed to."""
+    distinct = [sel(s).selectors[0] for s in
+                ("a b", "ab", "a > b", "a + b", "a.b", "a#b", "[a]", "[a=b]")]
+    assert len(set(distinct)) == len(distinct)
+    # Argument tokens are outside PseudoClassSelector.__hash__ (they are
+    # unhashable dataclasses), so these two may collide -- but must not be
+    # equal, and must not merge in a dict.
+    one, two = sel(":nth-child(1)").selectors[0], sel(":nth-child(2)").selectors[0]
+    assert one != two
+    assert len({one, two}) == 2
 
 
 def test_specificity_never_carries_between_columns():

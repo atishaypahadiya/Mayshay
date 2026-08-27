@@ -38,14 +38,28 @@ later:
 
 1. **The match operators `~=`, `|=`, `^=`, `$=` and `*=` are reassembled
    from two `Delim` tokens**, because the current css-syntax spec has no
-   `<substring-match-token>` family -- see deviation 7 in
-   `tokenizer.py`. The two delims must be *adjacent in the source*, which
-   `_adjacent` checks by comparing `pos`, so `[a ~= v]` parses and
-   `[a ~ = v]` does not: whitespace is allowed around the operator but not
-   inside it, exactly as when it was one token. `pos` comparison rather
-   than mere list adjacency also rejects `[a~/**/=v]`, whose comment the
-   tokenizer has already dropped. Tokens with `pos == -1` (hand-built, not
-   tokenized) are treated as adjacent, since there is nothing to check.
+   `<substring-match-token>` family -- see deviation 7 in `tokenizer.py`.
+   The two delims must be adjacent *in the source*, which `_adjacent`
+   checks by comparing `pos`: `[a ~= v]` parses (whitespace is allowed
+   around the operator), `[a ~ = v]` does not (nor inside it), and neither
+   does `[a~/**/=v]`, whose comment the tokenizer has already dropped.
+
+   **Rejecting that last form is a deliberate divergence from the spec,
+   not conformance to it.** By the letter of the spec it should parse:
+   Selectors 4 section 16 forbids only "white space" between the two
+   halves, and a comment is not a `<whitespace-token>`; css-syntax-3
+   section 9 says a preserved comment's location "must have no effect on
+   the parsing step"; and section 9's table of places a comment may not be
+   inserted has no `~`/`|`/`^`/`$`/`*` row, so the spec asserts that `~=`
+   and `~/**/=` tokenize identically. Both major engines disagree and
+   still lex the operator at the character level: Blink's
+   `css_tokenizer.cc` does `case '~': if (ConsumeIfNext('='))`, and
+   Gecko/Servo's `cssparser/tokenizer.rs` does `starts_with(b"~=")`. We
+   follow the engines, because what an author's stylesheet means is set by
+   what ships. Do not "fix" this back to the spec letter without also
+   changing the test that pins it -- it is browser parity on purpose.
+   Tokens with `pos == -1` (hand-built, never tokenized) are treated as
+   adjacent, since there is nothing to check.
 2. **Type and attribute names are ASCII-lowercased at parse time; class,
    id and attribute *values* are not.** In an HTML document element and
    attribute names match ASCII case-insensitively while class and id are
@@ -56,8 +70,10 @@ later:
    content and stores `clippath`, so the two are consistent. Revisit
    together if SVG namespaces ever land. Pseudo-class and pseudo-element
    names are ASCII case-insensitive unconditionally and are always folded.
-3. **`:not()`, `:is()` and `:where()` parse their argument as a nested
-   selector list** and carry it in `PseudoClassSelector.selectors`, which
+3. **`:not()`, `:is()`, `:where()` and `:matches()` parse their argument
+   as a nested selector list** (`:matches()` is the pre-`:is()` spelling of
+   the same thing, still shipped by every engine, and is treated as an
+   alias of it throughout -- including its forgiving argument list) and carry it in `PseudoClassSelector.selectors`, which
    makes their Level 4 specificity rules (section 17: the most specific
    argument for `:not()`/`:is()`, zero for `:where()`) fall out of
    `specificity`. `:is()` and `:where()` take a `<forgiving-selector-list>`,
@@ -84,11 +100,18 @@ later:
    are the one construct where "parse it and never match it" is wrong: both
    change what the compound applies to, and neither is representable by
    `PseudoElementSelector`, which carries no argument.
-7. **A compound's ordering rules are enforced**: a type or universal
-   selector may only be the first simple in its compound, and a
-   pseudo-element may only be followed by pseudo-classes (which also means
-   only one pseudo-element per compound). `[a]div` and `::before.c` are
-   parse errors, per the `<compound-selector>` grammar in section 4.3.
+7. **A compound's ordering rules are enforced, and one of the two is
+   stricter than the grammar.** That a type or universal selector may only
+   be the first simple in its compound *is* the `<compound-selector>`
+   grammar of section 4.3, so `[a]div` and `.c*` are genuinely invalid.
+   That only pseudo-classes may follow a pseudo-element -- which also caps
+   a compound at one pseudo-element -- is a scope limit we chose, not
+   something the grammar forbids: section 16's `<pseudo-compound-selector>*`
+   allows stacked pseudo-elements, so `::before::after` and `::before.c`
+   are rejected here and accepted by the spec. Nothing downstream can
+   represent or paint a stacked pseudo-element, and failing loudly beats
+   parsing one into a shape task H would have to silently ignore. Revisit
+   if pseudo-element stacking ever matters.
 8. **`specificity()` accepts a `Simple`, a `Compound` or a `Complex`, and
    rejects a `SelectorList` with `TypeError`.** A selector list has no
    single specificity -- the cascade compares one *selector* at a time, and
@@ -100,6 +123,30 @@ later:
    reports end of input as `None` (and treats `EOFToken` as end of input),
    because selector parsing has no error-recovery mode in which consuming a
    synthesized EOF token would be useful.
+10. **`pos` is excluded from equality, and every structure is hashable.**
+   `Compound.pos` and `Complex.pos` are `field(compare=False)`, so two
+   structurally identical selectors written at different source offsets
+   compare equal; `pos` remains for error messages and metrics, which is
+   all it was ever for. Each structure also defines `__hash__` in its own
+   class body -- a plain `@dataclass` with `eq=True` sets `__hash__` to
+   None -- because task H indexes rules by their rightmost compound, and a
+   dict keyed on compounds is the natural shape for that.
+
+   Two consequences worth knowing. These are mutable objects carrying a
+   value hash, the hazard `dataclasses` names `unsafe_hash`: a structure
+   used as a dict key must not be mutated afterwards. The parser builds
+   each one once and never touches it again, and nothing else should
+   start. And `PseudoClassSelector.__hash__` covers the *name* only,
+   because `argument` holds `CssToken`s, which are themselves unhashable
+   dataclasses -- so `:nth-child(1)` and `:nth-child(2)` collide in a dict
+   while still comparing unequal. That is correct, just less selective.
+
+   This departs from `parser.py`, whose `pos` does participate in
+   equality, and the difference is what the objects are for: a
+   `QualifiedRule` is a stream artifact whose position is part of what a
+   test asserts about it, while a selector is a *value* that tasks H and J
+   compare and key on, where two identical selectors from different
+   offsets comparing unequal is a bug waiting to happen.
 """
 
 from __future__ import annotations
@@ -187,10 +234,16 @@ class TypeSelector:
 
     name: str
 
+    def __hash__(self) -> int:
+        return hash((TypeSelector, self.name))
+
 
 @dataclass
 class UniversalSelector:
     """`*`. Contributes nothing to specificity."""
+
+    def __hash__(self) -> int:
+        return hash(UniversalSelector)
 
 
 @dataclass
@@ -199,12 +252,18 @@ class ClassSelector:
 
     name: str
 
+    def __hash__(self) -> int:
+        return hash((ClassSelector, self.name))
+
 
 @dataclass
 class IdSelector:
     """`#main`. Case-sensitive, so the name is kept as written."""
 
     name: str
+
+    def __hash__(self) -> int:
+        return hash((IdSelector, self.name))
 
 
 @dataclass
@@ -222,6 +281,10 @@ class AttributeSelector:
     value: str | None = None
     case: str | None = None
 
+    def __hash__(self) -> int:
+        return hash((AttributeSelector, self.name, self.operator, self.value,
+                     self.case))
+
 
 @dataclass
 class PseudoClassSelector:
@@ -237,12 +300,20 @@ class PseudoClassSelector:
     argument: list[CssToken] | None = None
     selectors: SelectorList | None = None
 
+    def __hash__(self) -> int:
+        # Name only: `argument` holds CssTokens, which are unhashable
+        # dataclasses. See deviation 10.
+        return hash((PseudoClassSelector, self.name))
+
 
 @dataclass
 class PseudoElementSelector:
     """`::before`, and the four legacy one-colon spellings."""
 
     name: str
+
+    def __hash__(self) -> int:
+        return hash((PseudoElementSelector, self.name))
 
 
 Simple = (
@@ -261,11 +332,15 @@ class Compound:
     """A run of simple selectors with no combinator between them: `p.c#i`.
 
     `pos` is the position of the compound's first token, following the
-    `pos`-on-everything convention the rest of the codebase uses.
+    `pos`-on-everything convention the rest of the codebase uses -- but it
+    is excluded from equality and hashing, see deviation 10.
     """
 
     simples: list[Simple] = field(default_factory=list)
-    pos: int = -1
+    pos: int = field(default=-1, compare=False)
+
+    def __hash__(self) -> int:
+        return hash((Compound, tuple(self.simples)))
 
 
 @dataclass
@@ -274,12 +349,16 @@ class Complex:
 
     `combinators[i]` joins `compounds[i]` to `compounds[i + 1]`, so
     `len(combinators) == len(compounds) - 1` always. Each is one of `" "`
-    (descendant), `">"`, `"+"` or `"~"`.
+    (descendant), `">"`, `"+"` or `"~"`. `pos` is excluded from equality
+    and hashing, see deviation 10.
     """
 
     compounds: list[Compound] = field(default_factory=list)
     combinators: list[str] = field(default_factory=list)
-    pos: int = -1
+    pos: int = field(default=-1, compare=False)
+
+    def __hash__(self) -> int:
+        return hash((Complex, tuple(self.compounds), tuple(self.combinators)))
 
 
 @dataclass
@@ -287,6 +366,9 @@ class SelectorList:
     """The comma-separated list in a style rule's prelude."""
 
     selectors: list[Complex] = field(default_factory=list)
+
+    def __hash__(self) -> int:
+        return hash((SelectorList, tuple(self.selectors)))
 
 
 # --------------------------------------------------------------------------
@@ -665,13 +747,17 @@ def _parse_pseudo(cursor: _Cursor) -> Simple:
     if isinstance(tok, Function):
         cursor.next()
         name = _ascii_lower(tok.value)
-        argument = _consume_function_argument(cursor, tok)
         if double_colon:
-            # Deviation 6.
+            # Deviation 6. Raised before the argument is consumed, so an
+            # unterminated one (`::part(x`) is still reported as the
+            # unsupported pseudo-element it is, rather than as an
+            # "unterminated pseudo-class argument" -- it is not a
+            # pseudo-class, and its argument is not why we reject it.
             raise SelectorParseError(
                 f"functional pseudo-element '::{name}()' is not supported",
                 tok.pos,
             )
+        argument = _consume_function_argument(cursor, tok)
         forgiving = _SELECTOR_ARG_PSEUDOS.get(name)
         if forgiving is None:
             return PseudoClassSelector(name, argument)
@@ -746,16 +832,21 @@ def specificity(selector: Simple | Compound | Complex) -> tuple[int, int, int]:
 
 
 def _pseudo_class_specificity(selector: PseudoClassSelector) -> tuple[int, int, int]:
-    if selector.name == "where":
-        # `:where()` is the whole point of `:where()`.
-        return _ZERO
     if selector.selectors is not None:
+        if selector.name == "where":
+            # Zero specificity is the whole point of `:where()`.
+            return _ZERO
         # `:not()` / `:is()`: the specificity of the most specific argument,
         # and zero for an empty (forgiving) list.
         return max(
             (specificity(s) for s in selector.selectors.selectors),
             default=_ZERO,
         )
+    # Every non-functional pseudo-class, *including a bare* `:where` with no
+    # argument -- which is not the `:where()` of section 17 at all, just an
+    # unknown pseudo-class that will never match. Only the functional form
+    # has zero specificity, and `selectors is not None` is exactly the test
+    # for "was written with an argument list".
     return (0, 1, 0)
 
 
