@@ -762,8 +762,8 @@ _KEYWORD_VALUED = frozenset({
 _KEYWORD_PRESERVED = frozenset({"line-height"})
 
 
-# The one property whose `<percentage>` must NOT stay symbolic, and the
-# distinction is worth stating rather than remembering:
+# The percentages that resolve here rather than staying symbolic. The full
+# three-category rule is `docs/percentage-resolution.md`; the short form:
 #
 #   * `width: 50%` resolves against the CONTAINING BLOCK, which does not
 #     exist until layout. It stays `Percent(50)`.
@@ -781,6 +781,13 @@ _KEYWORD_PRESERVED = frozenset({"line-height"})
 # CSS 2.1 10.8.1 says its computed value *is* the number, and the number is
 # what inherits -- the multiplication happens per element at used-value time,
 # which is Task D's.
+#
+# `vertical-align: <percentage>` is a third case and is NOT in this set: it
+# resolves against the element's own *used* line-height, which is known when
+# `line-height` is a number or a px length and unknown when it is `normal`.
+# It is handled after `_compute_rest`, by
+# `_resolve_vertical_align_percentage`, because it needs a value this
+# function does not have.
 _PERCENT_OF_OWN_FONT_SIZE = frozenset({"line-height"})
 
 
@@ -1347,7 +1354,63 @@ def _compute_style(
 
     # 4. A border with no style has no width, whatever the width said.
     _zero_widths_of_borderless_sides(style)
+
+    # 5. `vertical-align: <percentage>`, which needs the computed
+    #    `line-height` step 3 just wrote. See
+    #    `_resolve_vertical_align_percentage`.
+    _resolve_vertical_align_percentage(style, metrics, own_font_px)
     return style
+
+
+def _used_line_height_px(line_height: object, own_font_px: float) -> float | None:
+    """This element's used `line-height` in px, or None if it is not known
+    until Task D.
+
+    * a `<number>` is the number times the element's OWN font-size, which
+      is why the number and not a product is what inherits;
+    * a computed `<length>` is itself, when it is in px -- a viewport-unit
+      line-height is still symbolic and is as unknown here as `normal`;
+    * `normal` is the font's own preferred spacing, from `hhea`/`OS/2`
+      metrics that arrive with Task D.
+    """
+    if isinstance(line_height, Length):
+        return float(line_height.value) if line_height.unit == "px" else None
+    if isinstance(line_height, (int, float)) and not isinstance(line_height, bool):
+        return float(line_height) * own_font_px
+    return None
+
+
+def _resolve_vertical_align_percentage(
+    style: ComputedStyle, metrics: Counter[str], own_font_px: float
+) -> None:
+    """`vertical-align: <percentage>` against the element's own *used*
+    `line-height` -- the third percentage category, and the honest one.
+
+    See `docs/percentage-resolution.md`. A percentage width resolves against
+    the containing block and cannot be known here; a percentage line-height
+    resolves against the element's own font-size and always can. This one is
+    neither: it is known when `line-height` is a number or a px length and
+    not when `line-height` is `normal`, so it is resolved in the first two
+    cases and left symbolic in the third.
+
+    Deferring it wholesale would throw away two thirds of the answers;
+    resolving the third case against a guessed `1.2 x font-size` would
+    produce a plausible number nothing downstream could distinguish from a
+    real one. `vertical_align_percent_deferred` is what makes the remainder
+    a figure Task D can look for rather than an absence -- the same
+    discipline as `link_stylesheets_skipped`.
+
+    Runs after `_compute_rest`, because it needs this element's computed
+    `line-height`, which `_compute_rest` is what writes.
+    """
+    value = style.vertical_align
+    if not isinstance(value, Percent):
+        return
+    used = _used_line_height_px(style.line_height, own_font_px)
+    if used is None:
+        metrics["vertical_align_percent_deferred"] += 1
+        return
+    style.vertical_align = Length(round(value.value / 100.0 * used, 6), "px")
 
 
 def _zero_widths_of_borderless_sides(style: ComputedStyle) -> None:
@@ -1537,6 +1600,9 @@ def style_document(
     # nothing for a given reason must say `0`, not say nothing.
     for reason in DROP_REASONS:
         metrics[f"declarations_dropped_{reason.replace('-', '_')}"] = 0
+    # Seeded for the same reason: Task D goes looking for this number, and
+    # "no row" and "zero" are different findings.
+    metrics["vertical_align_percent_deferred"] = 0
 
     order = _Counter()
     rules = _parse_sheet(UA_CSS, "ua", order, metrics, viewport)

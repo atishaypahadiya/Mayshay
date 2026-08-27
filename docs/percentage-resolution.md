@@ -85,14 +85,19 @@ of properties is added -- Task C's `float`/`position` set, Task D's text
 properties -- audit the whole batch against this table rather than the one
 property that raised the question.
 
-Current audit, executed 2026-08-27 against the Task A2 branch:
+Current audit, executed 2026-08-27 against the Task A2 branch (the
+`vertical-align` row was `INCOMPLETE` when this file was written and is now
+handled -- `_resolve_vertical_align_percentage` in `cascade.py`):
 
     font-size        %  -> resolved at cascade      correct
     line-height      %  -> resolved at cascade      correct (fixed in A2)
     width, height    %  -> symbolic                 correct
     margin-*         %  -> symbolic                 correct
     padding-*        %  -> symbolic                 correct
-    vertical-align   %  -> symbolic                 INCOMPLETE, category 3
+    vertical-align   %  -> resolved when line-height is a number or a px
+                           length; symbolic and counted in
+                           vertical_align_percent_deferred when it is
+                           `normal` or a viewport unit   correct (fixed in A2)
     text-indent      %  -> not yet supported
     background-position % -> not yet supported
 

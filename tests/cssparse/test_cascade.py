@@ -2174,3 +2174,77 @@ def test_a_percentage_width_still_stays_symbolic():
     assert style_of(BODY_P, "p", "p { line-height: 50% }").line_height == Length(
         8, "px"
     )
+
+
+def test_a_vertical_align_percentage_resolves_when_line_height_is_known():
+    """`docs/percentage-resolution.md` category 3. `vertical-align: 50%`
+    resolves against the element's own *used* `line-height`, so whether it
+    is knowable at cascade time depends on what `line-height` is.
+
+    The three branches must disagree with each other -- a single
+    `line-height` cannot tell them apart, and a mechanism that made all
+    three pass the same way would be the wrong mechanism.
+
+    Injection: resolving the `normal` case against a guessed
+    `1.2 x font-size` gives `Length(12, "px")` and fails the third; leaving
+    the numeric case symbolic fails the first.
+    """
+    numeric = style_of(
+        BODY_P, "p", "p { font-size: 20px; line-height: 2; vertical-align: 50% }"
+    )
+    assert numeric.vertical_align == Length(20, "px")
+
+    lengthy = style_of(
+        BODY_P, "p", "p { font-size: 20px; line-height: 24px; vertical-align: 50% }"
+    )
+    assert lengthy.vertical_align == Length(12, "px")
+    assert lengthy.vertical_align != numeric.vertical_align
+
+    unknown = style_of(
+        BODY_P, "p",
+        "p { font-size: 20px; line-height: normal; vertical-align: 50% }",
+    )
+    assert unknown.vertical_align == Percent(50)
+
+
+def test_the_deferred_vertical_align_percentages_are_counted():
+    """The `link_stylesheets_skipped` discipline one layer down: the
+    remainder Task D has to finish is a number it can look for, not an
+    absence. Present at zero when nothing is deferred, because "no row" and
+    "zero" are different findings."""
+    deferred = metrics_for(
+        BODY_P, "p { line-height: normal; vertical-align: 50% }"
+    )
+    assert deferred["vertical_align_percent_deferred"] == 1
+
+    resolved = metrics_for(BODY_P, "p { line-height: 2; vertical-align: 50% }")
+    assert resolved["vertical_align_percent_deferred"] == 0
+    assert "vertical_align_percent_deferred" in resolved
+
+    # A keyword `vertical-align` is not a percentage and defers nothing.
+    keyword = metrics_for(BODY_P, "p { line-height: normal; vertical-align: top }")
+    assert keyword["vertical_align_percent_deferred"] == 0
+
+
+def test_a_viewport_relative_line_height_defers_the_percentage_too():
+    """`line-height: 2vw` is as unknown here as `normal` -- the viewport
+    arrives with layout. Counting it as resolvable would multiply a
+    percentage by the number 2."""
+    style = style_of(BODY_P, "p", "p { line-height: 2vw; vertical-align: 50% }")
+    assert style.vertical_align == Percent(50)
+    m = metrics_for(BODY_P, "p { line-height: 2vw; vertical-align: 50% }")
+    assert m["vertical_align_percent_deferred"] == 1
+
+
+def test_an_inherited_line_height_still_resolves_the_childs_vertical_align():
+    """`vertical-align` does not inherit and `line-height` does, so the
+    child's percentage resolves against a `line-height` it never declared --
+    and against its OWN font-size, not the parent's."""
+    doc = styled(
+        NESTED,
+        "div { font-size: 20px; line-height: 2 }"
+        " span { font-size: 10px; vertical-align: 50% }",
+    )
+    span = find(doc, "span").computed_style
+    assert span.line_height == 2.0
+    assert span.vertical_align == Length(10, "px")   # 50% of 2 x 10px
