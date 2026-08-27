@@ -890,6 +890,36 @@ _VERTICAL_ALIGN_KEYWORDS = frozenset({
 
 _BOX_SIZING_KEYWORDS = frozenset({"content-box", "border-box"})
 
+# Phase 3 Task C. These four are *not* implemented as layout behaviour --
+# no float is placed, no positioned box is offset, no overflow is clipped or
+# scrolled. They are parsed because block layout cannot be correct without
+# reading them: CSS 2.1 section 8.3.1's margin-collapsing barriers are stated
+# in terms of `overflow`, `float` and `position`, so an engine that cannot
+# see the property collapses margins a browser keeps apart, and the page
+# comes out plausibly and quietly too tight. Every one of them is counted
+# where layout declines to act on it.
+#
+# `overflow` is treated as a single keyword rather than as the `overflow-x`
+# / `overflow-y` shorthand CSS Overflow 3 makes it. Two-value `overflow` is
+# rejected, and the rejection is a measured cost rather than a guessed one:
+# of the 53 textual `overflow` declarations in the corpus's three pages'
+# stylesheets and inline `<style>` blocks, 46 are `hidden`, 4 `auto`, 1
+# `visible` and 2 are the two-value form `hidden auto` (executed with a
+# word-boundary grep -- a naive one also matches `text-overflow`). Those 2
+# are dropped as `unsupported-value`; both axes are non-`visible` there, so
+# the barrier they would have raised is lost. Counted, not silent.
+_OVERFLOW_KEYWORDS = frozenset({"visible", "hidden", "scroll", "auto", "clip"})
+
+_FLOAT_KEYWORDS = frozenset({"none", "left", "right", "inline-start", "inline-end"})
+
+_CLEAR_KEYWORDS = frozenset({
+    "none", "left", "right", "both", "inline-start", "inline-end",
+})
+
+_POSITION_KEYWORDS = frozenset({
+    "static", "relative", "absolute", "fixed", "sticky",
+})
+
 # CSS Counter Styles 3's predefined counter styles, plus `none`. A closed
 # list, for the reason the colour table is closed: `list-style-type` also
 # accepts a `<custom-ident>` naming an `@counter-style` rule, and this engine
@@ -1164,6 +1194,12 @@ _PROPERTY_PARSERS: dict[str, object] = {
     "font-weight": _one("font-weight", _parse_font_weight),
     "font-family": _one("font-family", _parse_font_family),
     "vertical-align": _one("vertical-align", _parse_vertical_align),
+    # Phase 3 Task C: read by block layout only to decide whether a margin
+    # may collapse and whether a box is in flow. See the keyword sets above.
+    "overflow": _one("overflow", _keyword_parser(_OVERFLOW_KEYWORDS)),
+    "float": _one("float", _keyword_parser(_FLOAT_KEYWORDS)),
+    "clear": _one("clear", _keyword_parser(_CLEAR_KEYWORDS)),
+    "position": _one("position", _keyword_parser(_POSITION_KEYWORDS)),
 }
 
 # Which longhands each supported property sets -- *all* of them, including
@@ -1219,6 +1255,10 @@ LONGHANDS_OF: dict[str, tuple[str, ...]] = {
             "white-space", "line-height", "font-family", "font-weight",
             "font-style", "text-align", "vertical-align", "box-sizing",
             "list-style-type",
+            # Task C's four. `overflow` is a shorthand in CSS Overflow 3 and
+            # a longhand here; see the keyword-set comment above for the
+            # measured cost of that simplification.
+            "overflow", "float", "clear", "position",
         )
     },
 }
@@ -1350,11 +1390,31 @@ _KNOWN_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
 # rather than being malformed.
 _OPEN_IDENT_PROPERTIES: frozenset[str] = frozenset({"list-style-type"})
 
+# Properties this module models as a single keyword that the spec makes a
+# two-value shorthand. A two-value `overflow` is valid CSS we decline, not
+# malformed CSS, so it must classify as `unsupported-value`. Getting this
+# wrong is not cosmetic: `invalid` is the drop bucket the Phase 3 plan says
+# must never shrink, and a declaration wrongly counted there makes that
+# alarm mean nothing. Executed on the corpus: `overflow: hidden auto` twice
+# in Wikipedia's sheets, which is what moved `invalid` from 0 to 2 before
+# this existed.
+_DECLINED_TWO_VALUE_SHORTHANDS: dict[str, frozenset[str]] = {
+    "overflow": _OVERFLOW_KEYWORDS,
+}
+
 
 def _has_unsupported_construct(name: str, tokens: list[CssToken]) -> bool:
     """Does this value use valid CSS that this module documents as out of
     scope? See `_KNOWN_UNSUPPORTED_KEYWORDS` for the separation this draws.
     """
+    allowed_pair = _DECLINED_TWO_VALUE_SHORTHANDS.get(name)
+    if allowed_pair is not None:
+        idents = [tok for tok in tokens if isinstance(tok, Ident)]
+        if len(idents) > 1 and all(
+            _ascii_lower(tok.value) in allowed_pair for tok in idents
+        ):
+            return True
+
     known = _KNOWN_UNSUPPORTED_KEYWORDS.get(name, frozenset())
     for tok in tokens:
         if isinstance(tok, Function):
