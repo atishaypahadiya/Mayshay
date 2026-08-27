@@ -1,0 +1,1289 @@
+# Review package: 99d03ba..fd56f43
+
+## Commits
+fd56f43 review: apply the merge-blocking fix wave from the Phase 2 final review
+
+## Files changed
+ .../plans/2026-08-26-phase-2-css-to-styled-tree.md |   6 +
+ src/mayshay/cssparse/__init__.py                   |  39 ++++-
+ src/mayshay/cssparse/cascade.py                    |  61 ++++++-
+ src/mayshay/cssparse/matching.py                   |  45 +++--
+ src/mayshay/cssparse/selectors.py                  |  12 +-
+ src/mayshay/cssparse/tokenizer.py                  |  18 +-
+ src/mayshay/cssparse/ua.py                         |  11 +-
+ src/mayshay/cssparse/values.py                     | 102 +++++++++--
+ tests/cssparse/test_cascade.py                     | 191 +++++++++++++++++++++
+ tests/cssparse/test_values.py                      |  95 ++++++++++
+ 10 files changed, 538 insertions(+), 42 deletions(-)
+
+## Diff
+diff --git a/docs/plans/2026-08-26-phase-2-css-to-styled-tree.md b/docs/plans/2026-08-26-phase-2-css-to-styled-tree.md
+index 4858f31..7c708a4 100644
+--- a/docs/plans/2026-08-26-phase-2-css-to-styled-tree.md
++++ b/docs/plans/2026-08-26-phase-2-css-to-styled-tree.md
+@@ -1891,20 +1891,26 @@ git commit -m "cssparse: cascade, inheritance and computed values"
+ 
+ ## Known Gaps Carried Into Phase 3
+ 
+ 1. **`@media`, `@supports`, `@import`** — parsed as at-rules, not evaluated.
+ 2. **External stylesheets** — counted, not fetched. Needs `net/` (Phase 5).
+ 3. **Quirks-mode behaviour** — classified but not acted on. Unitless lengths and the alternate box model are layout concerns.
+ 4. **Pseudo-elements** (`::before`, `::after`) — parsed, not boxed.
+ 5. **`inherit`, `initial`, `unset`** — the explicit cascade keywords.
+ 6. **Shorthand round-tripping** — expanded on parse, never re-serialised.
+ 7. **Adoption agency, table modes, foreign content** — still Phase 1's carried gaps.
++8. **The longhands of the supported shorthands** — `margin-top`, `padding-right`, `border-top`, `border-top-width`, `border-width`/`-style`/`-color` and `background` all parse to `None`; only the `margin`/`padding`/`border` shorthands are accepted. Executed over `data/corpus/wikipedia.html`, this is 85 of the 313 dropped declarations. Now `values.py` deviation 13, pinned by `test_longhands_of_the_supported_shorthands_are_not_supported`; adding them is mechanical, since the side-specific parsers already exist.
++9. **`display` is a closed allow-list of 20 keywords** — `flow-root` is in the corpus and is rejected. `values.py` deviation 14.
++10. **Seven `_ascii_lower` implementations** — grepped, not counted from memory: `cssparse/tokenizer.py:126`, `cssparse/parser.py:202`, `cssparse/selectors.py:239`, `cssparse/matching.py:210`, `cssparse/values.py:183` (added in the Phase 2 fix wave), plus `htmlparse/treebuilder.py:202` as a `str.maketrans` table and `htmlparse/tokenizer.py:64` with a *different signature* (`ch: str`, one character, not a string). Each duplication is justified in its own docstring and the argument holds at N=2; at N=7, with two divergent shapes and a same-named function taking a different type, a shared `mayshay/_text.py` — the precedent `metrics.py` already sets for non-stage shared code — is the smaller coupling. A refactor for its own turn, deliberately not folded into a merge gate.
++11. **`metrics.read()`'s `run_id == "run_id"` header heuristic** — would discard a legitimate row if a caller passed that literal string, and `emit` does not validate it. One caveat on `emit`, not a defect.
++12. **`expand_shorthand("margin"|"padding", partial_dict)` raises a bare `KeyError`** — unreachable via `parse_declaration_value`, but the function is in `__all__`, so it is a public-API rough edge.
++13. **`dom/node.py`'s `annotate_positions` lacks the re-run-after-mutation note** that `class_list` carries. The failure mode is a typed `None` and `matching._element_index0` falls back correctly, so this is a docstring gap rather than a behaviour one.
+ 
+ ## Self-Review
+ 
+ **Scope coverage.** Task A covers the metrics writer with the driver-calls decision and the two-stage amendment. Task B covers the rename, the mirrored error list, the recording sites, and the `#errors` vocabulary with multiset-not-position comparison. Task C covers identifier capture and mode classification, recording without behaviour. Task E removes `tinycss2` and records the rule. Tasks E–J cover tokenizer, parser, selectors, specificity, matching, values, cascade, inheritance and computed values, over the nine named properties. Task D covers all four handoff items taken as written: `computed_style` on `Node`, `class_list` frozenset, cached element index, and — in Task H — right-to-left matching with rightmost-token indexing. Computed-vs-used symbolic storage is pinned by three tests in Task J.
+ 
+ **Type consistency.** `metrics.emit` keeps one signature across Tasks A and J. `ComputedStyle` is produced in J and consumed only there in this phase. `annotate_positions` is defined in D and used in H. `DoctypeToken.public_id`/`system_id` are added in C and consumed by `classify_document_mode` in the same task. `Length`/`Percent`/`Color`/`AUTO` are defined in I and used in J's assertions.
+ 
+ **Two known rough edges, flagged rather than hidden.** Task C's quirks table is given complete — all 55 prefixes — rather than sampled, because a truncated list with a "transcribe the rest" comment is exactly the placeholder this plan format forbids, and an incomplete table misclassifies silently while only nine unit cases are pinned. It was transcribed into the plan and may still contain errors, so Step 5 requires checking it against the spec and reporting the count found, and the whole of `doctype01.dat` is added to the test set as the broad check nine hand-written cases cannot be. And Task B's corpus test will not reach 100%: the instruction is to report matched and unmatched counts separately and **not** to broaden `TREE_ERROR_CODES` to absorb failures, since a code recorded outside the curated set is the mapping bug the set exists to catch.
+ 
+ **Corrections applied after review, recorded so they are not re-introduced.** `METRICS_DIR`'s `parents[2]` derivation is a fallback, not a contract — drivers pass an explicit path, because that derivation holds only under an editable install and Phase 1 saw exactly that pointer broken. `test_unitless_nonzero_length_is_invalid` dropped "in standards mode" from its name rather than gaining an unused parameter to justify it. `test_link_stylesheets_are_counted_not_fetched` now asserts the counter and discriminates 2 from 0; as first drafted it asserted only facts true of any document, which is the decorative-test defect that cost a fix round in Phase 1 Task 3. And `Color(0, 128, 0)` for CSS `green` is correct — `#00FF00` is `lime`.
+diff --git a/src/mayshay/cssparse/__init__.py b/src/mayshay/cssparse/__init__.py
+index 2decb79..65da289 100644
+--- a/src/mayshay/cssparse/__init__.py
++++ b/src/mayshay/cssparse/__init__.py
+@@ -1,24 +1,37 @@
+ """
+ CSS tokenization and parsing.
+ 
+ The documented entry point, per CLAUDE.md:
+ 
+     from mayshay.cssparse import CssTokenizer, CssParser, parse_stylesheet
+ 
+ Re-exports only; every name below is defined in `tokenizer.py`,
+-`parser.py` or `selectors.py`.
++`parser.py`, `selectors.py`, `matching.py`, `values.py` or `cascade.py`.
++
++The stage's own entry point is `style_document(document, author_css)`,
++which runs the whole of it -- parse, match, cascade, compute -- and returns
++this stage's metrics. It was missing from this file for as long as it
++existed, which meant the module whose docstring advertises an import
++surface did not expose the one function a driver actually calls.
+ 
+ Hand-rolled, and required to stay that way: `tinycss2`, `cssutils` and
+ `cssselect` are forbidden in `src/mayshay/`.
+ """
+ 
++from mayshay.cssparse.cascade import (
++    INHERITED,
++    LONGHANDS,
++    ComputedStyle,
++    style_document,
++)
++from mayshay.cssparse.matching import RuleIndex, matches
+ from mayshay.cssparse.parser import (
+     AtRule,
+     CssParser,
+     Declaration,
+     QualifiedRule,
+     parse_declarations,
+     parse_stylesheet,
+ )
+ from mayshay.cssparse.selectors import (
+     AttributeSelector,
+@@ -58,60 +71,84 @@ from mayshay.cssparse.tokenizer import (
+     Number,
+     Percentage,
+     RBrace,
+     RBracket,
+     RParen,
+     Semicolon,
+     String,
+     Url,
+     Whitespace,
+ )
++from mayshay.cssparse.values import (
++    AUTO,
++    Color,
++    Keyword,
++    Length,
++    Percent,
++    expand_shorthand,
++    normalize_property_name,
++    parse_declaration_value,
++)
+ 
+ __all__ = [
++    "AUTO",
+     "AtKeyword",
+     "AtRule",
+     "AttributeSelector",
+     "BadString",
+     "BadUrl",
+     "CDC",
+     "CDO",
+     "ClassSelector",
+     "Colon",
++    "Color",
+     "Comma",
+     "Complex",
+     "Compound",
++    "ComputedStyle",
+     "CssParser",
+     "CssToken",
+     "CssTokenizer",
+     "Declaration",
+     "Delim",
+     "Dimension",
+     "EOFToken",
+     "Function",
+     "Hash",
++    "INHERITED",
+     "IdSelector",
+     "Ident",
++    "Keyword",
+     "LBrace",
+     "LBracket",
++    "LONGHANDS",
+     "LParen",
++    "Length",
+     "Number",
++    "Percent",
+     "Percentage",
+     "PseudoClassSelector",
+     "PseudoElementSelector",
+     "QualifiedRule",
+     "RBrace",
+     "RBracket",
+     "RParen",
++    "RuleIndex",
+     "SelectorList",
+     "SelectorParseError",
+     "Semicolon",
+     "Simple",
+     "String",
+     "TypeSelector",
+     "UniversalSelector",
+     "Url",
+     "Whitespace",
++    "expand_shorthand",
++    "matches",
++    "normalize_property_name",
++    "parse_declaration_value",
+     "parse_declarations",
+     "parse_selector_list",
+     "parse_stylesheet",
+     "specificity",
++    "style_document",
+ ]
+diff --git a/src/mayshay/cssparse/cascade.py b/src/mayshay/cssparse/cascade.py
+index 94315f3..a558ceb 100644
+--- a/src/mayshay/cssparse/cascade.py
++++ b/src/mayshay/cssparse/cascade.py
+@@ -147,20 +147,39 @@ Deliberate deviations and omissions
+    the same.
+ 9. **Quirks mode is not consulted.** `Document.mode` is classified by Task C
+    and acted on in layout: unitless lengths and the alternate box model are
+    used-value concerns.
+ 10. **The `author_css` argument is cascaded before the document's own
+     `<style>` elements.** The two cannot be interleaved without knowing
+     where the caller's sheets sat in the source, and the argument's real
+     role is standing in for the external sheets a `<link>` in `<head>`
+     would have pulled in -- which do precede in-document `<style>` on the
+     overwhelming majority of pages. Within each group, source order holds.
++11. **`declarations_applied` counts *longhands written onto a
++    `ComputedStyle`*, not declarations parsed.** A shorthand contributes one
++    per longhand it sets (four for `margin`, twelve for `border`), and the
++    same longhand re-declared on the same element contributes once, because
++    the cascade has already picked a winner by then. `font-size` counts one
++    when it resolved and zero when it did not -- an unresolvable one is
++    `font_size_unresolvable` instead. That last clause is a fix, not a
++    description of how it always was: `font-size` contributed nothing at all
++    until the counter was corrected, so any `declarations_applied` figure in
++    a CSV written before this commit is low by the number of `font-size`
++    declarations that page applied.
++12. **Every declaration and error counter is a whole-document total** --
++    `<style>` bodies, `style=` attributes and the UA sheet summed
++    together. `tokenizer_parse_errors`
++    and `css_parse_errors` include the inline path -- which they did not
++    until this commit; malformed CSS in a `style=` attribute read as zero
++    errors, and wikipedia.html has 237 of those attributes. There is no
++    per-origin breakdown; if the analysis half needs one, it is a new key,
++    not a reinterpretation of these.
+ """
+ 
+ from __future__ import annotations
+ 
+ import time
+ from collections import Counter
+ from dataclasses import dataclass, field, fields
+ 
+ from mayshay.cssparse.matching import RuleIndex, matches
+ from mayshay.cssparse.parser import AtRule, CssParser, QualifiedRule
+@@ -171,20 +190,21 @@ from mayshay.cssparse.selectors import (
+     specificity,
+ )
+ from mayshay.cssparse.tokenizer import CssTokenizer
+ from mayshay.cssparse.ua import UA_CSS
+ from mayshay.cssparse.values import (
+     AUTO,
+     Color,
+     Keyword,
+     Length,
+     Percent,
++    normalize_property_name,
+     parse_declaration_value,
+ )
+ from mayshay.dom.node import Element, Node, Text, annotate_positions
+ 
+ # --------------------------------------------------------------------------
+ # The property set
+ # --------------------------------------------------------------------------
+ 
+ # The nine properties of `values.py`, after shorthand expansion. `margin`,
+ # `padding` and `border` never appear as themselves in a ComputedStyle --
+@@ -282,22 +302,31 @@ def _reset_omitted_longhands(name: str, longhands: dict[str, object]) -> dict[st
+     leaves `border-top-width` at 5px, because the second declaration's
+     parsed result simply has no width key for the first one to lose to. A
+     browser resets it to `medium`. The leak is invisible on any page that
+     writes its shorthands in full, and silently wrong on any page that does
+     not -- which is most of them.
+ 
+     `margin` and `padding` can never leave a side unset (the one-to-four
+     value rule always produces all four), so in practice only `border` is
+     affected; they are in the table so a future shorthand cannot be added
+     without a decision, and so the invariant is stated rather than assumed.
++
++    **`name` is normalised here, not by the caller.** CSS property names are
++    ASCII-case-insensitive, and `parse_declaration_value` lowercases its own
++    copy, so `p { BORDER: solid blue }` used to parse into correct longhands
++    and then miss this table entirely -- the reset silently no-opped and the
++    earlier `border: 5px solid red` kept its 5px width. Executed before the
++    fix: `border`/`BORDER` gave 3px/5px for `border-top-width`; after, both
++    give 3px. Normalising inside the function rather than at the two call
++    sites is deliberate: a third call site cannot reintroduce the bug.
+     """
+-    governed = _SHORTHAND_LONGHANDS.get(name)
++    governed = _SHORTHAND_LONGHANDS.get(normalize_property_name(name))
+     if governed is None:
+         return longhands
+     for prop in governed:
+         longhands.setdefault(prop, INITIAL_SPECIFIED[prop])
+     return longhands
+ 
+ 
+ def _field_name(prop: str) -> str:
+     return prop.replace("-", "_")
+ 
+@@ -700,38 +729,52 @@ def _parse_block(
+         index = next(order)
+         for prop, value in longhands.items():
+             out.append(_Declaration(prop, value, rank, index))
+         metrics["declarations_kept"] += 1
+     return out
+ 
+ 
+ def _parse_inline_style(
+     source: str, order: object, metrics: Counter[str]
+ ) -> list[_Declaration]:
+-    """The `style=` attribute: a declaration list, no selector, own rank."""
++    """The `style=` attribute: a declaration list, no selector, own rank.
++
++    The tokenizer is constructed on `source` and the parser on `""` -- the
++    parser is only ever handed the token list, never asked to tokenize --
++    so the two error counters come from *different objects* here, unlike
++    `_parse_sheet` where `parser.tokenizer` is the one that ran. Reading
++    them off `parser.tokenizer` (which tokenized the empty string) was the
++    bug: identical malformed CSS recorded 1 tokenizer error and 1 parse
++    error as a `<style>` body and 0/0 as a `style=` attribute. Executed
++    both ways before and after; wikipedia.html has 237 inline styles, so
++    this was a real hole in a real measurement.
++    """
+     parser = CssParser("")
+-    tokens = list(CssTokenizer(source).tokenize())
++    tokenizer = CssTokenizer(source)
++    tokens = list(tokenizer.tokenize())
++    metrics["tokenizer_parse_errors"] += tokenizer.metrics["parse_errors"]
+     out: list[_Declaration] = []
+     for decl in parser.parse_declarations(tokens):
+         metrics["declarations_seen"] += 1
+         longhands = parse_declaration_value(decl.name, decl.value)
+         if longhands is None:
+             metrics["declarations_dropped"] += 1
+             continue
+         longhands = _reset_omitted_longhands(decl.name, longhands)
+         rank = (
+             _RANK_INLINE_IMPORTANT if decl.important else _RANK_INLINE_NORMAL
+         )
+         index = next(order)
+         for prop, value in longhands.items():
+             out.append(_Declaration(prop, value, rank, index))
+         metrics["declarations_kept"] += 1
++    metrics["css_parse_errors"] += len(parser.errors)
+     return out
+ 
+ 
+ # --------------------------------------------------------------------------
+ # Document scanning
+ # --------------------------------------------------------------------------
+ 
+ 
+ def _iter_nodes(root: Node):
+     """Pre-order, document order. Explicit stack: real pages nest deeply
+@@ -860,22 +903,30 @@ def _compute_style(
+     the whole subject of this module."""
+     style = _inherit_from(parent)
+ 
+     # 1. font-size, against the PARENT's. Nothing else may be computed
+     #    first, because everything else needs the answer.
+     font_size = _compute_font_size(
+         declared.get("font-size"),
+         parent_font_px=parent.font_size_px,
+         root_font_px=root_font_px,
+     )
++    font_size_applied = 0
+     if font_size is not None:
+         style.font_size = font_size
++        # Counted here because `_compute_rest` `continue`s past `font-size`
++        # and so never sees it. Until this line existed, every successfully
++        # applied `font-size` was missing from `declarations_applied` --
++        # an emitted metric that was systematically low with nothing
++        # saying so. Verified: `p{font-size:20px}` moved 12 -> 13, matching
++        # what `color` and `width` each contribute.
++        font_size_applied = 1
+     elif "font-size" in declared:
+         # Declared but not computable -- a viewport-relative font-size. Keep
+         # the inherited value rather than store a length no child could
+         # resolve `em` against.
+         metrics["font_size_unresolvable"] += 1
+     own_font_px = style.font_size_px
+ 
+     # 2. `color`, because `currentcolor` on any other property names it.
+     #    `color: currentcolor` is the inherited colour, which is what
+     #    `style.color` already holds.
+@@ -895,21 +946,23 @@ def _compute_style(
+         style.set(prop, style.color)
+ 
+     # 3. Everything else, against the element's OWN font-size and colour.
+     applied = _compute_rest(
+         style,
+         {k: v for k, v in declared.items() if k != "color"},
+         own_font_px=own_font_px,
+         root_font_px=root_font_px,
+         own_color=style.color,
+     )
+-    metrics["declarations_applied"] += applied + int("color" in declared)
++    metrics["declarations_applied"] += (
++        applied + int("color" in declared) + font_size_applied
++    )
+ 
+     # 4. A border with no style has no width, whatever the width said.
+     _zero_widths_of_borderless_sides(style)
+     return style
+ 
+ 
+ def _zero_widths_of_borderless_sides(style: ComputedStyle) -> None:
+     """CSS 2.1 section 8.5.1: `border-*-width` computes to `0` when the
+     corresponding `border-*-style` is `none` or `hidden`.
+ 
+diff --git a/src/mayshay/cssparse/matching.py b/src/mayshay/cssparse/matching.py
+index 1def1e6..2714629 100644
+--- a/src/mayshay/cssparse/matching.py
++++ b/src/mayshay/cssparse/matching.py
+@@ -73,34 +73,46 @@ later:
+    which means teaching `selectors.py` `An+B` -- worth revisiting, and
+    deliberately not done here, because "unknown or malformed things never
+    match" is already the rule for pseudo-classes generally (deviation 5 of
+    `selectors.py`) and this keeps one rule instead of two.
+ 6. **`An+B` accepts one family of forms the spec rejects, because our
+    `<number-token>` has no "sign character present" flag.** css-syntax's
+    `<an+b>` grammar distinguishes `<signed-integer>` from
+    `<signless-integer>`: `2n+1` and `2n +1` are both valid
+    (`<n-dimension> <signed-integer>`, and whitespace between component
+    values is allowed), while `2n 1` is not, since a signless integer may
+-   only follow an explicit `+`/`-` of its own. All three reach us as
+-   `Dimension(2, 'n')`, `Whitespace`, `Number(1)` -- the sign has already
+-   been folded into the number's value and its presence is not recorded --
+-   so we accept all three. `2n + 1` is **valid** and is accepted for that
+-   reason rather than by leniency; an earlier draft of this deviation
+-   miscalled it invalid.
++   only follow an explicit `+`/`-` of its own. Tokenized against our own
++   `CssTokenizer` rather than assumed, the three are **not** identical:
++
++       2n+1   ->  Dimension(2, 'n'), Number(1)
++       2n +1  ->  Dimension(2, 'n'), Whitespace, Number(1)
++       2n 1   ->  Dimension(2, 'n'), Whitespace, Number(1)
++
++   `2n+1` has no `Whitespace` at all (an earlier draft of this deviation
++   claimed the three-token run for all three forms, which is wrong). What
++   *is* true of all three, and is the thing the leniency rests on, is that
++   the sign has already been folded into the number's value and its presence
++   is not recorded -- `+1` and `1` both arrive as `Number(1)` -- so the only
++   pair we could still tell apart (`2n+1` vs the other two) differs by a
++   whitespace token that the grammar permits anyway. We accept all three.
++   `2n + 1` is **valid** and is accepted for that reason rather than by
++   leniency; an earlier draft of this deviation miscalled it invalid.
+ 
+    The boundary is what the tokens can still tell us. A form whose
+    invalidity survives tokenization is rejected: `2n + -1` (a signed
+    integer where the grammar wants a signless one, visible as a negative
+    `Number` after an explicit sign delim), `+ n` (whitespace across the
+    `†` no-whitespace marker, visible as a `Whitespace` token) and `+-n`
+    (two signs, visible as a `Delim` before a `-`-initial ident) all parse
+-   to None. Only the sign-vs-no-sign distinction is unrecoverable, and the
++   to None -- executed through `_parse_an_b`, not reasoned about. (So do
++   the acceptances: `2n+1`, `2n +1`, `2n 1` and `2n + 1` all yield
++   `(2, 1)`.) Only the sign-vs-no-sign distinction is unrecoverable, and the
+    fix for that belongs in the tokenizer if it ever matters -- the failure
+    mode is leniency on input no author writes.
+ 7. **`:nth-child(... of S)` is not supported and never matches.** Selectors
+    4 section 6.6.5.2 allows a selector argument that filters what gets
+    counted; nothing downstream needs it, and accepting the `of` keyword
+    while ignoring the filter would silently match the wrong elements.
+ 8. **`:has()` never matches.** Deviation 3 of `selectors.py` keeps its
+    argument as raw tokens because relative selectors (`:has(> p)`) are not
+    parsed, so there is nothing here to run.
+ 9. **A pseudo-element never matches an element.** `p::before` selects a box
+@@ -120,48 +132,49 @@ later:
+    `link` with an `href`, since "unvisited" is a fact about our
+    history-free engine rather than a guess.
+ 11. **`:empty` treats whitespace-only text as empty**, following the Level 4
+    definition (an element with no children other than white space and
+    comments) rather than Level 3's, where a single space defeated it. Every
+    engine ships the Level 4 behaviour.
+ 12. **`:root` is "has no parent element"** rather than "is the document
+    element". They differ only for a detached subtree, where the spec says
+    nothing useful and the parent-free reading is the one a fragment matcher
+    wants.
++13. **`candidates()` returns rules in the order they were given to
++   `RuleIndex`.** Bucket order would be an implementation detail leaking
++   into the cascade's tie-breaking, and iteration over `class_list` -- a
++   `frozenset` -- is not even stable between runs, so an order-dependent
++   caller would be flaky rather than merely wrong. The cascade must still
++   sort by its own explicit source index; this only makes that sort's input
++   deterministic.
+ 14. **The `An+B` parse is memoized as an attribute on the
+    `PseudoClassSelector` itself** (`_an_b_memo`), rather than in a table
+    here. `_nth` otherwise re-parses the argument once per element tested,
+    which is per-element work inside the module that exists to avoid
+    per-element work.
+ 
+    A module-level dict keyed on the selector is the obvious alternative and
+    is not cheaper: `PseudoClassSelector.__hash__` walks every argument token
+    through `_token_key` (deviation 10 of `selectors.py`), which costs about
+    what the parse costs. Keying on `id()` is unsafe -- ids are reused after
+    a selector is freed, and a stale hit would silently answer with another
+    selector's formula.
+ 
+    Writing an attribute onto another module's dataclass is the cost, and it
+    is safe in exactly the way that matters: `_an_b_memo` is a pure function
+    of `name` and `argument`, and `PseudoClassSelector`'s equality and hash
+    are computed from those fields alone, so a memoized selector still
+    compares, hashes and keys a dict identically to a fresh one. It does mean
+    deviation 10's "must not be mutated afterwards" now has one sanctioned
+-   exception, which is why it is written down here.
+-
+-13. **`candidates()` returns rules in the order they were given to
+-   `RuleIndex`.** Bucket order would be an implementation detail leaking
+-   into the cascade's tie-breaking, and iteration over `class_list` -- a
+-   `frozenset` -- is not even stable between runs, so an order-dependent
+-   caller would be flaky rather than merely wrong. The cascade must still
+-   sort by its own explicit source index; this only makes that sort's input
+-   deterministic.
++   exception. That exception is also recorded in `selectors.py` beside the
++   rule it bends, because a reader of that module alone would otherwise
++   have no way to know this one had been granted it.
+ """
+ 
+ from __future__ import annotations
+ 
+ from typing import Callable, Iterable, Iterator, Sequence
+ 
+ from mayshay.cssparse.selectors import (
+     AttributeSelector,
+     ClassSelector,
+     Complex,
+diff --git a/src/mayshay/cssparse/selectors.py b/src/mayshay/cssparse/selectors.py
+index 669bde7..2f3282d 100644
+--- a/src/mayshay/cssparse/selectors.py
++++ b/src/mayshay/cssparse/selectors.py
+@@ -144,21 +144,31 @@ later:
+    convention in this module rather than to add a second: the tokenizer's
+    pos-in-equality is right for a token stream, and adapting at the one
+    boundary where a token is embedded in a selector is cheaper than
+    changing what a token means everywhere. Fixing it in `tokenizer.py`
+    instead was rejected because it would silently weaken every future test
+    that compares tokens, which is how this project has been bitten before.
+ 
+    These are mutable objects carrying a value hash, the hazard
+    `dataclasses` names `unsafe_hash`: a structure used as a dict key must
+    not be mutated afterwards. The parser builds each one once and never
+-   touches it again, and nothing else should start.
++   touches it again.
++
++   **One sanctioned exception, granted after this rule was written**:
++   `matching.py` (its deviation 14) caches an `An+B` parse on a
++   `PseudoClassSelector` as `_an_b_memo`. That is legal precisely because
++   it adds a *new* attribute rather than touching one `_key()` reads
++   (`name`, `argument`, `selectors`), so a memoized selector still compares,
++   hashes and keys a dict identically to a fresh one -- executed both ways,
++   `==` and `hash()` agree before and after the memo is written. Any
++   mutation of those three fields remains forbidden; the exception is the
++   shape above, not a general licence.
+ 
+    This departs from `parser.py`, whose `pos` does participate in
+    equality, and the difference is what the objects are for: a
+    `QualifiedRule` is a stream artifact whose position is part of what a
+    test asserts about it, while a selector is a *value* that tasks H and J
+    compare and key on, where two identical selectors from different
+    offsets comparing unequal is a bug waiting to happen.
+ """
+ 
+ from __future__ import annotations
+diff --git a/src/mayshay/cssparse/tokenizer.py b/src/mayshay/cssparse/tokenizer.py
+index 42538a6..4d2b212 100644
+--- a/src/mayshay/cssparse/tokenizer.py
++++ b/src/mayshay/cssparse/tokenizer.py
+@@ -39,32 +39,38 @@ Deliberate deviations from the spec, documented so they don't surprise us later:
+    arithmetic explicitly; `float()` computes the same value for every string
+    `_consume_number` can build, because `_consume_number` only ever builds
+    strings that match the spec's number grammar, which is a strict subset of
+    Python's float literal grammar (no "inf", "nan", "1_0" or leading "0x").
+    This is the one place a hand-rolled implementation would be pure ceremony.
+ 4. **Integer values are stored as `int`, non-integers as `float`.** The spec
+    keeps a numeric value plus a type flag; we keep both, but also narrow the
+    Python type, so `Number(3).value` is `3` and not `3.0`. The type flag
+    (`is_integer`) remains authoritative: `1e3` has an integral value but its
+    flag is False, because the spec's flag records *how it was written*, which
+-   is what `<integer>` value parsing will need in task I.
++   is what `<integer>` parsing needs. The consumer is **task H**
++   (`matching.py`, five sites, all in the `An+B` parser), not task I: none of
++   the nine properties `values.py` handles has an `<integer>` grammar, and
++   `values.py` reads the flag nowhere. An earlier draft of this deviation
++   said task I; grepped, and it is task H.
+ 5. **The EOF token class is `EOFToken`, not `EOF`.** `EOF` is the end-of-input
+    sentinel (`None`), exactly as in `htmlparse/tokenizer.py`, and the two
+    cannot share a name -- `_consume_escape`'s `ch is EOF` test needs the
+    sentinel. The task brief's interface list named the token `EOF`; the brief's
+    own code in the same file needs `EOF` to be the sentinel.
+ 6. **`metrics["tokenize_time_ms"]` measures time spent inside the tokenizer,
+-   not wall time across the stream.** `tokenize()` is a generator, so wall
+-   time from first call to EOF would include however long the consumer took
+-   between `next()` calls. The cost is two `perf_counter()` calls per token
+-   (~5% on a token-dense stylesheet); the alternative is a timing metric that
+-   silently measures the tree builder.
++   not wall time across the stream.** `tokenize()` returns a generator (it is
++   a plain method wrapping the `_tokenize()` generator -- see its docstring
++   for why the two are split), so wall time from the call to EOF would
++   include however long the consumer took between `next()` calls. The cost
++   is two `perf_counter()` calls per token (~5% on a token-dense
++   stylesheet); the alternative is a timing metric that silently measures
++   the tree builder.
+ 7. **`*=`, `~=`, `|=`, `^=`, `$=` and `||` are NOT single tokens.** The 2014
+    CR of css-syntax-3 had <substring-match-token> and friends; the current
+    spec removed them, leaving the match operators to be reassembled by the
+    selector parser from two delims. Worth knowing because it is one of
+    exactly TWO places a spec-correct implementation disagrees with tinycss2,
+    which still implements the 2014 CR, over the 21KB of real <style> bodies
+    in data/corpus/: this one, the only *structural* divergence, and
+    deviation 4's int-vs-float, which is a representation difference at the
+    same token boundaries. Task G's selector parser has to join them.
+ 8. **NULL and lone surrogates are replaced with U+FFFD during preprocessing**
+diff --git a/src/mayshay/cssparse/ua.py b/src/mayshay/cssparse/ua.py
+index 6dcf389..2d6066b 100644
+--- a/src/mayshay/cssparse/ua.py
++++ b/src/mayshay/cssparse/ua.py
+@@ -27,24 +27,29 @@ Written as a CSS *string*, deliberately, rather than as a hand-built table of
+ `white-space: pre` on `pre`/`textarea`, `font-family: monospace` on `code`)
+ is deliberately absent -- not forgotten. `parse_declaration_value` returns
+ `None` for every one of them, so writing them here would silently produce
+ dropped declarations and an inflated `declarations_dropped` metric that said
+ nothing about the document being styled. They come back when the property
+ set grows.
+ 
+ Deliberate omissions *inside* the nine properties, so a reviewer can tell a
+ decision from an oversight:
+ 
+-- **No `display` for the replaced/embedded elements** (`img`, `input`,
+-  `button`, `select`, `textarea`, `iframe`, `canvas`, `video`). They are
++- **No `display` for the form and embedded-content elements** (`input`,
++  `button`, `select`, `textarea`, `iframe`, `canvas`, `video`; grepped
++  against `UA_CSS` -- none of the seven appears in any selector). They are
+   `inline` by initial value, which is right, and their real behaviour is
+-  `inline-block`-ish sizing that only layout can express.
++  `inline-block`-ish sizing that only layout can express. `img`, `picture`,
++  `map` and `area` *are* named, in the `display: inline` block, which
++  changes nothing behaviourally -- the block exists to state intent against
++  a future reset, as its own comment says -- but they are not omissions and
++  an earlier version of this bullet wrongly listed `img` as one.
+ - **No `display: none` for `base`, `param`, `source`, `track`, `datalist`,
+   `template`, `noscript`.** The brief names exactly six -- `head`, `style`,
+   `script`, `link`, `title`, `meta` -- and those six are the ones that
+   actually carry text a naive renderer would paint. The others are empty
+   elements (nothing to paint) or, in `noscript`'s case, genuinely *shown*
+   when scripting is disabled, which for this engine is always.
+ - **No `padding-left` on `ul`/`ol`** and no `margin` on `blockquote`,
+   `figure`, `dl`, `dd`, `ol`, `ul`, `pre`, `hr`. The brief scopes default
+   margins to `body`, `p` and `h1`-`h6`; adding a partial list of the rest
+   would be a worse lie than the complete absence of one.
+diff --git a/src/mayshay/cssparse/values.py b/src/mayshay/cssparse/values.py
+index a73053d..91b5a80 100644
+--- a/src/mayshay/cssparse/values.py
++++ b/src/mayshay/cssparse/values.py
+@@ -9,40 +9,51 @@ Task I of Phase 2. Parses a `Declaration.value` token list (Task F/E's flat
+ **The load-bearing decision in this module**: computed values are not used
+ values. `width: 50%` and `margin: auto` cannot be resolved to a number
+ without a containing block, and no containing block exists until layout
+ (Phase 3). They are kept symbolic here -- `Percent(50)` and the `AUTO`
+ sentinel -- rather than collapsed to a float or to zero. Anything that
+ forces a premature resolution (treating `auto` as `0`, treating `50%` as
+ `0.5` of some guessed number) reintroduces exactly the bug this module
+ exists to prevent, and the mistake would not surface until layout produces
+ visibly wrong boxes.
+ 
+-Two entry points, matching the task brief:
++Two entry points, matching the task brief (plus one added later --
++`normalize_property_name`, below them):
+ 
+     parse_declaration_value(name, tokens) -> dict[str, object] | None
+         Parses one declaration's value. Returns `None` -- dropping the
+         *declaration*, not the rule -- when the value's grammar is invalid
+         for `name` (`width: banana`, `color: #gg0000`, ...). For a shorthand
+         (`margin`, `padding`, `border`) the returned dict already has the
+         expanded longhand keys; `parse_declaration_value("margin", ...)`
+         never returns `{"margin": ...}`.
+ 
+     expand_shorthand(name, parsed) -> dict[str, object]
+         The expansion step above, exposed on its own so a caller that
+         already has the shorthand's *parsed* components -- not raw tokens --
+         can still get the longhand dict. `parsed` is always a
+         `dict[str, object]`: `{"top"/"right"/"bottom"/"left": value}` for
+         `margin`/`padding` (always all four keys), or any subset of
+         `{"width"/"style"/"color": value}` for `border`. One shape across
+         every shorthand, deliberately -- see `expand_shorthand`'s own
+         docstring for why an earlier list-vs-dict split was replaced.
+ 
++**Property names reaching this module are normalised, and that is part of
++the interface, not an implementation detail.** `parse_declaration_value`
++ASCII-lowercases its `name` argument before dispatching, so `BORDER` and
++`border` parse identically. A caller that makes its own decision keyed on a
++property name -- Task J's shorthand-reset table is the one that exists --
++must apply the same normalisation, and `normalize_property_name` is exported
++so it can do so from this module's rule rather than from a guess. Leaving
++this implicit is what let `p { BORDER: solid blue }` parse correctly and
++skip its reset; see deviation 12.
++
+ Deliberate deviations and omissions, documented so they don't surprise
+ Task J or Phase 3 later:
+ 
+ 1. **Length units are a fixed allowlist**
+    (px, em, rem, ex, ch, vw, vh, vmin, vmax, cm, mm, q, in, pt, pc).
+    An unrecognized unit -- a typo, a future unit, `Q` vs `q` handled via
+    lowercasing -- invalidates the value. No corpus case needed anything
+    outside this set.
+ 2. **Unitless nonzero lengths are invalid**, full stop. Quirks-mode
+    unitless-length coercion is a layout-time concern (it depends on the
+@@ -107,40 +118,108 @@ Task J or Phase 3 later:
+ 11. **Component splitting (`_split_top_level`) is a small hand-rolled
+     top-level-whitespace splitter, not `cssparse.parser`'s
+     `_consume_component_value`.** The parser's version is a private,
+     underscore-prefixed helper of a different module; re-deriving the ~15
+     lines needed here (split on top-level whitespace, keep a function's
+     argument list together up to its matching `)`) is a smaller coupling
+     than importing another module's internals. Bracket matching is by depth
+     counting, not a nested tree -- sufficient here because the only bracketed
+     construct any of these nine properties' values can contain is a
+     `<color>` function's argument list.
++12. **Property names and identifier keywords are matched
++    ASCII-case-insensitively, via `_ascii_lower`, not `str.lower()`.** CSS
++    defines its case-insensitivity as ASCII-only; `str.lower()` folds the
++    full Unicode table, and this module used it at ten sites until this was
++    caught. Executed before the fix: `display: bloc<U+212A KELVIN SIGN>`
++    parsed as `Keyword("block")` and `color: pin<U+212A>` as
++    `Color(255,192,203)`; a browser rejects both. Executed after: both
++    return `None`, and the ASCII spellings still parse. The property-name
++    normalisation is additionally exposed as `normalize_property_name` --
++    see the note above the deviation list for the bug that made that
++    necessary.
++13. **The nine supported properties include three shorthands
++    (`margin`, `padding`, `border`) but none of their longhands.**
++    `parse_declaration_value("margin-top", ...)`,
++    `("padding-right", ...)`, `("border-top", ...)`,
++    `("border-top-width", ...)`, `("border-width"/"-style"/"-color", ...)`
++    and `("background", ...)` all return `None`, so the only way to set
++    `ComputedStyle.margin_top` is to write the shorthand. This is a
++    consequence of the dispatch chain rather than a decision anyone made,
++    and it is recorded here because it is the largest slice of the corpus's
++    dropped declarations that no other deviation covers: executed over
++    `data/corpus/wikipedia.html`, 85 of the 313 dropped declarations are in
++    this family (15 `padding-right`, 14 `margin-top`, 12 `background`,
++    8 `margin-bottom`, 7 `border-left`, and a long tail). Adding them is
++    mechanical -- the component parsers the shorthands already use are the
++    same ones a longhand needs -- and is left to a phase that needs them.
++    `test_longhands_of_the_supported_shorthands_are_not_supported` pins the
++    current boundary so it cannot drift silently.
++14. **`display` is a closed keyword allow-list** (20 entries, above --
++    counted by `len(_DISPLAY_KEYWORDS)`, not by eye). A `display` value
++    outside it is invalid rather than passed through, for
++    the same reason the color table had to be complete: a keyword this
++    module does not know must not reach the cascade as an unresolved
++    string. `flow-root` is the one such keyword in the corpus (1 drop on
++    wikipedia, executed). Widening the list is a one-line change once a
++    layout mode exists that can honour the new value.
+ """
+ 
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass
+ 
+ from mayshay.cssparse.tokenizer import (
+     Comma,
+     CssToken,
+     Dimension,
+     EOFToken,
+     Function,
+     Hash,
+     Ident,
+     Number,
+     Percentage,
+     RParen,
+     Whitespace,
+ )
+ 
++
++def _ascii_lower(text: str) -> str:
++    """ASCII-only case fold. Duplicated from `tokenizer.py` for the reason
++    that module's copy states: importing another module's private name is
++    the worse coupling.
++
++    `str.lower()` is wrong here for the same reason it is wrong there. CSS
++    identifier and property-name matching is ASCII-case-insensitive, but
++    Python's `str.lower()` folds the whole Unicode case table: U+212A KELVIN
++    SIGN becomes `k`, so `display: bloc<U+212A>` would be accepted as
++    `block` and `color: pin<U+212A>` as `pink`. A browser rejects both.
++    Verified against this module before the fix -- both were accepted.
++    """
++    return "".join(chr(ord(ch) + 0x20) if "A" <= ch <= "Z" else ch for ch in text)
++
++
++def normalize_property_name(name: str) -> str:
++    """The canonical spelling of a CSS property name: ASCII-lowercased.
++
++    **This is the module's normalisation contract, exposed rather than left
++    implicit.** `parse_declaration_value` applies it to its own `name`
++    argument, so a caller may pass `BORDER` and get correct longhands back.
++    That was silently *not* enough for Task J's cascade, which keyed its
++    shorthand-reset table on the raw `Declaration.name` and so skipped the
++    reset for `BORDER` while accepting the value -- a wrong computed value
++    with no error anywhere. A caller that makes its own decision from a
++    property name must normalise it through this function first; that is
++    what it exists to say.
++    """
++    return _ascii_lower(name)
++
++
+ # --------------------------------------------------------------------------
+ # Value types
+ # --------------------------------------------------------------------------
+ 
+ 
+ @dataclass(frozen=True)
+ class Length:
+     value: int | float
+     unit: str
+ 
+@@ -369,34 +448,34 @@ def _split_args(tokens: list[CssToken]) -> list[list[CssToken]]:
+     return args
+ 
+ 
+ # --------------------------------------------------------------------------
+ # Length / percentage / auto
+ # --------------------------------------------------------------------------
+ 
+ 
+ def _parse_length(tok: CssToken) -> Length | None:
+     if isinstance(tok, Dimension):
+-        unit = tok.unit.lower()
++        unit = _ascii_lower(tok.unit)
+         if unit in _LENGTH_UNITS:
+             return Length(tok.value, unit)
+         return None
+     if isinstance(tok, Number) and tok.value == 0:
+         # Unitless zero is the one unitless <length> the spec allows.
+         return Length(0, "px")
+     return None
+ 
+ 
+ def _parse_length_percentage(tok: CssToken, *, allow_auto: bool) -> object | None:
+     if isinstance(tok, Percentage):
+         return Percent(tok.value)
+-    if allow_auto and isinstance(tok, Ident) and tok.value.lower() == "auto":
++    if allow_auto and isinstance(tok, Ident) and _ascii_lower(tok.value) == "auto":
+         return AUTO
+     return _parse_length(tok)
+ 
+ 
+ # --------------------------------------------------------------------------
+ # Color
+ # --------------------------------------------------------------------------
+ 
+ 
+ def _parse_hex_color(text: str) -> Color | None:
+@@ -433,21 +512,21 @@ def _alpha(tok: CssToken) -> float | None:
+     elif isinstance(tok, Percentage):
+         v = tok.value / 100
+     else:
+         return None
+     return max(0.0, min(1.0, v))
+ 
+ 
+ def _parse_color_function(group: list[CssToken]) -> Color | None:
+     if not group or not isinstance(group[0], Function):
+         return None
+-    name = group[0].value.lower()
++    name = _ascii_lower(group[0].value)
+     if name not in ("rgb", "rgba"):
+         return None
+     if not isinstance(group[-1], RParen):
+         return None
+     args = _split_args(group[1:-1])
+     if name == "rgba" and len(args) != 4:
+         return None
+     if name == "rgb" and len(args) not in (3, 4):
+         return None
+ 
+@@ -475,21 +554,21 @@ def _parse_color_function(group: list[CssToken]) -> Color | None:
+ 
+ def _parse_color(tokens: list[CssToken]) -> object | None:
+     groups = _split_top_level(tokens)
+     if len(groups) != 1:
+         return None
+     group = groups[0]
+ 
+     if len(group) == 1:
+         tok = group[0]
+         if isinstance(tok, Ident):
+-            name = tok.value.lower()
++            name = _ascii_lower(tok.value)
+             if name == "transparent":
+                 return Color(0, 0, 0, 0.0)
+             if name == "currentcolor":
+                 return Keyword("currentcolor")
+             rgb = _COLOR_KEYWORDS.get(name)
+             return Color(*rgb, 1.0) if rgb is not None else None
+         if isinstance(tok, Hash):
+             return _parse_hex_color(tok.value)
+         return None
+ 
+@@ -503,31 +582,31 @@ def _parse_color(tokens: list[CssToken]) -> object | None:
+ 
+ def _single_token(tokens: list[CssToken]) -> CssToken | None:
+     groups = _split_top_level(tokens)
+     if len(groups) != 1 or len(groups[0]) != 1:
+         return None
+     return groups[0][0]
+ 
+ 
+ def _parse_display(tokens: list[CssToken]) -> Keyword | None:
+     tok = _single_token(tokens)
+-    if isinstance(tok, Ident) and tok.value.lower() in _DISPLAY_KEYWORDS:
+-        return Keyword(tok.value.lower())
++    if isinstance(tok, Ident) and _ascii_lower(tok.value) in _DISPLAY_KEYWORDS:
++        return Keyword(_ascii_lower(tok.value))
+     return None
+ 
+ 
+ def _parse_font_size(tokens: list[CssToken]) -> object | None:
+     tok = _single_token(tokens)
+     if tok is None:
+         return None
+-    if isinstance(tok, Ident) and tok.value.lower() in _FONT_SIZE_KEYWORDS:
+-        return Keyword(tok.value.lower())
++    if isinstance(tok, Ident) and _ascii_lower(tok.value) in _FONT_SIZE_KEYWORDS:
++        return Keyword(_ascii_lower(tok.value))
+     return _parse_length_percentage(tok, allow_auto=False)
+ 
+ 
+ def _parse_width_height(tokens: list[CssToken]) -> object | None:
+     tok = _single_token(tokens)
+     if tok is None:
+         return None
+     return _parse_length_percentage(tok, allow_auto=True)
+ 
+ 
+@@ -591,21 +670,21 @@ def _parse_margin_or_padding(
+ 
+ def _parse_border(tokens: list[CssToken]) -> dict[str, object] | None:
+     """Width, style and color, in any order, at most one of each kind."""
+     groups = _split_top_level(tokens)
+     if not groups:
+         return None
+ 
+     width = style = color = None
+     for group in groups:
+         if len(group) == 1 and isinstance(group[0], Ident):
+-            keyword = group[0].value.lower()
++            keyword = _ascii_lower(group[0].value)
+             if keyword in _BORDER_STYLE_KEYWORDS:
+                 if style is not None:
+                     return None
+                 style = Keyword(keyword)
+                 continue
+ 
+         if len(group) == 1:
+             length = _parse_length(group[0])
+             if length is not None:
+                 if width is not None:
+@@ -679,21 +758,21 @@ def expand_shorthand(name: str, parsed: dict[str, object]) -> dict[str, object]:
+ 
+ 
+ def parse_declaration_value(name: str, tokens: list[CssToken]) -> dict[str, object] | None:
+     """Parse one declaration's value tokens for property `name`.
+ 
+     Returns `None` when the value is invalid for `name` -- the caller (Task
+     J's cascade) is expected to drop that one declaration and keep its
+     siblings, exactly as an unsupported/malformed declaration behaves in a
+     real browser.
+     """
+-    name = name.lower()
++    name = normalize_property_name(name)
+     # EOFToken only ever appears here because a caller (this module's own
+     # tests, most obviously) drove a `CssTokenizer` straight through to
+     # completion rather than going through `cssparse.parser`, whose
+     # `Declaration.value` never contains one. Stripping it up front means
+     # both call shapes parse identically.
+     tokens = [tok for tok in tokens if not isinstance(tok, EOFToken)]
+ 
+     if name == "display":
+         value = _parse_display(tokens)
+         return None if value is None else {"display": value}
+@@ -725,12 +804,13 @@ def parse_declaration_value(name: str, tokens: list[CssToken]) -> dict[str, obje
+     return None  # not one of the nine properties this module handles
+ 
+ 
+ __all__ = [
+     "AUTO",
+     "Color",
+     "Keyword",
+     "Length",
+     "Percent",
+     "expand_shorthand",
++    "normalize_property_name",
+     "parse_declaration_value",
+ ]
+diff --git a/tests/cssparse/test_cascade.py b/tests/cssparse/test_cascade.py
+index 1a2f79d..f9f3f74 100644
+--- a/tests/cssparse/test_cascade.py
++++ b/tests/cssparse/test_cascade.py
+@@ -1173,10 +1173,201 @@ def test_rem_is_defined_by_the_root_element_not_by_a_stray_orphan():
+     stray = DomElement("div", {"style": "font-size: 40px"})
+     inner = DomElement("span", {"style": "width: 1rem"})
+     stray.append_child(inner)
+     doc.append_child(stray)
+ 
+     style_document(doc, ["html { font-size: 20px }"])
+     assert find(doc, "html").computed_style.font_size == Length(20, "px")
+     assert find(doc, "div").computed_style.font_size == Length(40, "px")
+     # 1rem is the ROOT's 20px, not the stray parent's 40px.
+     assert inner.computed_style.width == Length(20, "px")
++
++
++# --- the !important x shorthand-reset axis -------------------------------
++#
++# Deferred as correct-by-inspection in an earlier round. That was wrong:
++# `_reset_omitted_longhands` was carrying a silent bug (the uppercase-name
++# case below) three lines from the reset, and nothing in the suite tied a
++# shorthand reset to the *rank* of the declaration that caused it. Every
++# expectation here was executed against the implementation before being
++# written down, and each is what a browser does.
++
++
++def test_a_normal_shorthand_after_an_important_one_resets_nothing():
++    """Ordering 1. The reset happens *before* the cascade sorts, so the
++    later normal declaration still carries a full set of longhands -- and
++    every one of them must lose to the earlier `!important` one.
++
++    Injected bug that this catches: applying the reset after the sort, or
++    letting a reset longhand skip the rank comparison, hands `medium` to
++    `border-top-width` here instead of the important 5px.
++    """
++    style = style_of(
++        BODY_P, "p", "p { border: 5px solid red !important } p { border: solid blue }"
++    )
++    assert style.border_top_width == Length(5, "px")
++    assert style.border_top_color == Color(255, 0, 0, 1.0)
++
++
++def test_an_important_shorthand_after_a_normal_one_does_reset():
++    """Ordering 2, the mirror. The important declaration wins, so its reset
++    is the one that lands and the earlier 5px becomes `medium`."""
++    style = style_of(
++        BODY_P, "p", "p { border: 5px solid red } p { border: solid blue !important }"
++    )
++    assert style.border_top_width == Length(3, "px")
++    assert style.border_top_color == Color(0, 0, 255, 1.0)
++
++
++def test_specificity_still_breaks_ties_between_two_important_shorthands():
++    """Ordering 3. `!important` raises the origin rank; it does not flatten
++    specificity within that rank. `p#x` beats `p` even though `p` is later
++    in source order, and it is `p#x`'s reset that applies.
++    """
++    style = style_of(
++        '<!DOCTYPE html><body><p id="x">hi</p></body>',
++        "p",
++        "p#x { border: solid blue !important } p { border: 5px solid red !important }",
++    )
++    assert style.border_top_width == Length(3, "px")
++    assert style.border_top_color == Color(0, 0, 255, 1.0)
++
++
++def test_an_important_author_shorthand_beats_a_normal_style_attribute():
++    """Ordering 4. Rank 3 (author important) over rank 2 (inline normal) --
++    the one place the cascade table is counter-intuitive, and the reason
++    `style=` gets its own rank rather than a fake `(1,0,0)` specificity.
++    """
++    style = style_of(
++        '<!DOCTYPE html><body><p style="border: 9px solid green">hi</p></body>',
++        "p",
++        "p { border: 5px solid red !important }",
++    )
++    assert style.border_top_width == Length(5, "px")
++    assert style.border_top_color == Color(255, 0, 0, 1.0)
++
++
++def test_an_important_style_attribute_beats_an_important_author_rule():
++    """Ordering 5. Rank 4 over rank 3, and the winning declaration is a
++    *partial* shorthand, so its reset is what zeroes the author's 5px.
++    """
++    style = style_of(
++        '<!DOCTYPE html><body><p style="border: solid green !important">hi</p></body>',
++        "p",
++        "p { border: 5px solid red !important }",
++    )
++    assert style.border_top_width == Length(3, "px")
++    assert style.border_top_color == Color(0, 128, 0, 1.0)
++
++
++def test_currentcolor_propagates_through_an_important_shorthand_reset():
++    """The reset writes `border-*-color`'s *specified* initial value, which
++    is `currentcolor`, not a resolved colour. It must resolve against this
++    element's own `color` at compute time -- blue here, not the black that
++    a reset writing `Color(0,0,0)` directly would produce, and not the red
++    the earlier shorthand set.
++    """
++    style = style_of(
++        BODY_P, "p", "p { color: blue; border: 5px solid red } p { border: solid !important }"
++    )
++    assert style.border_top_width == Length(3, "px")
++    assert style.border_top_color == Color(0, 0, 255, 1.0)
++
++
++def test_the_shorthand_reset_fires_on_an_uppercase_property_name():
++    """CSS property names are ASCII case-insensitive, and `values.py`
++    lowercases its own copy -- so `BORDER: solid blue` parsed into correct
++    longhands while `_SHORTHAND_LONGHANDS.get(decl.name)` missed the table
++    entirely and skipped the reset. Executed before the fix: `border` gave
++    3px and `BORDER` gave 5px off the same pair of rules.
++
++    `_reset_omitted_longhands` now normalises its own argument, so a third
++    call site cannot reintroduce this.
++    """
++    lower = style_of(BODY_P, "p", "p { border: 5px solid red } p { border: solid blue }")
++    upper = style_of(BODY_P, "p", "p { border: 5px solid red } p { BORDER: solid blue }")
++    assert lower.border_top_width == Length(3, "px")
++    assert upper.border_top_width == lower.border_top_width
++    assert upper.border_top_color == Color(0, 0, 255, 1.0)
++
++
++def test_an_uppercase_shorthand_resets_at_important_rank_too():
++    """The two fixes above meet here: case-folding on the reset lookup and
++    rank propagation through the reset are independent, and this is the
++    only test that exercises both at once.
++    """
++    style = style_of(
++        BODY_P, "p", "p { border: 5px solid red } p { BORDER: solid blue !important }"
++    )
++    assert style.border_top_width == Length(3, "px")
++    assert style.border_top_color == Color(0, 0, 255, 1.0)
++
++
++def test_an_uppercase_margin_shorthand_expands_to_all_four_sides():
++    """End-to-end cover for `values.py`'s name normalisation, through the
++    cascade rather than through `parse_declaration_value` directly.
++
++    Stated honestly, because it was checked: this test does *not* catch the
++    reset bug. `margin` can never leave a side unset, so skipping its reset
++    is invisible -- injecting the un-normalised lookup left this test green
++    while the two `border` tests above failed. What it pins is that the
++    uppercase path reaches the same expansion at all.
++    """
++    lower = style_of(BODY_P, "p", "p { margin: 1px 2px }")
++    upper = style_of(BODY_P, "p", "p { MARGIN: 1px 2px }")
++    assert upper.margin_top == lower.margin_top == Length(1, "px")
++    assert upper.margin_right == lower.margin_right == Length(2, "px")
++
++
++# --- the declaration metrics --------------------------------------------
++
++
++def test_declarations_applied_counts_font_size():
++    """`_compute_rest` `continue`s past `font-size`, so until the counter
++    was corrected every successfully applied `font-size` was missing from
++    `declarations_applied` -- a committed measurement that was
++    systematically low with nothing documenting the exclusion.
++
++    Executed before the fix: `font-size` moved the count by 0 where `color`
++    and `width` each moved it by 1.
++    """
++    base = metrics_for(BODY_P)["declarations_applied"]
++    for css in ("p { color: red }", "p { width: 10px }", "p { font-size: 20px }"):
++        assert metrics_for(BODY_P, css)["declarations_applied"] == base + 1, css
++    both = metrics_for(BODY_P, "p { font-size: 20px; color: red; width: 10px }")
++    assert both["declarations_applied"] == base + 3
++
++
++def test_an_unresolvable_font_size_counts_as_unresolvable_not_applied():
++    """The other half of the same counter: a viewport-relative `font-size`
++    is declared, parsed and then deliberately not stored, so it must land
++    in `font_size_unresolvable` and nowhere else. Counting it as applied
++    would make the fix above wrong in the opposite direction.
++    """
++    base = metrics_for(BODY_P)["declarations_applied"]
++    m = metrics_for(BODY_P, "p { font-size: 10vw }")
++    assert m["font_size_unresolvable"] == 1
++    assert m["declarations_applied"] == base
++
++
++def test_parse_errors_in_a_style_attribute_are_recorded():
++    """`_parse_inline_style` tokenizes with one object and parses with
++    another, and read its error counts off the parser's tokenizer -- which
++    had been constructed on the empty string. Identical malformed CSS
++    therefore recorded 1/1 as a `<style>` body and 0/0 as a `style=`
++    attribute. wikipedia.html has 237 inline styles.
++
++    The body below is chosen so both paths see exactly the same errors: a
++    newline inside a string (tokenizer) and a declaration with no colon
++    (parser), with the block still balanced.
++    """
++    bad = 'color: red; width 10px; foo: "ab\ncd'
++    sheet = metrics_for(
++        "<!DOCTYPE html><body><style>p{" + bad + "}</style><p>hi</p></body>"
++    )
++    inline = metrics_for(
++        '<!DOCTYPE html><body><p style="' + bad.replace('"', "&quot;") + '">hi</p></body>'
++    )
++    assert sheet["tokenizer_parse_errors"] == 1
++    assert sheet["css_parse_errors"] == 1
++    assert inline["tokenizer_parse_errors"] == sheet["tokenizer_parse_errors"]
++    assert inline["css_parse_errors"] == sheet["css_parse_errors"]
+diff --git a/tests/cssparse/test_values.py b/tests/cssparse/test_values.py
+index 113bf3c..efab871 100644
+--- a/tests/cssparse/test_values.py
++++ b/tests/cssparse/test_values.py
+@@ -253,10 +253,105 @@ def test_color_keyword_table_is_complete():
+     checks = {
+         "rebeccapurple": Color(102, 51, 153, 1.0),
+         "papayawhip": Color(255, 239, 213, 1.0),
+         "mediumspringgreen": Color(0, 250, 154, 1.0),
+         "darkslategrey": Color(47, 79, 79, 1.0),
+         "cadetblue": Color(95, 158, 160, 1.0),
+         "lightgoldenrodyellow": Color(250, 250, 210, 1.0),
+     }
+     for name, expected in checks.items():
+         assert val("color", name)["color"] == expected
++
++
++# --------------------------------------------------------------------------
++# The module's stated boundaries, pinned so they cannot drift silently.
++# --------------------------------------------------------------------------
++
++
++def test_longhands_of_the_supported_shorthands_are_not_supported():
++    """Deviation 13. The nine properties include `margin`, `padding` and
++    `border` but none of their longhands, so the *only* way to set
++    `ComputedStyle.margin_top` is to write the shorthand.
++
++    This is a consequence of the dispatch chain rather than a decision, and
++    it was undocumented and untested until the deviation was written. It is
++    the largest slice of the corpus's dropped declarations that no other
++    deviation covers: executed over `data/corpus/wikipedia.html`, 85 of the
++    313 dropped declarations are in this family. Widening the set is a
++    deliberate act; this test is what makes it one.
++    """
++    for name, src in [
++        ("margin-top", "5px"),
++        ("margin-right", "5px"),
++        ("margin-bottom", "5px"),
++        ("margin-left", "5px"),
++        ("padding-top", "5px"),
++        ("padding-right", "5px"),
++        ("border-top", "1px solid red"),
++        ("border-top-width", "5px"),
++        ("border-top-style", "solid"),
++        ("border-top-color", "red"),
++        ("border-width", "5px"),
++        ("border-style", "solid"),
++        ("border-color", "red"),
++        ("background", "red"),
++    ]:
++        assert val(name, src) is None, f"{name} is now supported -- update deviation 13"
++
++    # ...while the shorthands themselves still work, so this test fails for
++    # the right reason if the dispatch table is broken outright.
++    assert val("margin", "5px")["margin-top"] == Length(5, "px")
++    assert val("border", "1px solid red")["border-top-width"] == Length(1, "px")
++
++
++def test_display_is_a_closed_keyword_allow_list():
++    """Deviation 14. A `display` value the module does not know is invalid
++    rather than passed through as a string the cascade would have to guess
++    at. `flow-root` is the one such keyword in the corpus (1 drop on
++    wikipedia, executed).
++    """
++    from mayshay.cssparse.values import _DISPLAY_KEYWORDS
++
++    assert len(_DISPLAY_KEYWORDS) == 20
++    assert val("display", "flow-root") is None
++    assert val("display", "ruby-text") is None
++    assert val("display", "block")["display"] == Keyword("block")
++    assert val("width", "5Q")["width"] == Length(5, "q")  # deviation 1's Q/q
++
++
++def test_identifier_matching_is_ascii_case_insensitive_not_unicode():
++    """Deviation 12. CSS case-insensitivity is ASCII-only. Python's
++    `str.lower()` folds the whole Unicode table -- U+212A KELVIN SIGN goes
++    to `k` -- and this module used `str.lower()` at ten sites, so
++    `display: bloc\\u212a` parsed as `Keyword("block")` and
++    `color: pin\\u212a` as pink. A browser rejects both. Executed before the
++    fix: both were accepted; after: both are None.
++    """
++    kelvin = "\u212a"  # KELVIN SIGN, not ASCII K
++    assert kelvin.lower() == "k"          # the trap, stated outright
++    assert val("display", "bloc" + kelvin) is None
++    assert val("color", "pin" + kelvin) is None
++    assert val("border", "1px solid pin" + kelvin) is None
++
++    # ASCII case-insensitivity itself is untouched.
++    assert val("display", "BLOCK")["display"] == Keyword("block")
++    assert val("color", "PINK") == val("color", "pink")
++    assert val("width", "5PX")["width"] == Length(5, "px")
++    assert val("color", "RGB(1, 2, 3)")["color"] == Color(1, 2, 3, 1.0)
++
++
++def test_property_names_are_normalised_and_the_rule_is_exported():
++    """The normalisation `parse_declaration_value` applies to its `name`
++    argument is part of the interface, not an implementation detail: Task
++    J's cascade keys its shorthand-reset table on a property name and has
++    to fold it the same way. `normalize_property_name` exists so it can do
++    that from this module's rule rather than from a guess.
++    """
++    from mayshay.cssparse.values import normalize_property_name
++
++    assert normalize_property_name("BORDER") == "border"
++    assert normalize_property_name("Margin-Top") == "margin-top"
++    # ASCII only, here too.
++    assert normalize_property_name("BORDER\u212a") == "border\u212a"
++
++    assert val("BORDER", "1px solid red") == val("border", "1px solid red")
++    assert val("Display", "block") == val("display", "block")

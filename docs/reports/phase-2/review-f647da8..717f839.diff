@@ -1,0 +1,784 @@
+# Review package: f647da8..717f839
+
+## Commits
+717f839 cssparse: fix bare :where specificity, make selectors hashable
+
+## Files changed
+ src/mayshay/cssparse/selectors.py       | 139 +++++++++++++++++----
+ tests/cssparse/test_selectors.py        | 105 ++++++++++++++--
+ tests/cssparse/test_selectors_corpus.py | 207 ++++++++++++++++++++++++++++++++
+ 3 files changed, 414 insertions(+), 37 deletions(-)
+
+## Diff
+diff --git a/src/mayshay/cssparse/selectors.py b/src/mayshay/cssparse/selectors.py
+index beba976..772d640 100644
+--- a/src/mayshay/cssparse/selectors.py
++++ b/src/mayshay/cssparse/selectors.py
+@@ -31,40 +31,56 @@ Errors are raised, not recovered from: `SelectorParseError` is a `ValueError`
+ subclass carrying the offending token's `pos`. That is the spec's rule at
+ css-syntax level -- an invalid selector invalidates the style rule that
+ contains it, and nothing more -- so the decision of what to do about it
+ belongs to the caller building the stylesheet, not here.
+ 
+ Deliberate deviations and scope limits, documented so they don't surprise us
+ later:
+ 
+ 1. **The match operators `~=`, `|=`, `^=`, `$=` and `*=` are reassembled
+    from two `Delim` tokens**, because the current css-syntax spec has no
+-   `<substring-match-token>` family -- see deviation 7 in
+-   `tokenizer.py`. The two delims must be *adjacent in the source*, which
+-   `_adjacent` checks by comparing `pos`, so `[a ~= v]` parses and
+-   `[a ~ = v]` does not: whitespace is allowed around the operator but not
+-   inside it, exactly as when it was one token. `pos` comparison rather
+-   than mere list adjacency also rejects `[a~/**/=v]`, whose comment the
+-   tokenizer has already dropped. Tokens with `pos == -1` (hand-built, not
+-   tokenized) are treated as adjacent, since there is nothing to check.
++   `<substring-match-token>` family -- see deviation 7 in `tokenizer.py`.
++   The two delims must be adjacent *in the source*, which `_adjacent`
++   checks by comparing `pos`: `[a ~= v]` parses (whitespace is allowed
++   around the operator), `[a ~ = v]` does not (nor inside it), and neither
++   does `[a~/**/=v]`, whose comment the tokenizer has already dropped.
++
++   **Rejecting that last form is a deliberate divergence from the spec,
++   not conformance to it.** By the letter of the spec it should parse:
++   Selectors 4 section 16 forbids only "white space" between the two
++   halves, and a comment is not a `<whitespace-token>`; css-syntax-3
++   section 9 says a preserved comment's location "must have no effect on
++   the parsing step"; and section 9's table of places a comment may not be
++   inserted has no `~`/`|`/`^`/`$`/`*` row, so the spec asserts that `~=`
++   and `~/**/=` tokenize identically. Both major engines disagree and
++   still lex the operator at the character level: Blink's
++   `css_tokenizer.cc` does `case '~': if (ConsumeIfNext('='))`, and
++   Gecko/Servo's `cssparser/tokenizer.rs` does `starts_with(b"~=")`. We
++   follow the engines, because what an author's stylesheet means is set by
++   what ships. Do not "fix" this back to the spec letter without also
++   changing the test that pins it -- it is browser parity on purpose.
++   Tokens with `pos == -1` (hand-built, never tokenized) are treated as
++   adjacent, since there is nothing to check.
+ 2. **Type and attribute names are ASCII-lowercased at parse time; class,
+    id and attribute *values* are not.** In an HTML document element and
+    attribute names match ASCII case-insensitively while class and id are
+    case-sensitive, and `htmlparse`'s tree builder already lowercases both
+    names it stores, so folding here lets task H compare with `==`. The cost
+    is foreign-content camelCase (`clipPath`, `linearGradient`), which is
+    case-sensitive per spec -- but this engine's tree builder has no foreign
+    content and stores `clippath`, so the two are consistent. Revisit
+    together if SVG namespaces ever land. Pseudo-class and pseudo-element
+    names are ASCII case-insensitive unconditionally and are always folded.
+-3. **`:not()`, `:is()` and `:where()` parse their argument as a nested
+-   selector list** and carry it in `PseudoClassSelector.selectors`, which
++3. **`:not()`, `:is()`, `:where()` and `:matches()` parse their argument
++   as a nested selector list** (`:matches()` is the pre-`:is()` spelling of
++   the same thing, still shipped by every engine, and is treated as an
++   alias of it throughout -- including its forgiving argument list) and carry it in `PseudoClassSelector.selectors`, which
+    makes their Level 4 specificity rules (section 17: the most specific
+    argument for `:not()`/`:is()`, zero for `:where()`) fall out of
+    `specificity`. `:is()` and `:where()` take a `<forgiving-selector-list>`,
+    so an argument that fails to parse is dropped rather than invalidating
+    the rule; `:not()` does not, so it invalidates. Every other functional
+    pseudo-class keeps its argument as the raw token run in
+    `PseudoClassSelector.argument` and counts as a plain pseudo-class:
+    nothing here interprets `An+B`, so `:nth-child(2)` is parsed but its
+    argument is not validated. `:has()` is deliberately in that group --
+    supporting it properly means relative selectors (`:has(> p)`), which
+@@ -77,36 +93,67 @@ later:
+ 5. **The legacy one-colon pseudo-elements `:before`, `:after`,
+    `:first-line` and `:first-letter` produce `PseudoElementSelector`**, as
+    Selectors 4 section 3.4 requires, so they count in `c` and not in `b`.
+    Every other one-colon name is a pseudo-class, including names this
+    engine will never match; unknown pseudo-classes parse fine and simply
+    never match, which is what a matcher wants for forward compatibility.
+ 6. **Functional pseudo-elements (`::part()`, `::slotted()`) raise.** They
+    are the one construct where "parse it and never match it" is wrong: both
+    change what the compound applies to, and neither is representable by
+    `PseudoElementSelector`, which carries no argument.
+-7. **A compound's ordering rules are enforced**: a type or universal
+-   selector may only be the first simple in its compound, and a
+-   pseudo-element may only be followed by pseudo-classes (which also means
+-   only one pseudo-element per compound). `[a]div` and `::before.c` are
+-   parse errors, per the `<compound-selector>` grammar in section 4.3.
++7. **A compound's ordering rules are enforced, and one of the two is
++   stricter than the grammar.** That a type or universal selector may only
++   be the first simple in its compound *is* the `<compound-selector>`
++   grammar of section 4.3, so `[a]div` and `.c*` are genuinely invalid.
++   That only pseudo-classes may follow a pseudo-element -- which also caps
++   a compound at one pseudo-element -- is a scope limit we chose, not
++   something the grammar forbids: section 16's `<pseudo-compound-selector>*`
++   allows stacked pseudo-elements, so `::before::after` and `::before.c`
++   are rejected here and accepted by the spec. Nothing downstream can
++   represent or paint a stacked pseudo-element, and failing loudly beats
++   parsing one into a shape task H would have to silently ignore. Revisit
++   if pseudo-element stacking ever matters.
+ 8. **`specificity()` accepts a `Simple`, a `Compound` or a `Complex`, and
+    rejects a `SelectorList` with `TypeError`.** A selector list has no
+    single specificity -- the cascade compares one *selector* at a time, and
+    returning e.g. the maximum would silently give a rule the specificity of
+    its most specific selector no matter which one matched.
+ 9. **`_Cursor` is a fresh, smaller cursor than `parser._Cursor`** rather
+    than an import of that module's private name -- the same call
+    `parser.py` makes about `_ascii_lower`. It differs where it matters: it
+    reports end of input as `None` (and treats `EOFToken` as end of input),
+    because selector parsing has no error-recovery mode in which consuming a
+    synthesized EOF token would be useful.
++10. **`pos` is excluded from equality, and every structure is hashable.**
++   `Compound.pos` and `Complex.pos` are `field(compare=False)`, so two
++   structurally identical selectors written at different source offsets
++   compare equal; `pos` remains for error messages and metrics, which is
++   all it was ever for. Each structure also defines `__hash__` in its own
++   class body -- a plain `@dataclass` with `eq=True` sets `__hash__` to
++   None -- because task H indexes rules by their rightmost compound, and a
++   dict keyed on compounds is the natural shape for that.
++
++   Two consequences worth knowing. These are mutable objects carrying a
++   value hash, the hazard `dataclasses` names `unsafe_hash`: a structure
++   used as a dict key must not be mutated afterwards. The parser builds
++   each one once and never touches it again, and nothing else should
++   start. And `PseudoClassSelector.__hash__` covers the *name* only,
++   because `argument` holds `CssToken`s, which are themselves unhashable
++   dataclasses -- so `:nth-child(1)` and `:nth-child(2)` collide in a dict
++   while still comparing unequal. That is correct, just less selective.
++
++   This departs from `parser.py`, whose `pos` does participate in
++   equality, and the difference is what the objects are for: a
++   `QualifiedRule` is a stream artifact whose position is part of what a
++   test asserts about it, while a selector is a *value* that tasks H and J
++   compare and key on, where two identical selectors from different
++   offsets comparing unequal is a bug waiting to happen.
+ """
+ 
+ from __future__ import annotations
+ 
+ from dataclasses import dataclass, field
+ from typing import Iterable
+ 
+ from mayshay.cssparse.tokenizer import (
+     Colon,
+     Comma,
+@@ -180,121 +227,156 @@ def _ascii_lower(text: str) -> str:
+ # Selector structures
+ # --------------------------------------------------------------------------
+ 
+ 
+ @dataclass
+ class TypeSelector:
+     """`div`. ASCII-lowercased -- see deviation 2."""
+ 
+     name: str
+ 
++    def __hash__(self) -> int:
++        return hash((TypeSelector, self.name))
++
+ 
+ @dataclass
+ class UniversalSelector:
+     """`*`. Contributes nothing to specificity."""
+ 
++    def __hash__(self) -> int:
++        return hash(UniversalSelector)
++
+ 
+ @dataclass
+ class ClassSelector:
+     """`.warning`. Case-sensitive, so the name is kept as written."""
+ 
+     name: str
+ 
++    def __hash__(self) -> int:
++        return hash((ClassSelector, self.name))
++
+ 
+ @dataclass
+ class IdSelector:
+     """`#main`. Case-sensitive, so the name is kept as written."""
+ 
+     name: str
+ 
++    def __hash__(self) -> int:
++        return hash((IdSelector, self.name))
++
+ 
+ @dataclass
+ class AttributeSelector:
+     """`[href]`, `[type="text"]`, `[class~="a" i]`.
+ 
+     `operator` is None for a presence test, else one of `=`, `~=`, `|=`,
+     `^=`, `$=`, `*=`. `case` is the Level 4 modifier: "i", "s", or None for
+     the document language's default (which for HTML depends on the attribute
+     -- task H's problem, not this module's).
+     """
+ 
+     name: str
+     operator: str | None = None
+     value: str | None = None
+     case: str | None = None
+ 
++    def __hash__(self) -> int:
++        return hash((AttributeSelector, self.name, self.operator, self.value,
++                     self.case))
++
+ 
+ @dataclass
+ class PseudoClassSelector:
+     """`:hover`, `:nth-child(2n+1)`, `:not(.a, .b)`.
+ 
+     `argument` is None for a non-functional pseudo-class, else the raw token
+     run between the parens, whitespace included and delimiters excluded.
+     `selectors` is set only for the pseudo-classes of `_SELECTOR_ARG_PSEUDOS`
+     -- see deviation 3.
+     """
+ 
+     name: str
+     argument: list[CssToken] | None = None
+     selectors: SelectorList | None = None
+ 
++    def __hash__(self) -> int:
++        # Name only: `argument` holds CssTokens, which are unhashable
++        # dataclasses. See deviation 10.
++        return hash((PseudoClassSelector, self.name))
++
+ 
+ @dataclass
+ class PseudoElementSelector:
+     """`::before`, and the four legacy one-colon spellings."""
+ 
+     name: str
+ 
++    def __hash__(self) -> int:
++        return hash((PseudoElementSelector, self.name))
++
+ 
+ Simple = (
+     TypeSelector
+     | UniversalSelector
+     | ClassSelector
+     | IdSelector
+     | AttributeSelector
+     | PseudoClassSelector
+     | PseudoElementSelector
+ )
+ 
+ 
+ @dataclass
+ class Compound:
+     """A run of simple selectors with no combinator between them: `p.c#i`.
+ 
+     `pos` is the position of the compound's first token, following the
+-    `pos`-on-everything convention the rest of the codebase uses.
++    `pos`-on-everything convention the rest of the codebase uses -- but it
++    is excluded from equality and hashing, see deviation 10.
+     """
+ 
+     simples: list[Simple] = field(default_factory=list)
+-    pos: int = -1
++    pos: int = field(default=-1, compare=False)
++
++    def __hash__(self) -> int:
++        return hash((Compound, tuple(self.simples)))
+ 
+ 
+ @dataclass
+ class Complex:
+     """Compounds joined by combinators: `div > p.c a`.
+ 
+     `combinators[i]` joins `compounds[i]` to `compounds[i + 1]`, so
+     `len(combinators) == len(compounds) - 1` always. Each is one of `" "`
+-    (descendant), `">"`, `"+"` or `"~"`.
++    (descendant), `">"`, `"+"` or `"~"`. `pos` is excluded from equality
++    and hashing, see deviation 10.
+     """
+ 
+     compounds: list[Compound] = field(default_factory=list)
+     combinators: list[str] = field(default_factory=list)
+-    pos: int = -1
++    pos: int = field(default=-1, compare=False)
++
++    def __hash__(self) -> int:
++        return hash((Complex, tuple(self.compounds), tuple(self.combinators)))
+ 
+ 
+ @dataclass
+ class SelectorList:
+     """The comma-separated list in a style rule's prelude."""
+ 
+     selectors: list[Complex] = field(default_factory=list)
+ 
++    def __hash__(self) -> int:
++        return hash((SelectorList, tuple(self.selectors)))
++
+ 
+ # --------------------------------------------------------------------------
+ # Token cursor
+ # --------------------------------------------------------------------------
+ 
+ 
+ class _Cursor:
+     """A forward cursor over a token list. See deviation 9."""
+ 
+     def __init__(self, tokens: list[CssToken]) -> None:
+@@ -658,27 +740,31 @@ def _parse_pseudo(cursor: _Cursor) -> Simple:
+     if isinstance(tok, Ident):
+         cursor.next()
+         name = _ascii_lower(tok.value)
+         if double_colon or name in _LEGACY_PSEUDO_ELEMENTS:
+             return PseudoElementSelector(name)
+         return PseudoClassSelector(name)
+ 
+     if isinstance(tok, Function):
+         cursor.next()
+         name = _ascii_lower(tok.value)
+-        argument = _consume_function_argument(cursor, tok)
+         if double_colon:
+-            # Deviation 6.
++            # Deviation 6. Raised before the argument is consumed, so an
++            # unterminated one (`::part(x`) is still reported as the
++            # unsupported pseudo-element it is, rather than as an
++            # "unterminated pseudo-class argument" -- it is not a
++            # pseudo-class, and its argument is not why we reject it.
+             raise SelectorParseError(
+                 f"functional pseudo-element '::{name}()' is not supported",
+                 tok.pos,
+             )
++        argument = _consume_function_argument(cursor, tok)
+         forgiving = _SELECTOR_ARG_PSEUDOS.get(name)
+         if forgiving is None:
+             return PseudoClassSelector(name, argument)
+         nested = _parse_selector_list(argument, forgiving=forgiving)
+         return PseudoClassSelector(name, argument, nested)
+ 
+     raise SelectorParseError("expected a pseudo-class or pseudo-element name",
+                              cursor.pos() if tok is not None else colon.pos)
+ 
+ 
+@@ -739,30 +825,35 @@ def specificity(selector: Simple | Compound | Complex) -> tuple[int, int, int]:
+         return (0, 0, 1)
+     if isinstance(selector, UniversalSelector):
+         return _ZERO
+     raise TypeError(
+         f"specificity() wants a simple, compound or complex selector, "
+         f"not {type(selector).__name__}"
+     )
+ 
+ 
+ def _pseudo_class_specificity(selector: PseudoClassSelector) -> tuple[int, int, int]:
+-    if selector.name == "where":
+-        # `:where()` is the whole point of `:where()`.
+-        return _ZERO
+     if selector.selectors is not None:
++        if selector.name == "where":
++            # Zero specificity is the whole point of `:where()`.
++            return _ZERO
+         # `:not()` / `:is()`: the specificity of the most specific argument,
+         # and zero for an empty (forgiving) list.
+         return max(
+             (specificity(s) for s in selector.selectors.selectors),
+             default=_ZERO,
+         )
++    # Every non-functional pseudo-class, *including a bare* `:where` with no
++    # argument -- which is not the `:where()` of section 17 at all, just an
++    # unknown pseudo-class that will never match. Only the functional form
++    # has zero specificity, and `selectors is not None` is exactly the test
++    # for "was written with an argument list".
+     return (0, 1, 0)
+ 
+ 
+ def _sum(triples: Iterable[tuple[int, int, int]]) -> tuple[int, int, int]:
+     a = b = c = 0
+     for triple in triples:
+         a += triple[0]
+         b += triple[1]
+         c += triple[2]
+     return (a, b, c)
+diff --git a/tests/cssparse/test_selectors.py b/tests/cssparse/test_selectors.py
+index 4198119..c958ec7 100644
+--- a/tests/cssparse/test_selectors.py
++++ b/tests/cssparse/test_selectors.py
+@@ -73,30 +73,20 @@ def test_invalid_selector_invalidates_only_its_own_rule():
+ 
+ 
+ # -- additional discrimination tests --------------------------------------
+ 
+ 
+ def simples(src, index=0):
+     """The simple selectors of one compound of the first selector."""
+     return sel(src).selectors[0].compounds[index].simples
+ 
+ 
+-def shape(src):
+-    """A selector list reduced to structure alone, dropping the source
+-    positions -- so two spellings of the same selector can be compared.
+-    """
+-    return [
+-        ([c.simples for c in selector.compounds], selector.combinators)
+-        for selector in sel(src).selectors
+-    ]
+-
+-
+ # Whitespace. The brief's two whitespace tests are satisfied by an
+ # implementation that strips whitespace and one that keeps too much of it, so
+ # each direction is pinned by structure and not only by a combinator list.
+ 
+ 
+ def test_whitespace_separated_idents_are_two_compounds():
+     """`a b` is a descendant combinator; `ab` is one type selector.
+ 
+     A parser that filters `Whitespace` before parsing cannot tell these
+     apart -- it sees the same token sequence for both.
+@@ -113,21 +103,21 @@ def test_whitespace_separated_idents_are_two_compounds():
+ 
+ def test_whitespace_around_an_explicit_combinator_is_absorbed():
+     """No spurious descendant combinator on either side of `>`.
+ 
+     A parser that turns every whitespace run into a descendant combinator
+     produces four compounds and `[' ', '>', ' ']` here.
+     """
+     spaced = sel("div > p").selectors[0]
+     assert spaced.combinators == [">"]
+     assert len(spaced.compounds) == 2
+-    assert shape("div > p") == shape("div>p") == shape("div\n\t>\n\tp")
++    assert sel("div > p") == sel("div>p") == sel("div\n\t>\n\tp")
+ 
+ 
+ def test_whitespace_around_commas_is_not_a_combinator():
+     for src in ("a,b", "a , b", "a ,b\n, c"):
+         for selector in sel(src).selectors:
+             assert selector.combinators == []
+             assert len(selector.compounds) == 1
+ 
+ 
+ def test_descendant_chain_length():
+@@ -341,31 +331,120 @@ def test_a_prelude_without_a_trailing_eof_token_parses_identically():
+     """`QualifiedRule.prelude` is a slice with no `EOFToken`; `tokenize()`
+     ends with one. Both must produce the same selector list.
+     """
+     from mayshay.cssparse.parser import parse_stylesheet
+ 
+     rule = parse_stylesheet("div > p, .c { color: red }")[0]
+     assert parse_selector_list(rule.prelude) == sel("div > p, .c")
+ 
+ 
+ def test_leading_and_trailing_whitespace_is_not_a_combinator():
+-    assert shape("  div > p  ") == shape("div>p")
+-    assert shape("\n a , b \n") == shape("a,b")
++    assert sel("  div > p  ") == sel("div>p")
++    assert sel("\n a , b \n") == sel("a,b")
+ 
+ 
+ def test_specificity_accepts_simple_and_compound_selectors():
+     assert specificity(IdSelector("i")) == (1, 0, 0)
+     assert specificity(UniversalSelector()) == (0, 0, 0)
+     assert specificity(Compound([TypeSelector("p"), ClassSelector("c")])) == (0, 1, 1)
+ 
+ 
+ def test_specificity_rejects_a_selector_list():
+     """A list has no single specificity -- the cascade compares one selector
+     at a time.
+     """
+     with pytest.raises(TypeError):
+         specificity(sel("a, b"))
+ 
+ 
++def test_bare_where_is_an_unknown_pseudo_class_not_the_functional_one():
++    """Only the *functional* `:where()` has zero specificity (Selectors 4
++    section 17). A bare `:where`, with no argument, is just an unknown
++    pseudo-class that will never match, and counts (0, 1, 0) like any
++    other. `selectors is not None` -- not the name -- is the test for
++    "written with an argument list".
++    """
++    assert specificity(sel(":where").selectors[0]) == (0, 1, 0)
++    assert specificity(sel(":where()").selectors[0]) == (0, 0, 0)
++    assert specificity(sel(":where(a)").selectors[0]) == (0, 0, 0)
++    assert specificity(sel(":not").selectors[0]) == (0, 1, 0)
++    assert specificity(sel(":is").selectors[0]) == (0, 1, 0)
++
++
++def test_matches_is_an_alias_for_is():
++    """The pre-`:is()` spelling, still shipped everywhere -- same nested
++    parse, same specificity, same forgiving argument list.
++    """
++    assert specificity(sel(":matches(#i, p)").selectors[0]) == (1, 0, 0)
++    assert len(simples(":matches(p, %%bad%%)")[0].selectors.selectors) == 1
++
++
++def test_unterminated_functional_pseudo_element_blames_the_right_thing():
++    """`::part(x` is rejected because `::part()` is unsupported, not
++    because its argument is unterminated -- it is not a pseudo-class and
++    its argument is not why we reject it.
++    """
++    for src in ("::part(x)", "::part(x"):
++        with pytest.raises(SelectorParseError) as excinfo:
++            sel(src)
++        assert "functional pseudo-element" in str(excinfo.value)
++    # ...but a real unterminated pseudo-*class* argument still says so.
++    with pytest.raises(SelectorParseError) as excinfo:
++        sel(":not(a")
++    assert "unterminated" in str(excinfo.value)
++
++
++# Equality and hashing -- deviation 10. Task H keys rules by their rightmost
++# compound, so these are load-bearing, not cosmetic.
++
++
++def test_pos_is_excluded_from_equality_but_still_recorded():
++    assert sel("p") == sel("   p")
++    assert sel("p").selectors[0].pos == 0
++    assert sel("   p").selectors[0].pos == 3
++    assert sel("p").selectors[0].compounds[0].pos == 0
++    assert sel("   p").selectors[0].compounds[0].pos == 3
++
++
++@pytest.mark.parametrize("src", [
++    "*", "p", ".c", "#i", "[a]", '[a~="v" i]', ":hover", ":nth-child(2n+1)",
++    ":not(.a, #b)", "::before", "div > p .c + a", "a, b, c",
++])
++def test_every_selector_structure_is_hashable(src):
++    """A plain `@dataclass` with `eq=True` sets `__hash__` to None; each
++    structure defines its own.
++    """
++    parsed = sel(src)
++    hash(parsed)
++    for selector in parsed.selectors:
++        hash(selector)
++        for compound in selector.compounds:
++            hash(compound)
++            for simple in compound.simples:
++                hash(simple)
++
++
++def test_equal_selectors_hash_equal_and_key_the_same_dict_entry():
++    a, b = sel("  div > p.c  ").selectors[0], sel("div>p.c").selectors[0]
++    assert a == b and hash(a) == hash(b)
++    assert len({a, b}) == 1
++    assert {a: "rule"}[b] == "rule"
++    # The rightmost compound is what task H will index on.
++    assert {a.compounds[-1]: 1}[sel("span p.c").selectors[0].compounds[-1]] == 1
++
++
++def test_different_selectors_are_not_conflated_by_the_hash():
++    """The hash is allowed to collide; equality is not allowed to."""
++    distinct = [sel(s).selectors[0] for s in
++                ("a b", "ab", "a > b", "a + b", "a.b", "a#b", "[a]", "[a=b]")]
++    assert len(set(distinct)) == len(distinct)
++    # Argument tokens are outside PseudoClassSelector.__hash__ (they are
++    # unhashable dataclasses), so these two may collide -- but must not be
++    # equal, and must not merge in a dict.
++    one, two = sel(":nth-child(1)").selectors[0], sel(":nth-child(2)").selectors[0]
++    assert one != two
++    assert len({one, two}) == 2
++
++
+ def test_specificity_never_carries_between_columns():
+     """Eleven classes are (0, 11, 0), not (1, 1, 0)."""
+     assert specificity(sel(".c" * 11).selectors[0]) == (0, 11, 0)
+diff --git a/tests/cssparse/test_selectors_corpus.py b/tests/cssparse/test_selectors_corpus.py
+new file mode 100644
+index 0000000..8117d33
+--- /dev/null
++++ b/tests/cssparse/test_selectors_corpus.py
+@@ -0,0 +1,207 @@
++"""
++Selector parsing over the real stylesheets in `data/corpus/`.
++
++Two jobs, and the second is the reason this is a committed test rather than
++the throwaway script it started as. First: every selector real pages
++actually ship must parse -- `parse_selector_list` raises rather than
++recovering, so a rule it rejects is a rule the engine will never apply, and
++a strictness decision that looks principled in isolation can quietly delete
++a tenth of a stylesheet. Second: several of this module's strict forms are
++*deliberate* divergences (the source-adjacency rule of deviation 1 is
++browser parity against the letter of the spec; the pseudo-element stacking
++limit of deviation 7 is stricter than the grammar). Those need a regression
++guard next to the evidence that licenses them, or the next reader "fixes"
++one back and nothing fails.
++
++Coverage is asserted, not assumed. This project has twice shipped a corpus
++loader that silently walked zero cases, so every level of the sweep --
++files, `<style>` elements, rules, selectors -- has a floor.
++"""
++
++import pathlib
++
++import pytest
++from mayshay.cssparse.parser import AtRule, QualifiedRule, parse_stylesheet
++from mayshay.cssparse.selectors import (
++    Complex,
++    SelectorParseError,
++    parse_selector_list,
++    specificity,
++)
++from mayshay.cssparse.tokenizer import (
++    AtKeyword,
++    CssToken,
++    CssTokenizer,
++    LBrace,
++    RBrace,
++    Whitespace,
++)
++from mayshay.dom.node import Element, Text
++from mayshay.htmlparse.treebuilder import TreeBuilder
++
++CORPUS = pathlib.Path(__file__).resolve().parents[2] / "data" / "corpus"
++
++# Floors, not exact counts: re-collecting the corpus should not break the
++# build, but losing most of it must. Actuals when written: 3 HTML files, 2
++# of them carrying <style> (hn.html links its CSS instead and contributes
++# nothing), 19 <style> elements, 193 style rules -- 156 top-level and 37
++# inside @media -- and 279 selectors.
++MIN_HTML_FILES = 3
++MIN_FILES_WITH_STYLE = 2
++MIN_STYLE_ELEMENTS = 15
++MIN_RULES = 180
++MIN_SELECTORS = 260
++
++
++def _walk(node):
++    yield node
++    for child in getattr(node, "children", []):
++        yield from _walk(child)
++
++
++def _style_bodies():
++    """The text of every `<style>` element in the corpus, found with this
++    engine's own tree builder rather than a regex.
++    """
++    for path in sorted(CORPUS.glob("*.html")):
++        document = TreeBuilder(path.read_text(errors="replace")).build()
++        for node in _walk(document):
++            if isinstance(node, Element) and node.tag_name == "style":
++                text = "".join(
++                    c.data for c in node.children if isinstance(c, Text)
++                )
++                if text.strip():
++                    yield path.name, text
++
++
++def _nested_preludes(block: list[CssToken]):
++    """The preludes of the style rules directly inside an at-rule's block.
++
++    `parse_stylesheet` does not descend into `@media`, and the generic
++    grammar exposes no rules-from-tokens entry point (see `parser.py`) --
++    but a quarter of this corpus's style rules live inside one, and a sweep
++    that skipped them would be measuring the easy half. A prelude is the
++    token run before a top-level `{`, which is exactly what 5.5.3 collects;
++    runs beginning with an `<at-keyword-token>` are a nested at-rule's
++    prelude, not a selector, and are skipped.
++    """
++    prelude: list[CssToken] = []
++    depth = 0
++    for tok in block:
++        if isinstance(tok, LBrace):
++            if depth == 0:
++                head = next(
++                    (t for t in prelude if not isinstance(t, Whitespace)), None
++                )
++                if prelude and not isinstance(head, AtKeyword):
++                    yield prelude
++                prelude = []
++            depth += 1
++            continue
++        if isinstance(tok, RBrace):
++            depth = max(0, depth - 1)
++            continue
++        if depth == 0:
++            prelude.append(tok)
++
++
++def _sweep():
++    """(files, style elements, preludes) across the whole corpus."""
++    files, elements, preludes = set(), 0, []
++    for name, css in _style_bodies():
++        files.add(name)
++        elements += 1
++        for rule in parse_stylesheet(css):
++            if isinstance(rule, QualifiedRule):
++                preludes.append((name, rule.prelude))
++            elif isinstance(rule, AtRule) and rule.block is not None:
++                for prelude in _nested_preludes(rule.block):
++                    preludes.append((name, prelude))
++    return files, elements, preludes
++
++
++SWEEP = _sweep()
++
++
++def test_the_corpus_sweep_is_not_silently_empty():
++    """The failure mode this project keeps hitting: a loader that finds
++    nothing and reports success.
++    """
++    files, elements, preludes = SWEEP
++    assert CORPUS.is_dir()
++    # Corpus files and files that carry CSS are counted separately: a page
++    # with no <style> is normal (hn.html links its stylesheet), a corpus
++    # with no pages is the bug.
++    assert len(list(CORPUS.glob("*.html"))) >= MIN_HTML_FILES
++    assert len(files) >= MIN_FILES_WITH_STYLE, files
++    assert elements >= MIN_STYLE_ELEMENTS
++    assert len(preludes) >= MIN_RULES
++
++
++def test_every_selector_in_the_corpus_parses():
++    """No real-world rule may be lost to a parse error."""
++    _, _, preludes = SWEEP
++    failures, selectors = [], 0
++    for name, prelude in preludes:
++        source = "".join(str(getattr(t, "value", "")) for t in prelude)
++        try:
++            parsed = parse_selector_list(prelude)
++        except SelectorParseError as error:
++            failures.append(f"{name}: {source.strip()[:60]!r} -- {error}")
++            continue
++        for selector in parsed.selectors:
++            assert isinstance(selector, Complex)
++            # Every triple is non-negative and finite; the point is that
++            # specificity runs over real input at all.
++            assert all(n >= 0 for n in specificity(selector))
++            selectors += 1
++    assert failures == []
++    assert selectors >= MIN_SELECTORS
++
++
++def test_corpus_selectors_are_hashable_and_position_independent():
++    """Task H keys rules by their rightmost compound. Every compound the
++    corpus produces must survive being put in a dict, and two identical
++    selectors from different offsets must land in the same bucket.
++    """
++    _, _, preludes = SWEEP
++    index = {}
++    for name, prelude in preludes:
++        for selector in parse_selector_list(prelude).selectors:
++            index.setdefault(selector.compounds[-1], []).append(name)
++    assert index
++    a = parse_selector_list(list(CssTokenizer("div > p").tokenize()))
++    b = parse_selector_list(list(CssTokenizer("   div>p   ").tokenize()))
++    assert a == b and hash(a.selectors[0]) == hash(b.selectors[0])
++
++
++@pytest.mark.parametrize("src,why", [
++    # Deviation 1 -- browser parity against the letter of the spec. Blink
++    # and Gecko both lex `~=` at the character level; the spec says a
++    # comment here has no effect on parsing. We follow the engines.
++    ('[a~/**/="v"]', "comment inside a match operator"),
++    ('[a ~ = "v"]', "whitespace inside a match operator"),
++    # Deviation 4 -- namespaces need @namespace, which nothing interprets.
++    ("ns|div", "namespace prefix"),
++    ("*|div", "namespace prefix on the universal selector"),
++    ("[ns|a]", "namespace prefix on an attribute name"),
++    ("p||a", "column combinator"),
++    # Deviation 7 -- stricter than the grammar, deliberately.
++    ("::before::after", "stacked pseudo-elements"),
++    ("::before.c", "a class after a pseudo-element"),
++    # Deviation 6, and the compound grammar of section 4.3.
++    ("::part(x)", "functional pseudo-element"),
++    ("[a]div", "a type selector that does not lead its compound"),
++    # `>>` was removed from Selectors 4 before CR.
++    ("p >> a", "the dropped >> combinator"),
++    # A hash token whose value is not an ident is not an id selector.
++    ("#0f0", "a non-ident hash"),
++])
++def test_strict_forms_the_corpus_licenses_are_still_rejected(src, why):
++    """Each of these is a decision to be stricter than something -- the
++    spec, or a plausible reading of it. The corpus sweep above is the
++    evidence that being this strict costs nothing on real pages; this is
++    the guard that keeps the two facts together.
++    """
++    with pytest.raises(SelectorParseError):
++        parse_selector_list(list(CssTokenizer(src).tokenize()))

@@ -20,7 +20,14 @@ from __future__ import annotations
 import time
 from collections import Counter
 
-from mayshay.dom.node import Comment, Document, DocumentType, Element, Text
+from mayshay.dom.node import (
+    Comment,
+    Document,
+    DocumentMode,
+    DocumentType,
+    Element,
+    Text,
+)
 from mayshay.htmlparse.tokenizer import (
     CharacterToken,
     CommentToken,
@@ -66,7 +73,7 @@ CLOSES_P = frozenset({
     "pre", "search", "section", "summary", "table", "ul",
     # `plaintext` is listed because this set is kept spec-correct, but be aware
     # it cannot fire end to end: the tokenizer has no PLAINTEXT state and no
-    # <plaintext> start tag switches into one (tokenizer deviation #7), so the
+    # <plaintext> start tag switches into one (tokenizer deviation #6), so the
     # rest of the document after <plaintext> is still tokenized as data. The
     # p-closing half works; the feature does not. Same caveat in
     # SPECIAL_ELEMENTS below.
@@ -89,11 +96,21 @@ SPECIAL_ELEMENTS = frozenset({
     "html", "iframe", "img", "input", "keygen", "li", "link", "listing",
     "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
     # `plaintext` here has the same caveat as in CLOSES_P: spec-correct set,
-    # no tokenizer support behind it (tokenizer deviation #7).
+    # no tokenizer support behind it (tokenizer deviation #6).
     "noscript", "object", "ol", "p", "param", "plaintext", "pre", "script",
     "search", "section", "select", "source", "style", "summary", "table",
     "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "title",
     "tr", "track", "ul", "wbr", "xmp",
+})
+
+# The spec's "in body" EOF rule is not "anything still open is an error": it
+# names the elements that may legitimately still be open at EOF and reports a
+# parse error only for anything else. An unclosed <p> or <li> is normal; an
+# unclosed <div> is not. Getting this wrong made <p>One<p>Two report an error
+# html5lib does not.
+EOF_OK_OPEN = frozenset({
+    "dd", "dt", "li", "optgroup", "option", "p", "rb", "rp", "rt", "rtc",
+    "tbody", "td", "tfoot", "th", "thead", "tr", "body", "html",
 })
 
 HEADINGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
@@ -136,6 +153,198 @@ CLOSES_IN_SCOPE = frozenset({
     "summary", "ul",
 })
 
+# The html5lib `#errors` vocabulary, restricted to what the eight implemented
+# insertion modes can actually produce. The corpus carries 469 distinct codes;
+# most concern tables, foreign content and select, which are not implemented.
+# A code recorded outside this set means the mapping has drifted.
+TREE_ERROR_CODES = frozenset({
+    "expected-doctype-but-got-start-tag",
+    "expected-doctype-but-got-chars",
+    "expected-doctype-but-got-eof",
+    # Not "...-but-got-comment": a comment in "initial" is inserted, not an
+    # error, and that code does not occur anywhere in the corpus. The only
+    # token that reaches the fall-through is an end tag.
+    "expected-doctype-but-got-end-tag",
+    "unexpected-doctype",
+    "unexpected-start-tag",
+    "unexpected-end-tag",
+    "unexpected-end-tag-before-html",
+    "expected-closing-tag-but-got-eof",
+    "expected-one-end-tag-but-got-another",
+    "end-tag-too-early",
+})
+
+
+# ---------------------------------------------------------------------------
+# The spec's quirks-mode table, from "The 'initial' insertion mode".
+#
+# Matching is case-insensitive, so identifiers are lowercased before
+# comparison and every entry here is already lowercase. EXACT matches by
+# equality, the PREFIXES tuples by startswith.
+#
+# The full list is here -- all 55 quirks prefixes -- rather than a
+# representative sample, because an incomplete table misclassifies silently:
+# nothing crashes, a page just lays out in the wrong mode. Verified entry by
+# entry against the spec; the count is asserted in tests/htmlparse/test_doctype.py
+# so a future edit that drops one is caught.
+#
+# The document *mode* is recorded, not acted on. Unitless lengths and the
+# alternate box model are layout concerns and belong to Phase 3.
+# ---------------------------------------------------------------------------
+# "ASCII case-insensitive", which str.lower() is not: it also folds 'É' to
+# 'é' and expands 'İ' to two code points, which would change a prefix's length
+# and silently break startswith. Same table html5lib uses.
+_ASCII_LOWER = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz"
+)
+
+
+def _ascii_lower(text: str) -> str:
+    return text.translate(_ASCII_LOWER)
+
+
+QUIRKS_EXACT = frozenset({
+    "-//w3o//dtd w3 html strict 3.0//en//",
+    "-/w3c/dtd html 4.0 transitional/en",
+    "html",
+})
+QUIRKS_SYSTEM_ID = "http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd"
+QUIRKS_PREFIXES = (
+    "+//silmaril//dtd html pro v0r11 19970101//",
+    "-//as//dtd html 3.0 aswedit + extensions//",
+    "-//advasoft ltd//dtd html 3.0 aswedit + extensions//",
+    "-//ietf//dtd html 2.0 level 1//",
+    "-//ietf//dtd html 2.0 level 2//",
+    "-//ietf//dtd html 2.0 strict level 1//",
+    "-//ietf//dtd html 2.0 strict level 2//",
+    "-//ietf//dtd html 2.0 strict//",
+    "-//ietf//dtd html 2.0//",
+    "-//ietf//dtd html 2.1e//",
+    "-//ietf//dtd html 3.0//",
+    "-//ietf//dtd html 3.2 final//",
+    "-//ietf//dtd html 3.2//",
+    "-//ietf//dtd html 3//",
+    "-//ietf//dtd html level 0//",
+    "-//ietf//dtd html level 1//",
+    "-//ietf//dtd html level 2//",
+    "-//ietf//dtd html level 3//",
+    "-//ietf//dtd html strict level 0//",
+    "-//ietf//dtd html strict level 1//",
+    "-//ietf//dtd html strict level 2//",
+    "-//ietf//dtd html strict level 3//",
+    "-//ietf//dtd html strict//",
+    "-//ietf//dtd html//",
+    "-//metrius//dtd metrius presentational//",
+    "-//microsoft//dtd internet explorer 2.0 html strict//",
+    "-//microsoft//dtd internet explorer 2.0 html//",
+    "-//microsoft//dtd internet explorer 2.0 tables//",
+    "-//microsoft//dtd internet explorer 3.0 html strict//",
+    "-//microsoft//dtd internet explorer 3.0 html//",
+    "-//microsoft//dtd internet explorer 3.0 tables//",
+    "-//netscape comm. corp.//dtd html//",
+    "-//netscape comm. corp.//dtd strict html//",
+    "-//o'reilly and associates//dtd html 2.0//",
+    "-//o'reilly and associates//dtd html extended 1.0//",
+    "-//o'reilly and associates//dtd html extended relaxed 1.0//",
+    "-//sq//dtd html 2.0 hotmetal + extensions//",
+    "-//softquad software//dtd hotmetal pro 6.0::19990601::extensions to html 4.0//",
+    "-//softquad//dtd hotmetal pro 4.0::19971010::extensions to html 4.0//",
+    "-//spyglass//dtd html 2.0 extended//",
+    "-//sun microsystems corp.//dtd hotjava html//",
+    "-//sun microsystems corp.//dtd hotjava strict html//",
+    "-//w3c//dtd html 3 1995-03-24//",
+    "-//w3c//dtd html 3.2 draft//",
+    "-//w3c//dtd html 3.2 final//",
+    "-//w3c//dtd html 3.2//",
+    "-//w3c//dtd html 3.2s draft//",
+    "-//w3c//dtd html 4.0 frameset//",
+    "-//w3c//dtd html 4.0 transitional//",
+    "-//w3c//dtd html experimental 19960712//",
+    "-//w3c//dtd html experimental 970421//",
+    "-//w3c//dtd w3 html//",
+    "-//w3o//dtd w3 html 3.0//",
+    "-//webtechs//dtd mozilla html 2.0//",
+    "-//webtechs//dtd mozilla html//",
+)
+# Limited-quirks whatever the system identifier says.
+LIMITED_QUIRKS_PREFIXES = (
+    "-//w3c//dtd xhtml 1.0 frameset//",
+    "-//w3c//dtd xhtml 1.0 transitional//",
+)
+# The hinge of the whole table: HTML 4.01 (not 4.0) Frameset and Transitional
+# are quirks when the system identifier is missing OR THE EMPTY STRING, and
+# limited-quirks when it is a non-empty string. They are deliberately absent
+# from QUIRKS_PREFIXES above -- the spec lists them in a separate clause, and
+# folding them in would make every `<!DOCTYPE ... 4.01 Transitional ...
+# "...dtd">` in the wild quirks instead of limited-quirks.
+#
+# The empty-string half is a real divergence from html5lib, which tests
+# `systemId is None` here and so classifies `PUBLIC "-//W3C//DTD HTML 4.01
+# Transitional//EN" ""` as limited-quirks. The spec wins, and the two spec
+# sentences behind that agree rather than conflict:
+#
+#   "A system identifier whose value is the empty string is not considered
+#    missing for the purposes of the conditions above."
+#
+# That note applies to ALL the conditions, these two included. It says
+# "missing" never quietly means "missing or empty" -- so a clause that wants
+# to cover the empty string has to say so, and these two do, in as many words:
+# quirks when the system identifier is "missing or the empty string",
+# limited-quirks when it is "neither missing nor the empty string". Hence the
+# truthiness test in the code rather than `is not None`. The same note is why
+# `PUBLIC "..." ""` still trips the parse-error condition at the top of the
+# DOCTYPE rules: an empty system identifier is present, just empty.
+QUIRKS_UNLESS_SYSTEM_ID = (
+    "-//w3c//dtd html 4.01 frameset//",
+    "-//w3c//dtd html 4.01 transitional//",
+)
+
+
+def classify_document_mode(token: DoctypeToken | None) -> DocumentMode:
+    """Return "no-quirks", "limited-quirks" or "quirks" for a DOCTYPE token.
+
+    `token is None` means the document had no DOCTYPE at all, which is quirks.
+
+    Clause order is load-bearing and follows the spec's: the quirks conditions
+    are exhausted before either limited-quirks condition is considered.
+
+    Two of the spec's gates on this algorithm are deliberately absent, because
+    neither concept exists in this parser yet:
+
+    - "if the document is not an iframe srcdoc document" -- there is no
+      browsing-context plumbing, so no document can be an srcdoc document. An
+      srcdoc document is always no-quirks regardless of its DOCTYPE.
+    - "and the parser cannot change the mode flag is false" -- that flag is set
+      only by the HTML fragment parsing algorithm and by XML-to-HTML
+      conversion, and there is no fragment entry point yet.
+
+    Both would gate the whole computation, so adding them later means wrapping
+    the call site, not editing the table. Neither affects any corpus case: the
+    html5lib tree-construction corpus has no srcdoc cases, and fragment cases
+    are excluded from our harness for want of a fragment parser.
+    """
+    if token is None:
+        return "quirks"
+    if token.force_quirks or _ascii_lower(token.name or "") != "html":
+        return "quirks"
+
+    public = _ascii_lower(token.public_id or "")
+    system = _ascii_lower(token.system_id or "")
+
+    if public in QUIRKS_EXACT:
+        return "quirks"
+    if system == QUIRKS_SYSTEM_ID:
+        return "quirks"
+    if public.startswith(QUIRKS_PREFIXES):
+        return "quirks"
+    if public.startswith(QUIRKS_UNLESS_SYSTEM_ID):
+        # `if system`, not `is not None`: an empty system identifier counts as
+        # missing for this clause. See the note on QUIRKS_UNLESS_SYSTEM_ID.
+        return "limited-quirks" if system else "quirks"
+    if public.startswith(LIMITED_QUIRKS_PREFIXES):
+        return "limited-quirks"
+    return "no-quirks"
+
 
 class TreeBuilder:
     def __init__(self, source: str) -> None:
@@ -150,7 +359,17 @@ class TreeBuilder:
         # and, once they exist, the table modes). Reconstruction never
         # crosses one.
         self.active_formatting: list[Element | None] = []
+        # Mirrors Tokenizer.errors. Positions follow the same convention: the
+        # offset points AT the token that caused the error, which is the
+        # token's own `pos`.
+        self.errors: list[tuple[int, str]] = []
         self.metrics: Counter[str] = Counter()
+
+    # -- parse errors ------------------------------------------------------
+
+    def _error(self, code: str, pos: int) -> None:
+        self.errors.append((pos, code))
+        self.metrics["parse_errors"] += 1
 
     # -- stack helpers -----------------------------------------------------
 
@@ -186,8 +405,16 @@ class TreeBuilder:
         ):
             self.open_elements.pop()
 
-    def close_p_element(self) -> None:
+    def close_p_element(self, pos: int) -> None:
+        """The spec's "close a p element" algorithm.
+
+        The parse error lives *in the algorithm*, not at the </p> rule, which
+        is why an implied close -- <p><b><div> -- reports it too. `pos` is the
+        offset of the token that triggered the close.
+        """
         self.generate_implied_end_tags(excluding="p")
+        if self.current is None or self.current.tag_name != "p":
+            self._error("unexpected-end-tag", pos)
         while self.open_elements:
             if self.open_elements.pop().tag_name == "p":
                 break
@@ -355,40 +582,71 @@ class TreeBuilder:
         self.metrics["parse_time_ms"] = round(
             (time.perf_counter() - started) * 1000, 3
         )
-        self.metrics["parse_errors"] = self.tokenizer.metrics["parse_errors"]
+        # The tokenizer's count, kept distinct from our own. Before this was
+        # split, a page with only tree-construction errors reported zero.
+        self.metrics["tokenizer_parse_errors"] = self.tokenizer.metrics["parse_errors"]
         return self.document
 
-    def dispatch(self, token) -> None:
-        getattr(self, f"_mode_{self.mode}")(token)
+    def dispatch(self, token, from_mode: str | None = None) -> None:
+        """Run `token` through the current insertion mode.
+
+        `from_mode` names the mode that handed the token on, and is None for a
+        token arriving straight from the tokenizer. Five modes reprocess a
+        token they could not handle by switching mode and dispatching again,
+        and the spec's rules for the token in its *original* mode are not
+        always the rules of the mode it lands in -- see _in_body_start's
+        <frameset> case. Provenance is a parameter rather than parser state
+        deliberately: it has no lifetime to manage and cannot survive an
+        exception raised mid-reprocess.
+        """
+        getattr(self, f"_mode_{self.mode}")(token, from_mode)
 
     def _is_space(self, token) -> bool:
         return isinstance(token, CharacterToken) and not token.data.strip()
 
     # -- insertion modes ---------------------------------------------------
 
-    def _mode_initial(self, token) -> None:
+    def _mode_initial(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, DoctypeToken):
-            self.document.append_child(DocumentType(token.name or "html"))
+            # `or ""`, not `or "html"`: a DOCTYPE with no name at all
+            # (`<!DOCTYPE>`) keeps an empty name, which is what html5lib
+            # serializes as `<!DOCTYPE >`. Substituting "html" would both
+            # misrender it and make it classify as no-quirks.
+            self.document.append_child(
+                DocumentType(token.name or "", token.public_id, token.system_id)
+            )
             # The quirks-mode *decision* lives here, not in the tokenizer.
             # DoctypeToken.force_quirks is only the spec's force-quirks error
-            # flag (eof-in-doctype, missing name); the "initial" insertion mode
-            # additionally puts the document in quirks mode when the name is
-            # anything but "html", or when the public/system identifier matches
-            # one of the spec's quirky lists. That last clause is unimplemented:
-            # the tokenizer discards the identifiers (tokenizer deviation #3),
-            # so identifier-driven quirks is a documented gap, not an oversight.
-            self.document.quirks_mode = token.force_quirks or token.name != "html"
+            # flag (eof-in-doctype, missing name, malformed identifier); the
+            # "initial" insertion mode additionally reads the name and both
+            # identifiers. See classify_document_mode.
+            self.document.mode = classify_document_mode(token)
             self.mode = "before_html"
         elif isinstance(token, CommentToken):
             self.document.append_child(Comment(token.data))
         elif self._is_space(token):
             pass
         else:
-            self.document.quirks_mode = True
+            if isinstance(token, StartTagToken):
+                self._error("expected-doctype-but-got-start-tag", token.pos)
+            elif isinstance(token, CharacterToken):
+                self._error("expected-doctype-but-got-chars", token.pos)
+            elif isinstance(token, EOFToken):
+                self._error("expected-doctype-but-got-eof", token.pos)
+            else:
+                # Doctype, comment, whitespace, start tag, characters and EOF
+                # are all handled above, so this is an end tag and nothing else.
+                self._error("expected-doctype-but-got-end-tag", token.pos)
+            # No DOCTYPE at all: quirks. Document.quirks_mode is derived from
+            # this now, so it cannot be assigned directly.
+            self.document.mode = "quirks"
             self.mode = "before_html"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="initial")
 
-    def _mode_before_html(self, token) -> None:
+    def _mode_before_html(self, token, from_mode: str | None = None) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if isinstance(token, CommentToken):
             self.document.append_child(Comment(token.data))
         elif self._is_space(token):
@@ -399,9 +657,12 @@ class TreeBuilder:
         else:
             self.insert_element(StartTagToken("html"))
             self.mode = "before_head"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="before_html")
 
-    def _mode_before_head(self, token) -> None:
+    def _mode_before_head(self, token, from_mode: str | None = None) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if isinstance(token, CommentToken):
             self._insertion_point().append_child(Comment(token.data))
         elif self._is_space(token):
@@ -412,9 +673,12 @@ class TreeBuilder:
         else:
             self.head = self.insert_element(StartTagToken("head"))
             self.mode = "in_head"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="before_head")
 
-    def _mode_in_head(self, token) -> None:
+    def _mode_in_head(self, token, from_mode: str | None = None) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if self._is_space(token):
             self.insert_text(token.data)
         elif isinstance(token, CommentToken):
@@ -432,9 +696,12 @@ class TreeBuilder:
         else:
             self.pop_until("head")
             self.mode = "after_head"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="in_head")
 
-    def _mode_after_head(self, token) -> None:
+    def _mode_after_head(self, token, from_mode: str | None = None) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if self._is_space(token):
             self.insert_text(token.data)
         elif isinstance(token, CommentToken):
@@ -445,22 +712,31 @@ class TreeBuilder:
         else:
             self.insert_element(StartTagToken("body"))
             self.mode = "in_body"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="after_head")
 
-    def _mode_in_body(self, token) -> None:
+    def _mode_in_body(self, token, from_mode: str | None = None) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if isinstance(token, CharacterToken):
             self.reconstruct_formatting()
             self.insert_text(token.data)
         elif isinstance(token, CommentToken):
             self._insertion_point().append_child(Comment(token.data))
         elif isinstance(token, StartTagToken):
-            self._in_body_start(token)
+            self._in_body_start(token, from_mode)
         elif isinstance(token, EndTagToken):
             self._in_body_end(token)
         elif isinstance(token, EOFToken):
+            for element in self.open_elements:
+                if element.tag_name not in EOF_OK_OPEN:
+                    self._error("expected-closing-tag-but-got-eof", token.pos)
+                    break
             self.mode = "after_body"
 
-    def _in_body_start(self, token: StartTagToken) -> None:
+    def _in_body_start(
+        self, token: StartTagToken, from_mode: str | None = None
+    ) -> None:
         """Auto-closing rules first, then one insertion for every path.
 
         The raw-text elements used to be dispatched ahead of all of this, which
@@ -469,13 +745,30 @@ class TreeBuilder:
         say -- which is the order the spec uses.
         """
         name = token.name
+        # Spec: <body> and <frameset> start tags in "in body" are parse errors
+        # (the spec then merges body's attributes, or replaces the body with
+        # the frameset). Only the errors are recorded here; the repairs, and
+        # the other in-body start-tag parse errors -- html, head, form with the
+        # form pointer set -- wait on rules this parser does not implement.
+        #
+        # <frameset> is only an error when the spec would really be in "in
+        # body" for it. Two of its own modes, both unimplemented here, would
+        # have taken the token first and neither treats it as an error:
+        # "after head" (a document that opens with <frameset>, which reaches
+        # us via _mode_after_head's fall-through) and "in frameset" (a nested
+        # <frameset>, recognisable by one already being on the stack).
+        # Reporting those would invent errors html5lib does not report.
+        if name == "body" or (
+            name == "frameset" and self._frameset_in_body(from_mode)
+        ):
+            self._error("unexpected-start-tag", token.pos)
         reconstruct = name not in NO_RECONSTRUCT_START
         if name == "li":
             if self.has_element_in_scope("li", LIST_ITEM_SCOPE):
                 self.generate_implied_end_tags(excluding="li")
                 self.pop_until("li")
             if self.has_element_in_scope("p", BUTTON_SCOPE):
-                self.close_p_element()
+                self.close_p_element(token.pos)
             reconstruct = False
         elif name in ("dd", "dt"):
             for tag in ("dd", "dt"):
@@ -484,11 +777,18 @@ class TreeBuilder:
                     self.pop_until(tag)
                     break
             if self.has_element_in_scope("p", BUTTON_SCOPE):
-                self.close_p_element()
+                self.close_p_element(token.pos)
             reconstruct = False
         elif name in CLOSES_P:
             if self.has_element_in_scope("p", BUTTON_SCOPE):
-                self.close_p_element()
+                self.close_p_element(token.pos)
+            # Spec: a heading start tag while a heading is the current node is
+            # a parse error (and the spec pops it -- we do not, which is the
+            # nesting bug test_html5lib_tree already tracks). Recording it is
+            # the honest half; the repair belongs to a tree-construction task.
+            if name in HEADINGS and self.current is not None:
+                if self.current.tag_name in HEADINGS:
+                    self._error("unexpected-start-tag", token.pos)
             # xmp is the one p-closing element whose rule reconstructs; the
             # rest (div, table, h1..h6, hr, form, pre, ...) do not.
             reconstruct = name == "xmp"
@@ -504,32 +804,59 @@ class TreeBuilder:
         else:
             self.insert_element_maybe_raw_text(token)
 
+    def _frameset_in_body(self, from_mode: str | None) -> bool:
+        """True when a <frameset> start tag really is an in-body parse error."""
+        if from_mode == "after_head":
+            return False  # the spec's "after head" frameset case
+        return not any(el.tag_name == "frameset" for el in self.open_elements)
+
     def _in_body_end(self, token: EndTagToken) -> None:
         name = token.name
         if name == "p":
             if not self.has_element_in_scope("p", BUTTON_SCOPE):
                 # Spec: parse error, then insert an empty <p> and close it.
+                # (The inserted p makes close_p_element's own check pass, so
+                # this error is not a duplicate of that one.)
+                self._error("unexpected-end-tag", token.pos)
                 self.insert_element(StartTagToken("p"))
-            self.close_p_element()
+            self.close_p_element(token.pos)
         elif name == "body":
             self.mode = "after_body"
         elif name == "html":
             self.mode = "after_body"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="in_body")
         elif name == "li":
             # List-item scope, not the default barriers: inside a nested <ul>
             # a stray </li> must NOT reach out and close the enclosing <li>.
-            if self.has_element_in_scope("li", LIST_ITEM_SCOPE):
+            if not self.has_element_in_scope("li", LIST_ITEM_SCOPE):
+                self._error("unexpected-end-tag", token.pos)
+            else:
                 self.generate_implied_end_tags(excluding="li")
+                if self.current is not None and self.current.tag_name != "li":
+                    self._error("end-tag-too-early", token.pos)
                 self.pop_until("li")
         elif name in ("dd", "dt"):
-            if self.has_element_in_scope(name):
+            if not self.has_element_in_scope(name):
+                self._error("unexpected-end-tag", token.pos)
+            else:
                 self.generate_implied_end_tags(excluding=name)
+                if self.current is not None and self.current.tag_name != name:
+                    self._error("end-tag-too-early", token.pos)
                 self.pop_until(name)
         elif name in HEADINGS:
             # Any open heading closes any other: </h2> closes an open <h1>.
-            if self.has_any_element_in_scope(HEADINGS):
+            #
+            # This is the block shape, not the list-item shape: one error,
+            # `end-tag-too-early`, reported whenever the current node is not
+            # the element named by the tag -- including when no heading is in
+            # scope at all. See the note on CLOSES_IN_SCOPE below for why the
+            # two families genuinely differ rather than one being wrong.
+            in_scope = self.has_any_element_in_scope(HEADINGS)
+            if in_scope:
                 self.generate_implied_end_tags()
+            if self.current is None or self.current.tag_name != name:
+                self._error("end-tag-too-early", token.pos)
+            if in_scope:
                 while self.open_elements:
                     if self.open_elements.pop().tag_name in HEADINGS:
                         break
@@ -559,8 +886,26 @@ class TreeBuilder:
                 self.generate_implied_end_tags(excluding=name)
                 self.pop_until(name)
         elif name in CLOSES_IN_SCOPE:
-            if self.has_element_in_scope(name):
+            # One parse error covers both failure shapes here, which is the
+            # vocabulary's own shape: `end-tag-too-early` is reported whenever
+            # the current node is not the element being closed, whether that
+            # is because something is still open inside it or because it is
+            # not in scope at all. There is no separate not-in-scope code for
+            # this family.
+            #
+            # This looks asymmetric next to </li>, </dd> and </dt> above, which
+            # DO report `unexpected-end-tag` when nothing is in scope. The
+            # asymmetry is in the vocabulary, not here: the block family and
+            # the heading family gate only the *repair* on the scope check and
+            # report one code unconditionally, while the list-item family
+            # branches on scope and reports two. Flattening either family to
+            # match the other produces codes the corpus does not expect.
+            in_scope = self.has_element_in_scope(name)
+            if in_scope:
                 self.generate_implied_end_tags(excluding=name)
+            if self.current is None or self.current.tag_name != name:
+                self._error("end-tag-too-early", token.pos)
+            if in_scope:
                 self.pop_until(name)
                 if name in FORMATTING_MARKER_ELEMENTS:
                     self.clear_formatting_to_marker()
@@ -587,20 +932,25 @@ class TreeBuilder:
                     self.open_elements.pop()
                 return
             if node.tag_name in SPECIAL_ELEMENTS:
+                self._error("unexpected-end-tag", token.pos)
                 return  # parse error; ignore the token
 
-    def _mode_text(self, token) -> None:
+    def _mode_text(self, token, from_mode: str | None = None) -> None:
         if isinstance(token, CharacterToken):
             self.insert_text(token.data)
         elif isinstance(token, EndTagToken):
             self.open_elements.pop()
             self.mode = self.original_mode
         elif isinstance(token, EOFToken):
+            self._error("expected-closing-tag-but-got-eof", token.pos)
             self.open_elements.pop()
             self.mode = self.original_mode
-            self.dispatch(token)
+            self.dispatch(token, from_mode="text")
 
-    def _mode_after_body(self, token) -> None:
+    def _mode_after_body(self, token, from_mode: str | None = None) -> None:
+        if isinstance(token, DoctypeToken):
+            self._error("unexpected-doctype", token.pos)
+            return
         if isinstance(token, CommentToken):
             self.document.append_child(Comment(token.data))
         elif isinstance(token, EOFToken):
@@ -616,7 +966,7 @@ class TreeBuilder:
             pass
         else:
             self.mode = "in_body"
-            self.dispatch(token)
+            self.dispatch(token, from_mode="after_body")
 
 
 def parse(source: str) -> Document:

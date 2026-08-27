@@ -28,7 +28,7 @@ from mayshay.htmlparse.tokenizer import (
     StartTagToken,
     Tokenizer,
 )
-from tests.support.dat import load_tokenizer_tests
+from tests.support.dat import TOKENIZER_DIR, load_tokenizer_tests
 from tests.support.marks import requires_corpus
 
 # html5lib's initialStates names -> this tokenizer's state strings. Only the
@@ -41,7 +41,7 @@ STATE_NAMES = {
 }
 # "PLAINTEXT state" is deliberately absent, which silently drops the corpus's
 # PLAINTEXT cases (~52) rather than xfailing them. There is no tokenizer state
-# to map it to -- see tokenizer deviation #7 -- so there is nothing to pin.
+# to map it to -- see tokenizer deviation #6 -- so there is nothing to pin.
 # When PLAINTEXT lands, add it here and the cases start being enforced.
 
 # Cases known to fail, each with the reason it is deferred. Keyed by
@@ -51,7 +51,7 @@ STATE_NAMES = {
 # listed here fails, the suite goes red. That is the point -- the set is a
 # ledger of deferred work, not a mute button.
 KNOWN_MISSES = {
-    # -- double-escaped script data: deviation #4 ------------------------
+    # -- double-escaped script data: deviation #3 ------------------------
     ("</script> in script HTML comment - double escaped", "Script data state"): (
         "script data double-escaped states not implemented; same gap as the "
         "xfail in test_rawtext.py::test_double_escaped_script"
@@ -95,9 +95,17 @@ def _to_corpus_shape(token) -> list | None:
     if isinstance(token, CommentToken):
         return ["Comment", token.data]
     if isinstance(token, DoctypeToken):
-        # We don't parse public/system identifiers (deviation #3). The
-        # corpus's fifth field is "correctness", the inverse of force-quirks.
-        return ["DOCTYPE", token.name, None, None, not token.force_quirks]
+        # The corpus's fifth field is "correctness", the inverse of
+        # force-quirks. Fields three and four were hardcoded to None while the
+        # tokenizer discarded the identifiers; Task C captures them, so they
+        # are reported for real.
+        return [
+            "DOCTYPE",
+            token.name,
+            token.public_id,
+            token.system_id,
+            not token.force_quirks,
+        ]
     # EOFToken: the corpus has no descriptor for it.
     return None
 
@@ -226,3 +234,127 @@ def test_entity_corpus_is_not_empty():
         f"expected 4626 entity cases from the pinned corpus, got {len(cases)}; "
         "if the submodule moved, re-check ENTITY_KNOWN_MISSES before updating this"
     )
+
+
+# --------------------------------------------------------------------------
+# DOCTYPE corpus: every Data-state case that expects a DOCTYPE token (Task C)
+# --------------------------------------------------------------------------
+#
+# Task C replaced the phase-1 scan-to-'>' DOCTYPE hack with the spec's sixteen
+# DOCTYPE states. Hand-written tests under-constrain that for exactly the
+# reason Task 3's raw-text rewrite needed a corpus: most of them pass against
+# the old hack too, which was crude rather than wrong on well-formed input. The
+# interesting behaviour is all in the malformed cases -- a missing quote, an
+# abrupt '>' inside an identifier, a keyword run together with its identifier,
+# EOF in each of the fifteen non-bogus states -- and there are 855 of those
+# here against roughly a dozen written by hand.
+#
+# SELECTION RULE: initialStates is exactly ["Data state"] and the EXPECTED
+# output contains a DOCTYPE descriptor. Keying on the expected side rather than
+# on the input text keeps the filter independent of what our tokenizer happens
+# to do, so a case we wrongly fail to produce a DOCTYPE for is still selected
+# and still fails.
+#
+# The rule has one hole, measured rather than assumed: six Data-state cases
+# whose input mentions "<!d" expect something other than a DOCTYPE -- bogus
+# comments, `<!doc...`. Five pass. The sixth (test4.test, "<!doc" + NUL) fails
+# on the NUL deviation, and it is a comment-state case rather than a DOCTYPE
+# one, so it belongs to whichever task adopts the comment corpus and is
+# deliberately not laundered through the ledger below.
+#
+# This section does NOT adopt the remaining ~1,550 Data-state cases (tags,
+# attributes, comments, PLAINTEXT); those still need the written ledger the
+# note above ENTITY_FILES describes.
+
+_NUL = (
+    "NUL is passed through rather than replaced with U+FFFD (tokenizer "
+    "deviation #5), so the name or identifier keeps a literal U+0000. Nothing "
+    "DOCTYPE-specific is wrong -- the same deviation fails the equivalent "
+    "cases in the tag-name and attribute states, which are not adopted yet."
+)
+
+# All twelve failures among the 855, and every one is the NUL deviation.
+# Keyed by (filename, description, input) for the same reason as
+# ENTITY_KNOWN_MISSES; uniqueness is asserted below rather than assumed.
+DOCTYPE_KNOWN_MISSES: dict[tuple[str, str, str], str] = {
+    ("test3.test", "<!DOCTYPE\\u0000", "<!DOCTYPE\x00"): _NUL,
+    ("test3.test", "<!DOCTYPE \\u0000", "<!DOCTYPE \x00"): _NUL,
+    ("test3.test", "<!DOCTYPE a\\u0000", "<!DOCTYPE a\x00"): _NUL,
+    ("test3.test", '<!DOCTYPE a PUBLIC"\\u0000', '<!DOCTYPE a PUBLIC"\x00'): _NUL,
+    ("test3.test", "<!DOCTYPE a PUBLIC'\\u0000", "<!DOCTYPE a PUBLIC'\x00"): _NUL,
+    ("test3.test", '<!DOCTYPE a SYSTEM"\\u0000', '<!DOCTYPE a SYSTEM"\x00'): _NUL,
+    ("test3.test", "<!DOCTYPE a SYSTEM'\\u0000", "<!DOCTYPE a SYSTEM'\x00"): _NUL,
+    ("test3.test", "<!DOCTYPEa\\u0000", "<!DOCTYPEa\x00"): _NUL,
+    ("test3.test", '<!DOCTYPEa PUBLIC"\\u0000', '<!DOCTYPEa PUBLIC"\x00'): _NUL,
+    ("test3.test", "<!DOCTYPEa PUBLIC'\\u0000", "<!DOCTYPEa PUBLIC'\x00"): _NUL,
+    ("test3.test", '<!DOCTYPEa SYSTEM"\\u0000', '<!DOCTYPEa SYSTEM"\x00'): _NUL,
+    ("test3.test", "<!DOCTYPEa SYSTEM'\\u0000", "<!DOCTYPEa SYSTEM'\x00"): _NUL,
+}
+
+
+def _doctype_corpus_files() -> list[str]:
+    """Every fixture file, globbed rather than listed.
+
+    Five files carry DOCTYPE cases today. Hardcoding those five would let a
+    corpus bump that adds a sixth pass silently; globbing means the collection
+    count below moves instead, which is the loud failure we want.
+    """
+    if not TOKENIZER_DIR.is_dir():
+        return []
+    return sorted(p.name for p in TOKENIZER_DIR.glob("*.test"))
+
+
+def _expects_doctype(test) -> bool:
+    return any(
+        descriptor and descriptor[0] == "DOCTYPE" for descriptor in test.output
+    )
+
+
+def _doctype_keys_and_tests():
+    for filename in _doctype_corpus_files():
+        for test in load_tokenizer_tests(filename):
+            if test.initial_states != ["Data state"] or not _expects_doctype(test):
+                continue
+            yield (filename, test.description, test.input), test
+
+
+def _doctype_cases():
+    for key, test in _doctype_keys_and_tests():
+        marks = []
+        if key in DOCTYPE_KNOWN_MISSES:
+            marks.append(
+                pytest.mark.xfail(strict=True, reason=DOCTYPE_KNOWN_MISSES[key])
+            )
+        yield pytest.param(
+            test.input, test.output, marks=marks, id=f"{key[0]}: {test.description}"
+        )
+
+
+@requires_corpus
+@pytest.mark.parametrize("source,expected", list(_doctype_cases()))
+def test_html5lib_doctype_case(source, expected):
+    assert _tokenize_data(source) == _coalesce(expected)
+
+
+@requires_corpus
+def test_doctype_corpus_is_not_empty():
+    """A loader regression that silently yields nothing must not read green."""
+    cases = list(_doctype_cases())
+    assert len(cases) == 855, (
+        f"expected 855 DOCTYPE cases from the pinned corpus, got {len(cases)}; "
+        "if the submodule moved, re-check DOCTYPE_KNOWN_MISSES before updating "
+        "this"
+    )
+
+
+@requires_corpus
+def test_doctype_ledger_is_keyed_uniquely_and_has_no_stale_entries():
+    """Two ways this ledger could quietly stop meaning anything.
+
+    A duplicate key would let one entry mask another case; a stale key would
+    xfail nothing at all while still reading as deferred work.
+    """
+    keys = [key for key, _ in _doctype_keys_and_tests()]
+    assert len(keys) == len(set(keys)), "(file, description, input) is not unique"
+    stale = sorted(set(DOCTYPE_KNOWN_MISSES) - set(keys))
+    assert not stale, f"DOCTYPE_KNOWN_MISSES entries match no case: {stale}"

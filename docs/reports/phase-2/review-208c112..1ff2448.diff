@@ -1,0 +1,112 @@
+# Review package: 208c112..1ff2448
+
+## Commits
+1ff2448 cssparse: fix stale deviation cross-references after renumbering
+
+## Files changed
+ src/mayshay/cssparse/parser.py | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+## Diff
+diff --git a/src/mayshay/cssparse/parser.py b/src/mayshay/cssparse/parser.py
+index 843452b..bde4c10 100644
+--- a/src/mayshay/cssparse/parser.py
++++ b/src/mayshay/cssparse/parser.py
+@@ -220,21 +220,22 @@ def _consume_balanced(
+     errors: list[tuple[int, str]],
+     metrics: Counter[str],
+     *,
+     include_closer: bool = True,
+ ) -> list[CssToken]:
+     """Consume component values up to and including a matching `closer`.
+ 
+     Shared body for 5.5.7 (simple block, closer is `}`/`]`/`)`) and 5.5.8
+     (function, closer is always `)`). `include_closer` is False only for the
+     outermost `{...}` of a rule's block, whose contents the caller wants
+-    without the surrounding braces -- see deviation 2.
++    without the surrounding braces -- see the representation note under
++    deviation 1 in the module docstring (this is not itself a deviation).
+     """
+     out: list[CssToken] = []
+     while True:
+         tok = cursor.peek()
+         if isinstance(tok, EOFToken):
+             errors.append((tok.pos, "eof in block"))
+             metrics["parse_errors"] += 1
+             return out
+         if isinstance(tok, closer):
+             cursor.next()
+@@ -244,21 +245,22 @@ def _consume_balanced(
+         out.extend(_consume_component_value(cursor, errors, metrics))
+ 
+ 
+ def _consume_component_value(
+     cursor: _Cursor, errors: list[tuple[int, str]], metrics: Counter[str]
+ ) -> list[CssToken]:
+     """5.5.6. Returns the flat tokens of exactly one component value.
+ 
+     A plain token returns itself. A bracket opener or a function token
+     returns itself plus every token of its matching group -- see deviation 1
+-    for why that group is a flat list rather than a nested object.
++    (component values as flat token lists, not a nested tree) for why that
++    group is a flat list rather than a nested object.
+     """
+     tok = cursor.next()
+     if isinstance(tok, Function):
+         metrics["functions_consumed"] += 1
+         return [tok] + _consume_balanced(cursor, RParen, errors, metrics)
+     closer = _MIRROR.get(type(tok))
+     if closer is not None:
+         return [tok] + _consume_balanced(cursor, closer, errors, metrics)
+     return [tok]
+ 
+@@ -378,22 +380,23 @@ def _consume_list_of_declarations(
+     while True:
+         tok = cursor.peek()
+         if isinstance(tok, (Whitespace, Semicolon)):
+             cursor.next()
+             continue
+         if isinstance(tok, EOFToken):
+             return decls
+         if isinstance(tok, AtKeyword):
+             cursor.next()
+             # Consumed for its side effect on the cursor only -- see
+-            # deviation 3. A malformed or unknown at-rule here still cannot
+-            # break the declarations before or after it.
++            # deviation 2 (parse_declarations's list[Declaration] return type
++            # has no room for a nested at-rule). A malformed or unknown
++            # at-rule here still cannot break the declarations before or after it.
+             _consume_at_rule(cursor, tok, errors, metrics)
+             continue
+         if isinstance(tok, Ident):
+             # Spec: build a temporary component-value list starting with the
+             # name, up to (not including) the next semicolon/EOF, then hand
+             # that whole run to "consume a declaration".
+             temp = [cursor.next()]
+             while not isinstance(cursor.peek(), (Semicolon, EOFToken)):
+                 temp.extend(_consume_component_value(cursor, errors, metrics))
+             decl = _consume_declaration(temp, errors, metrics)
+@@ -482,21 +485,22 @@ def _strip_important(value: list[CssToken]) -> bool:
+ # --------------------------------------------------------------------------
+ 
+ 
+ class CssParser:
+     """
+     Consumes CSS source into a flat list of top-level rules.
+ 
+         rules = CssParser(source).parse_stylesheet()
+ 
+     Mirrors `htmlparse.TreeBuilder`: owns a `CssTokenizer` (`self.tokenizer`)
+-    but keeps its own `errors`/`metrics` -- see deviation 6.
++    but keeps its own `errors`/`metrics` -- see deviation 5 (errors/metrics
++    kept separate from the `CssTokenizer` it drives).
+     """
+ 
+     def __init__(self, source: str) -> None:
+         self.source = source
+         self.tokenizer = CssTokenizer(source)
+         self.errors: list[tuple[int, str]] = []
+         self.metrics: Counter[str] = Counter()
+ 
+     def parse_stylesheet(self) -> list[QualifiedRule | AtRule]:
+         """The "parse a stylesheet" entry point (5.3.3): tokenize `source`,

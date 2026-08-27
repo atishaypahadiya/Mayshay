@@ -13,6 +13,7 @@ from mayshay.dom.node import (
     Element,
     Node,
     Text,
+    annotate_positions,
     serialize,
 )
 
@@ -23,5 +24,6 @@ __all__ = [
     "Element",
     "Node",
     "Text",
+    "annotate_positions",
     "serialize",
 ]

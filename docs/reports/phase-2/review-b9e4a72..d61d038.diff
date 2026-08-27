@@ -1,0 +1,686 @@
+# Review package: b9e4a72..d61d038
+
+## Commits
+d61d038 htmlparse: record tree construction parse errors, split from tokenizer count
+
+## Files changed
+ src/mayshay/htmlparse/tokenizer.py   |  11 ++-
+ src/mayshay/htmlparse/treebuilder.py | 140 ++++++++++++++++++++++++++++++++---
+ tests/htmlparse/test_parse_errors.py | 130 ++++++++++++++++++++++++++++++++
+ 3 files changed, 269 insertions(+), 12 deletions(-)
+
+## Diff
+diff --git a/src/mayshay/htmlparse/tokenizer.py b/src/mayshay/htmlparse/tokenizer.py
+index 6243986..4974bee 100644
+--- a/src/mayshay/htmlparse/tokenizer.py
++++ b/src/mayshay/htmlparse/tokenizer.py
+@@ -298,21 +298,24 @@ class Tokenizer:
+         return StartTagToken(
+             name, self._attrs, self._self_closing, pos=self._token_start
+         )
+ 
+     # -- main loop ---------------------------------------------------------
+ 
+     def tokenize(self) -> Iterator[Token]:
+         while True:
+             if self.state == "eof":
+                 yield from self._flush_text()
+-                yield EOFToken()
++                # The EOF token's position is the end of input. It is -1 by
++                # default, and the tree builder now records EOF parse errors
++                # against it, so it has to be a real offset.
++                yield EOFToken(pos=self.pos)
+                 return
+             yield from getattr(self, f"_state_{self.state}")()
+ 
+     def switch_to(self, state: str, last_start_tag: str | None = None) -> None:
+         """
+         Seam for the tree builder to drive the tokenizer.
+ 
+         **This does not currently drive anything.** `_emit_tag` above already
+         switches to rcdata / rawtext / script_data on every start tag, from the
+         same three frozensets the tree builder consults, and it does so before
+@@ -871,20 +874,24 @@ class Tokenizer:
+         name, and by malformed public/system identifiers. It is NOT the quirks
+         *mode* decision -- deciding that is the tree builder's "initial"
+         insertion mode's job, and it also takes the name and the identifiers
+         into account. See TreeBuilder._mode_initial.
+ 
+         Because we discard public and system identifiers (deviation #3), the
+         identifier-driven half of both the flag and the decision is a known
+         gap: `<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.0//EN">` should end up
+         in quirks mode here and does not.
+         """
++        # self.pos is just past "<!DOCTYPE" (9 chars) on entry, so the
++        # token's own start -- the convention every other tag token uses --
++        # is nine characters back.
++        start = self.pos - 9
+         chars: list[str] = []
+         force_quirks = False
+         close_pos = -1
+         while True:
+             ch = self._next()
+             if ch is EOF:
+                 self._error("eof in doctype")
+                 force_quirks = True   # spec: eof-in-doctype sets force-quirks
+                 self.state = "eof"
+                 break
+@@ -895,21 +902,21 @@ class Tokenizer:
+             chars.append(ch)
+         raw = "".join(chars).strip()
+         name = raw.split()[0].lower() if raw else None
+         if name is None and not force_quirks:
+             # `<!DOCTYPE>` / `<!DOCTYPE >`. At EOF the spec reports only
+             # eof-in-doctype, so don't double-report; force-quirks is already
+             # set on that path.
+             self._error("missing doctype name", close_pos)
+             force_quirks = True
+         self.metrics["doctypes"] += 1
+-        yield DoctypeToken(name=name, force_quirks=force_quirks)
++        yield DoctypeToken(name=name, force_quirks=force_quirks, pos=start)
+ 
+ 
+ # --------------------------------------------------------------------------
+ 
+ if __name__ == "__main__":
+     sample = """<!DOCTYPE html>
+ <html lang="en">
+   <!-- a comment -->
+   <body class=main data-x>
+     <p>Hello <em>world</em> &amp; goodbye</p>
+diff --git a/src/mayshay/htmlparse/treebuilder.py b/src/mayshay/htmlparse/treebuilder.py
+index bb7dd22..8df500d 100644
+--- a/src/mayshay/htmlparse/treebuilder.py
++++ b/src/mayshay/htmlparse/treebuilder.py
+@@ -89,20 +89,30 @@ SPECIAL_ELEMENTS = frozenset({
+     "html", "iframe", "img", "input", "keygen", "li", "link", "listing",
+     "main", "marquee", "menu", "meta", "nav", "noembed", "noframes",
+     # `plaintext` here has the same caveat as in CLOSES_P: spec-correct set,
+     # no tokenizer support behind it (tokenizer deviation #7).
+     "noscript", "object", "ol", "p", "param", "plaintext", "pre", "script",
+     "search", "section", "select", "source", "style", "summary", "table",
+     "tbody", "td", "template", "textarea", "tfoot", "th", "thead", "title",
+     "tr", "track", "ul", "wbr", "xmp",
+ })
+ 
++# The spec's "in body" EOF rule is not "anything still open is an error": it
++# names the elements that may legitimately still be open at EOF and reports a
++# parse error only for anything else. An unclosed <p> or <li> is normal; an
++# unclosed <div> is not. Getting this wrong made <p>One<p>Two report an error
++# html5lib does not.
++EOF_OK_OPEN = frozenset({
++    "dd", "dt", "li", "optgroup", "option", "p", "rb", "rp", "rt", "rtc",
++    "tbody", "td", "tfoot", "th", "thead", "tr", "body", "html",
++})
++
+ HEADINGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
+ 
+ # The spec's formatting elements. These are the ones tracked on the list of
+ # active formatting elements and re-opened by reconstruction.
+ FORMATTING_ELEMENTS = frozenset({
+     "a", "b", "big", "code", "em", "font", "i", "nobr", "s", "small",
+     "strike", "strong", "tt", "u",
+ })
+ 
+ # Elements that push a scope marker onto the formatting list: reconstruction
+@@ -129,36 +139,67 @@ NO_RECONSTRUCT_START = HEAD_ELEMENTS | frozenset({
+ # stack walk aborts on a special element, so routing </div> through it would
+ # make <div><p>x</div> ignore the </div> instead of closing the div.
+ CLOSES_IN_SCOPE = frozenset({
+     "address", "applet", "article", "aside", "blockquote", "button", "center",
+     "details", "dialog", "dir", "div", "dl", "fieldset", "figcaption",
+     "figure", "footer", "form", "header", "hgroup", "listing", "main",
+     "marquee", "menu", "nav", "object", "ol", "pre", "search", "section",
+     "summary", "ul",
+ })
+ 
++# The html5lib `#errors` vocabulary, restricted to what the eight implemented
++# insertion modes can actually produce. The corpus carries 469 distinct codes;
++# most concern tables, foreign content and select, which are not implemented.
++# A code recorded outside this set means the mapping has drifted.
++TREE_ERROR_CODES = frozenset({
++    "expected-doctype-but-got-start-tag",
++    "expected-doctype-but-got-chars",
++    "expected-doctype-but-got-eof",
++    # Not "...-but-got-comment": a comment in "initial" is inserted, not an
++    # error, and that code does not occur anywhere in the corpus. The only
++    # token that reaches the fall-through is an end tag.
++    "expected-doctype-but-got-end-tag",
++    "unexpected-doctype",
++    "unexpected-start-tag",
++    "unexpected-end-tag",
++    "unexpected-end-tag-before-html",
++    "expected-closing-tag-but-got-eof",
++    "expected-one-end-tag-but-got-another",
++    "end-tag-too-early",
++})
++
+ 
+ class TreeBuilder:
+     def __init__(self, source: str) -> None:
+         self.source = source
+         self.tokenizer = Tokenizer(source)
+         self.document = Document()
+         self.open_elements: list[Element] = []
+         self.mode = "initial"
+         self.original_mode = "in_body"
+         self.head: Element | None = None
+         # None entries are scope markers (inserted by applet/object/marquee
+         # and, once they exist, the table modes). Reconstruction never
+         # crosses one.
+         self.active_formatting: list[Element | None] = []
++        # Mirrors Tokenizer.errors. Positions follow the same convention: the
++        # offset points AT the token that caused the error, which is the
++        # token's own `pos`.
++        self.errors: list[tuple[int, str]] = []
+         self.metrics: Counter[str] = Counter()
+ 
++    # -- parse errors ------------------------------------------------------
++
++    def _error(self, code: str, pos: int) -> None:
++        self.errors.append((pos, code))
++        self.metrics["parse_errors"] += 1
++
+     # -- stack helpers -----------------------------------------------------
+ 
+     @property
+     def current(self) -> Element | None:
+         return self.open_elements[-1] if self.open_elements else None
+ 
+     def _insertion_point(self):
+         return self.current if self.open_elements else self.document
+ 
+     def has_element_in_scope(self, target: str, barriers=SCOPE_BARRIERS) -> bool:
+@@ -179,22 +220,30 @@ class TreeBuilder:
+         return False
+ 
+     def generate_implied_end_tags(self, *, excluding: str | None = None) -> None:
+         while (
+             self.current is not None
+             and self.current.tag_name in IMPLIED_END_TAGS
+             and self.current.tag_name != excluding
+         ):
+             self.open_elements.pop()
+ 
+-    def close_p_element(self) -> None:
++    def close_p_element(self, pos: int) -> None:
++        """The spec's "close a p element" algorithm.
++
++        The parse error lives *in the algorithm*, not at the </p> rule, which
++        is why an implied close -- <p><b><div> -- reports it too. `pos` is the
++        offset of the token that triggered the close.
++        """
+         self.generate_implied_end_tags(excluding="p")
++        if self.current is None or self.current.tag_name != "p":
++            self._error("unexpected-end-tag", pos)
+         while self.open_elements:
+             if self.open_elements.pop().tag_name == "p":
+                 break
+ 
+     def pop_until(self, name: str) -> None:
+         while self.open_elements:
+             if self.open_elements.pop().tag_name == name:
+                 break
+ 
+     # -- active formatting elements ---------------------------------------
+@@ -348,21 +397,23 @@ class TreeBuilder:
+         for token in self.tokenizer.tokenize():
+             self.dispatch(token)
+             if isinstance(token, EOFToken):
+                 break
+         # Not int(): almost every parse we do finishes in well under a
+         # millisecond, and a timing metric that always reads 0 is not a
+         # timing metric. Microsecond resolution, still expressed in ms.
+         self.metrics["parse_time_ms"] = round(
+             (time.perf_counter() - started) * 1000, 3
+         )
+-        self.metrics["parse_errors"] = self.tokenizer.metrics["parse_errors"]
++        # The tokenizer's count, kept distinct from our own. Before this was
++        # split, a page with only tree-construction errors reported zero.
++        self.metrics["tokenizer_parse_errors"] = self.tokenizer.metrics["parse_errors"]
+         return self.document
+ 
+     def dispatch(self, token) -> None:
+         getattr(self, f"_mode_{self.mode}")(token)
+ 
+     def _is_space(self, token) -> bool:
+         return isinstance(token, CharacterToken) and not token.data.strip()
+ 
+     # -- insertion modes ---------------------------------------------------
+ 
+@@ -377,71 +428,93 @@ class TreeBuilder:
+             # one of the spec's quirky lists. That last clause is unimplemented:
+             # the tokenizer discards the identifiers (tokenizer deviation #3),
+             # so identifier-driven quirks is a documented gap, not an oversight.
+             self.document.quirks_mode = token.force_quirks or token.name != "html"
+             self.mode = "before_html"
+         elif isinstance(token, CommentToken):
+             self.document.append_child(Comment(token.data))
+         elif self._is_space(token):
+             pass
+         else:
++            if isinstance(token, StartTagToken):
++                self._error("expected-doctype-but-got-start-tag", token.pos)
++            elif isinstance(token, CharacterToken):
++                self._error("expected-doctype-but-got-chars", token.pos)
++            elif isinstance(token, EOFToken):
++                self._error("expected-doctype-but-got-eof", token.pos)
++            else:
++                # Doctype, comment, whitespace, start tag, characters and EOF
++                # are all handled above, so this is an end tag and nothing else.
++                self._error("expected-doctype-but-got-end-tag", token.pos)
+             self.document.quirks_mode = True
+             self.mode = "before_html"
+             self.dispatch(token)
+ 
+     def _mode_before_html(self, token) -> None:
++        if isinstance(token, DoctypeToken):
++            self._error("unexpected-doctype", token.pos)
++            return
+         if isinstance(token, CommentToken):
+             self.document.append_child(Comment(token.data))
+         elif self._is_space(token):
+             pass
+         elif isinstance(token, StartTagToken) and token.name == "html":
+             self.insert_element(token)
+             self.mode = "before_head"
+         else:
+             self.insert_element(StartTagToken("html"))
+             self.mode = "before_head"
+             self.dispatch(token)
+ 
+     def _mode_before_head(self, token) -> None:
++        if isinstance(token, DoctypeToken):
++            self._error("unexpected-doctype", token.pos)
++            return
+         if isinstance(token, CommentToken):
+             self._insertion_point().append_child(Comment(token.data))
+         elif self._is_space(token):
+             pass
+         elif isinstance(token, StartTagToken) and token.name == "head":
+             self.head = self.insert_element(token)
+             self.mode = "in_head"
+         else:
+             self.head = self.insert_element(StartTagToken("head"))
+             self.mode = "in_head"
+             self.dispatch(token)
+ 
+     def _mode_in_head(self, token) -> None:
++        if isinstance(token, DoctypeToken):
++            self._error("unexpected-doctype", token.pos)
++            return
+         if self._is_space(token):
+             self.insert_text(token.data)
+         elif isinstance(token, CommentToken):
+             self._insertion_point().append_child(Comment(token.data))
+         elif isinstance(token, StartTagToken) and token.name in HEAD_ELEMENTS:
+             # title/style/script/noframes get raw-text tokenization *because*
+             # they are head elements, not instead of being checked against the
+             # head element list. textarea, xmp, iframe and noembed are raw text
+             # but are NOT head elements, so they fall through to the else branch
+             # below, close <head>, and are handled in body where they belong.
+             self.insert_element_maybe_raw_text(token)
+         elif isinstance(token, EndTagToken) and token.name == "head":
+             self.pop_until("head")
+             self.mode = "after_head"
+         else:
+             self.pop_until("head")
+             self.mode = "after_head"
+             self.dispatch(token)
+ 
+     def _mode_after_head(self, token) -> None:
++        if isinstance(token, DoctypeToken):
++            self._error("unexpected-doctype", token.pos)
++            return
+         if self._is_space(token):
+             self.insert_text(token.data)
+         elif isinstance(token, CommentToken):
+             self._insertion_point().append_child(Comment(token.data))
+         elif isinstance(token, StartTagToken) and token.name == "body":
+             self.insert_element(token)
+             self.mode = "in_body"
+         else:
+             self.insert_element(StartTagToken("body"))
+             self.mode = "in_body"
+@@ -451,92 +524,124 @@ class TreeBuilder:
+         if isinstance(token, CharacterToken):
+             self.reconstruct_formatting()
+             self.insert_text(token.data)
+         elif isinstance(token, CommentToken):
+             self._insertion_point().append_child(Comment(token.data))
+         elif isinstance(token, StartTagToken):
+             self._in_body_start(token)
+         elif isinstance(token, EndTagToken):
+             self._in_body_end(token)
+         elif isinstance(token, EOFToken):
++            for element in self.open_elements:
++                if element.tag_name not in EOF_OK_OPEN:
++                    self._error("expected-closing-tag-but-got-eof", token.pos)
++                    break
+             self.mode = "after_body"
+ 
+     def _in_body_start(self, token: StartTagToken) -> None:
+         """Auto-closing rules first, then one insertion for every path.
+ 
+         The raw-text elements used to be dispatched ahead of all of this, which
+         meant <xmp> never closed an open <p>. Raw-text tokenization is applied
+         by insert_element_maybe_raw_text at the end, after the mode has had its
+         say -- which is the order the spec uses.
+         """
+         name = token.name
++        # Spec: a <body> start tag in "in body" is a parse error (the spec then
++        # merges its attributes onto the open body). Only the error is recorded
++        # here; the merge, and the other in-body start-tag parse errors --
++        # html, head, frameset -- wait on rules this parser does not implement.
++        if name == "body":
++            self._error("unexpected-start-tag", token.pos)
+         reconstruct = name not in NO_RECONSTRUCT_START
+         if name == "li":
+             if self.has_element_in_scope("li", LIST_ITEM_SCOPE):
+                 self.generate_implied_end_tags(excluding="li")
+                 self.pop_until("li")
+             if self.has_element_in_scope("p", BUTTON_SCOPE):
+-                self.close_p_element()
++                self.close_p_element(token.pos)
+             reconstruct = False
+         elif name in ("dd", "dt"):
+             for tag in ("dd", "dt"):
+                 if self.has_element_in_scope(tag):
+                     self.generate_implied_end_tags(excluding=tag)
+                     self.pop_until(tag)
+                     break
+             if self.has_element_in_scope("p", BUTTON_SCOPE):
+-                self.close_p_element()
++                self.close_p_element(token.pos)
+             reconstruct = False
+         elif name in CLOSES_P:
+             if self.has_element_in_scope("p", BUTTON_SCOPE):
+-                self.close_p_element()
++                self.close_p_element(token.pos)
++            # Spec: a heading start tag while a heading is the current node is
++            # a parse error (and the spec pops it -- we do not, which is the
++            # nesting bug test_html5lib_tree already tracks). Recording it is
++            # the honest half; the repair belongs to a tree-construction task.
++            if name in HEADINGS and self.current is not None:
++                if self.current.tag_name in HEADINGS:
++                    self._error("unexpected-start-tag", token.pos)
+             # xmp is the one p-closing element whose rule reconstructs; the
+             # rest (div, table, h1..h6, hr, form, pre, ...) do not.
+             reconstruct = name == "xmp"
+ 
+         if reconstruct:
+             self.reconstruct_formatting()
+ 
+         if name in FORMATTING_ELEMENTS:
+             self.push_formatting(self.insert_element(token))
+         elif name in FORMATTING_MARKER_ELEMENTS:
+             self.insert_element(token)
+             self.push_formatting_marker()
+         else:
+             self.insert_element_maybe_raw_text(token)
+ 
+     def _in_body_end(self, token: EndTagToken) -> None:
+         name = token.name
+         if name == "p":
+             if not self.has_element_in_scope("p", BUTTON_SCOPE):
+                 # Spec: parse error, then insert an empty <p> and close it.
++                # (The inserted p makes close_p_element's own check pass, so
++                # this error is not a duplicate of that one.)
++                self._error("unexpected-end-tag", token.pos)
+                 self.insert_element(StartTagToken("p"))
+-            self.close_p_element()
++            self.close_p_element(token.pos)
+         elif name == "body":
+             self.mode = "after_body"
+         elif name == "html":
+             self.mode = "after_body"
+             self.dispatch(token)
+         elif name == "li":
+             # List-item scope, not the default barriers: inside a nested <ul>
+             # a stray </li> must NOT reach out and close the enclosing <li>.
+-            if self.has_element_in_scope("li", LIST_ITEM_SCOPE):
++            if not self.has_element_in_scope("li", LIST_ITEM_SCOPE):
++                self._error("unexpected-end-tag", token.pos)
++            else:
+                 self.generate_implied_end_tags(excluding="li")
++                if self.current is not None and self.current.tag_name != "li":
++                    self._error("end-tag-too-early", token.pos)
+                 self.pop_until("li")
+         elif name in ("dd", "dt"):
+-            if self.has_element_in_scope(name):
++            if not self.has_element_in_scope(name):
++                self._error("unexpected-end-tag", token.pos)
++            else:
+                 self.generate_implied_end_tags(excluding=name)
++                if self.current is not None and self.current.tag_name != name:
++                    self._error("end-tag-too-early", token.pos)
+                 self.pop_until(name)
+         elif name in HEADINGS:
+             # Any open heading closes any other: </h2> closes an open <h1>.
+-            if self.has_any_element_in_scope(HEADINGS):
++            if not self.has_any_element_in_scope(HEADINGS):
++                self._error("unexpected-end-tag", token.pos)
++            else:
+                 self.generate_implied_end_tags()
++                if self.current is not None and self.current.tag_name != name:
++                    self._error("end-tag-too-early", token.pos)
+                 while self.open_elements:
+                     if self.open_elements.pop().tag_name in HEADINGS:
+                         break
+         elif name in FORMATTING_ELEMENTS:
+             # The adoption agency algorithm minus the repair itself. Its
+             # early-exit steps are all here, in spec order, so landing the
+             # real thing later is an insertion rather than a rewrite:
+             #
+             #   4.3  not on the list          -> "any other end tag"
+             #   4.4  on the list, off the stack -> drop the entry
+@@ -552,22 +657,32 @@ class TreeBuilder:
+                 self._any_other_end_tag(token)
+             elif not any(el is entry for el in self.open_elements):
+                 self.remove_formatting(entry)
+             elif not self.has_element_in_scope(name):
+                 pass
+             else:
+                 self.remove_formatting(entry)
+                 self.generate_implied_end_tags(excluding=name)
+                 self.pop_until(name)
+         elif name in CLOSES_IN_SCOPE:
+-            if self.has_element_in_scope(name):
++            # One parse error covers both failure shapes here, which is the
++            # vocabulary's own shape: `end-tag-too-early` is reported whenever
++            # the current node is not the element being closed, whether that
++            # is because something is still open inside it or because it is
++            # not in scope at all. There is no separate not-in-scope code for
++            # this family.
++            in_scope = self.has_element_in_scope(name)
++            if in_scope:
+                 self.generate_implied_end_tags(excluding=name)
++            if self.current is None or self.current.tag_name != name:
++                self._error("end-tag-too-early", token.pos)
++            if in_scope:
+                 self.pop_until(name)
+                 if name in FORMATTING_MARKER_ELEMENTS:
+                     self.clear_formatting_to_marker()
+         else:
+             self._any_other_end_tag(token)
+         # An end tag with nothing matching in scope is ignored.
+ 
+     def _any_other_end_tag(self, token: EndTagToken) -> None:
+         """The spec's "any other end tag" step.
+ 
+@@ -580,34 +695,39 @@ class TreeBuilder:
+         for index in range(len(self.open_elements) - 1, -1, -1):
+             node = self.open_elements[index]
+             if node.tag_name == token.name:
+                 self.generate_implied_end_tags(excluding=token.name)
+                 # generate_implied_end_tags stops at node (it is excluded), so
+                 # the stack is still at least index + 1 deep here.
+                 while len(self.open_elements) > index:
+                     self.open_elements.pop()
+                 return
+             if node.tag_name in SPECIAL_ELEMENTS:
++                self._error("unexpected-end-tag", token.pos)
+                 return  # parse error; ignore the token
+ 
+     def _mode_text(self, token) -> None:
+         if isinstance(token, CharacterToken):
+             self.insert_text(token.data)
+         elif isinstance(token, EndTagToken):
+             self.open_elements.pop()
+             self.mode = self.original_mode
+         elif isinstance(token, EOFToken):
++            self._error("expected-closing-tag-but-got-eof", token.pos)
+             self.open_elements.pop()
+             self.mode = self.original_mode
+             self.dispatch(token)
+ 
+     def _mode_after_body(self, token) -> None:
++        if isinstance(token, DoctypeToken):
++            self._error("unexpected-doctype", token.pos)
++            return
+         if isinstance(token, CommentToken):
+             self.document.append_child(Comment(token.data))
+         elif isinstance(token, EOFToken):
+             pass
+         elif self._is_space(token):
+             pass
+         elif isinstance(token, EndTagToken) and token.name == "html":
+             # The spec switches to "after after body" here. We have no such
+             # mode, and staying put is behaviourally identical for the token
+             # kinds we handle. Reprocessing would bounce straight back to
+diff --git a/tests/htmlparse/test_parse_errors.py b/tests/htmlparse/test_parse_errors.py
+new file mode 100644
+index 0000000..c3ef307
+--- /dev/null
++++ b/tests/htmlparse/test_parse_errors.py
+@@ -0,0 +1,130 @@
++import collections
++
++import pytest
++
++from mayshay.htmlparse.treebuilder import TREE_ERROR_CODES, TreeBuilder
++from tests.support.dat import load_tree_tests
++from tests.support.marks import requires_corpus
++
++MALFORMED = "<p>a<div>b</p></span><li>c"
++
++
++def test_malformed_page_reports_tree_errors():
++    """The headline bug: this reported 0 before."""
++    tb = TreeBuilder(MALFORMED)
++    tb.build()
++    assert tb.errors, "tree builder recorded no errors on malformed input"
++    assert tb.metrics["parse_errors"] == len(tb.errors)
++
++
++def test_tokenizer_and_tree_counts_are_not_aliases():
++    tb = TreeBuilder(MALFORMED)
++    tb.build()
++    assert tb.metrics["tokenizer_parse_errors"] == 0
++    assert tb.metrics["parse_errors"] > 0
++
++
++def test_clean_document_reports_zero_from_both():
++    tb = TreeBuilder("<!DOCTYPE html><html><head></head><body><p>x</p></body></html>")
++    tb.build()
++    assert tb.errors == []
++    assert tb.metrics["parse_errors"] == 0
++    assert tb.metrics["tokenizer_parse_errors"] == 0
++
++
++def test_missing_doctype_is_recorded():
++    tb = TreeBuilder("<p>x")
++    tb.build()
++    assert any(code.startswith("expected-doctype") for _, code in tb.errors)
++
++
++def test_stray_end_tag_is_recorded():
++    tb = TreeBuilder("<!DOCTYPE html><p>x</span>")
++    tb.build()
++    assert any(code == "unexpected-end-tag" for _, code in tb.errors)
++
++
++def test_unclosed_element_at_eof_is_recorded():
++    tb = TreeBuilder("<!DOCTYPE html><div><p>x")
++    tb.build()
++    assert any(code == "expected-closing-tag-but-got-eof" for _, code in tb.errors)
++
++
++def test_every_recorded_code_is_in_the_curated_set():
++    """A code outside the set means the mapping drifted from the vocabulary."""
++    for src in (MALFORMED, "<p>x", "<!DOCTYPE html><p>x</span>", "<div><p>x"):
++        tb = TreeBuilder(src)
++        tb.build()
++        for _, code in tb.errors:
++            assert code in TREE_ERROR_CODES, f"{code!r} not in the curated set"
++
++
++def test_error_positions_are_within_the_source():
++    tb = TreeBuilder(MALFORMED)
++    tb.build()
++    for pos, _ in tb.errors:
++        assert 0 <= pos <= len(MALFORMED)
++
++
++# Curated cases that do not agree, each with the single root cause behind it.
++# Marked strict so that fixing one of these -- or breaking a case that agrees
++# today -- fails loudly instead of drifting. Same convention as KNOWN_MISSES in
++# test_html5lib_tree.py. None of these is a mapping bug in the recording sites;
++# each is an unimplemented or divergent piece of the parser upstream of them.
++KNOWN_ERROR_MISSES = {
++    "tests1.dat:26": (
++        "_mode_in_head falls an unmatched end tag through to in_body instead "
++        "of reporting unexpected-end-tag and ignoring it, so </div> is "
++        "diagnosed by the in-body block rule as end-tag-too-early"
++    ),
++    "tests1.dat:37": (
++        "tokenizer: `</` at EOF drops the two characters instead of emitting "
++        "them (spec eof-before-tag-name emits U+003C and U+002F), so the "
++        "initial mode sees EOF where html5lib sees characters"
++    ),
++    "tests1.dat:98": "same _mode_in_head fall-through as tests1.dat:26",
++    "tests1.dat:106": (
++        "the table insertion modes are not implemented, so </table> reaches "
++        "the in-body stack walk and the table is still open at EOF"
++    ),
++}
++
++
++def _curated_cases():
++    """Corpus cases whose expected errors fall entirely inside our set."""
++    try:
++        cases = load_tree_tests("tests1.dat")
++    except FileNotFoundError:
++        return []
++    out = []
++    for case in cases:
++        if case.fragment is not None or case.script == "on":
++            continue
++        codes = [_strip_position(line) for line in case.errors]
++        if codes and all(c in TREE_ERROR_CODES for c in codes):
++            marks = []
++            if case.id in KNOWN_ERROR_MISSES:
++                marks.append(
++                    pytest.mark.xfail(strict=True, reason=KNOWN_ERROR_MISSES[case.id])
++                )
++            out.append(pytest.param(case, codes, marks=marks, id=case.id))
++    return out
++
++
++def _strip_position(line: str) -> str:
++    return line.split(":", 1)[1].strip() if ":" in line else line.strip()
++
++
++@requires_corpus
++@pytest.mark.parametrize("case,expected", _curated_cases())
++def test_corpus_error_codes_match_as_a_multiset(case, expected):
++    """Codes only, never positions.
++
++    html5lib reports (line, col) at the END of the offending token; our
++    convention points AT the character that caused it. Comparing positions
++    would fail nearly everywhere, and for reasons that are correct.
++    """
++    tb = TreeBuilder(case.data)
++    tb.build()
++    actual = [code for _, code in tb.errors]
++    assert collections.Counter(actual) == collections.Counter(expected)

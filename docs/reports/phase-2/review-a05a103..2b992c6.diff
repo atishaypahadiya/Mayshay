@@ -1,0 +1,380 @@
+# Review package: a05a103..2b992c6
+
+## Commits
+2b992c6 cssparse: fix round 1 for task H review
+
+## Files changed
+ src/mayshay/cssparse/matching.py       | 71 +++++++++++++++++++++++++++++-----
+ tests/cssparse/test_matching.py        | 71 +++++++++++++++++++++++++++++++++-
+ tests/cssparse/test_matching_corpus.py | 23 ++++-------
+ 3 files changed, 139 insertions(+), 26 deletions(-)
+
+## Diff
+diff --git a/src/mayshay/cssparse/matching.py b/src/mayshay/cssparse/matching.py
+index 433c576..1def1e6 100644
+--- a/src/mayshay/cssparse/matching.py
++++ b/src/mayshay/cssparse/matching.py
+@@ -67,28 +67,42 @@ later:
+    nothing, so `_parse_an_b` is this module's job. **An argument that does
+    not parse makes the pseudo-class never match, rather than invalidating
+    the rule.** The spec says an invalid selector invalidates the style rule
+    containing it; for a one-selector rule the two are indistinguishable, but
+    for `p:nth-child(banana), a { ... }` the spec drops the whole rule and we
+    keep the `a` half. Doing it properly means validating at parse time,
+    which means teaching `selectors.py` `An+B` -- worth revisiting, and
+    deliberately not done here, because "unknown or malformed things never
+    match" is already the rule for pseudo-classes generally (deviation 5 of
+    `selectors.py`) and this keeps one rule instead of two.
+-6. **`An+B` accepts two forms the spec rejects, because our
++6. **`An+B` accepts one family of forms the spec rejects, because our
+    `<number-token>` has no "sign character present" flag.** css-syntax's
+    `<an+b>` grammar distinguishes `<signed-integer>` from
+-   `<signless-integer>`, so `2n+1` is valid and `2n 1` is not; both reach us
+-   as `Dimension(2, 'n')`, `Whitespace`, `Number(1)`. We accept both, and
+-   likewise accept `2n + 1` where the spec wants the second half signless.
+-   The failure mode is leniency on input no author writes, and the fix
+-   belongs in the tokenizer if it ever matters.
++   `<signless-integer>`: `2n+1` and `2n +1` are both valid
++   (`<n-dimension> <signed-integer>`, and whitespace between component
++   values is allowed), while `2n 1` is not, since a signless integer may
++   only follow an explicit `+`/`-` of its own. All three reach us as
++   `Dimension(2, 'n')`, `Whitespace`, `Number(1)` -- the sign has already
++   been folded into the number's value and its presence is not recorded --
++   so we accept all three. `2n + 1` is **valid** and is accepted for that
++   reason rather than by leniency; an earlier draft of this deviation
++   miscalled it invalid.
++
++   The boundary is what the tokens can still tell us. A form whose
++   invalidity survives tokenization is rejected: `2n + -1` (a signed
++   integer where the grammar wants a signless one, visible as a negative
++   `Number` after an explicit sign delim), `+ n` (whitespace across the
++   `†` no-whitespace marker, visible as a `Whitespace` token) and `+-n`
++   (two signs, visible as a `Delim` before a `-`-initial ident) all parse
++   to None. Only the sign-vs-no-sign distinction is unrecoverable, and the
++   fix for that belongs in the tokenizer if it ever matters -- the failure
++   mode is leniency on input no author writes.
+ 7. **`:nth-child(... of S)` is not supported and never matches.** Selectors
+    4 section 6.6.5.2 allows a selector argument that filters what gets
+    counted; nothing downstream needs it, and accepting the `of` keyword
+    while ignoring the filter would silently match the wrong elements.
+ 8. **`:has()` never matches.** Deviation 3 of `selectors.py` keeps its
+    argument as raw tokens because relative selectors (`:has(> p)`) are not
+    parsed, so there is nothing here to run.
+ 9. **A pseudo-element never matches an element.** `p::before` selects a box
+    that this engine does not generate (Phase 2's known gap 4), and the `p`
+    element itself is emphatically not what `p::before` selects -- matching
+@@ -106,20 +120,41 @@ later:
+    `link` with an `href`, since "unvisited" is a fact about our
+    history-free engine rather than a guess.
+ 11. **`:empty` treats whitespace-only text as empty**, following the Level 4
+    definition (an element with no children other than white space and
+    comments) rather than Level 3's, where a single space defeated it. Every
+    engine ships the Level 4 behaviour.
+ 12. **`:root` is "has no parent element"** rather than "is the document
+    element". They differ only for a detached subtree, where the spec says
+    nothing useful and the parent-free reading is the one a fragment matcher
+    wants.
++14. **The `An+B` parse is memoized as an attribute on the
++   `PseudoClassSelector` itself** (`_an_b_memo`), rather than in a table
++   here. `_nth` otherwise re-parses the argument once per element tested,
++   which is per-element work inside the module that exists to avoid
++   per-element work.
++
++   A module-level dict keyed on the selector is the obvious alternative and
++   is not cheaper: `PseudoClassSelector.__hash__` walks every argument token
++   through `_token_key` (deviation 10 of `selectors.py`), which costs about
++   what the parse costs. Keying on `id()` is unsafe -- ids are reused after
++   a selector is freed, and a stale hit would silently answer with another
++   selector's formula.
++
++   Writing an attribute onto another module's dataclass is the cost, and it
++   is safe in exactly the way that matters: `_an_b_memo` is a pure function
++   of `name` and `argument`, and `PseudoClassSelector`'s equality and hash
++   are computed from those fields alone, so a memoized selector still
++   compares, hashes and keys a dict identically to a fresh one. It does mean
++   deviation 10's "must not be mutated afterwards" now has one sanctioned
++   exception, which is why it is written down here.
++
+ 13. **`candidates()` returns rules in the order they were given to
+    `RuleIndex`.** Bucket order would be an implementation detail leaking
+    into the cascade's tie-breaking, and iteration over `class_list` -- a
+    `frozenset` -- is not even stable between runs, so an order-dependent
+    caller would be flaky rather than merely wrong. The cascade must still
+    sort by its own explicit source index; this only makes that sort's input
+    deterministic.
+ """
+ 
+ from __future__ import annotations
+@@ -472,22 +507,30 @@ _PSEUDO_CLASSES: dict[str, Callable[[Element, PseudoClassSelector], bool]] = {
+     "nth-last-of-type": _nth_last_of_type,
+ }
+ 
+ 
+ # --------------------------------------------------------------------------
+ # An+B (css-syntax-3 section 6, "The <an+b> type")
+ # --------------------------------------------------------------------------
+ 
+ 
+ def _nth(selector: PseudoClassSelector, index: int) -> bool:
+-    """Does the 1-based `index` satisfy this pseudo-class's An+B argument?"""
+-    parsed = _parse_an_b(selector.argument)
++    """Does the 1-based `index` satisfy this pseudo-class's An+B argument?
++
++    The parse is memoized on the selector -- see deviation 14. Without it,
++    `:nth-child(2n+1)` re-parses its own grammar once per element tested,
++    inside the one module whose whole purpose is not doing per-element work.
++    """
++    try:
++        parsed = selector._an_b_memo
++    except AttributeError:
++        parsed = selector._an_b_memo = _parse_an_b(selector.argument)
+     if parsed is None:
+         # Missing or malformed argument: never matches. See deviation 5.
+         return False
+     a, b = parsed
+     return _an_b_contains(a, b, index)
+ 
+ 
+ def _an_b_contains(a: int, b: int, index: int) -> bool:
+     """`index` matches An+B iff index == a*n + b for some integer n >= 0."""
+     if a == 0:
+@@ -524,24 +567,32 @@ def _parse_an_b(argument: Iterable[CssToken] | None) -> tuple[int, int] | None:
+     if isinstance(first, Ident):
+         keyword = _ascii_lower(first.value)
+         if keyword == "odd":
+             return (2, 1) if not rest else None
+         if keyword == "even":
+             return (2, 0) if not rest else None
+         return _parse_n_ident(keyword, rest)
+ 
+     if isinstance(first, Delim) and first.value == "+":
+         # `+n`, `+n+1`, ... The spec forbids whitespace between the `+` and
+-        # the `n`, which is why this is a delim and not part of the ident.
++        # the `n`, which is why this is a delim and not part of the ident;
++        # a `Whitespace` here fails the `Ident` test below, which is how
++        # `+ n` is rejected.
+         if not rest or not isinstance(rest[0], Ident):
+             return None
+-        return _parse_n_ident(_ascii_lower(rest[0].value), rest[1:])
++        ident = _ascii_lower(rest[0].value)
++        if ident.startswith("-"):
++            # `'+'? n`, not `'+'? -n`: `+-n` carries two signs and is not a
++            # production. Found in review; see deviation 6 for why this one
++            # is rejected where the signless forms are not.
++            return None
++        return _parse_n_ident(ident, rest[1:])
+ 
+     if isinstance(first, Dimension):
+         if not first.is_integer:
+             return None
+         return _parse_n_unit(_ascii_lower(first.unit), int(first.value), rest)
+ 
+     if isinstance(first, Number):
+         # A bare `<integer>`: A is zero.
+         if not first.is_integer or rest:
+             return None
+diff --git a/tests/cssparse/test_matching.py b/tests/cssparse/test_matching.py
+index 0e52119..543f13f 100644
+--- a/tests/cssparse/test_matching.py
++++ b/tests/cssparse/test_matching.py
+@@ -99,21 +99,21 @@ def test_rule_index_narrows_candidates():
+ 
+ 
+ # -- additional discrimination tests ---------------------------------------
+ 
+ # A wider tree than the brief's: sibling runs with whitespace between them,
+ # links with and without href, empty and not-quite-empty elements, and a
+ # nested pair of `.x` divs whose *outer* one is the one with a `div` parent.
+ WIDE_HTML = """<!DOCTYPE html><html lang="en-GB"><body>
+ <div id="Main" class="box  wide"><p>one</p><p class="lead">two</p><span>three</span></div>
+ <ul><li>a</li> <li class="sel">b</li> <li>c</li><li>d</li></ul>
+-<a href="/x">link</a><a name="anchor">plain</a>
++<a href="/x" rel="NOFOLLOW">link</a><a name="anchor">plain</a>
+ <input type="TEXT"><em></em><em>  </em><em><b></b></em>
+ <div><div class="x"><section><div class="x"><q>deep</q></div></section></div></div>
+ </body></html>"""
+ 
+ 
+ def wide(annotate=True):
+     doc = parse(WIDE_HTML)
+     if annotate:
+         annotate_positions(doc)
+     return doc
+@@ -339,20 +339,53 @@ def test_html_case_insensitive_attributes_ignore_value_case():
+     list. Deviation 4.
+     """
+     doc = wide()
+     field = find_all(doc, "input")[0]
+     assert matches(field, sel('[type="text"]'))
+     assert matches(field, sel('[type="TEXT"]'))
+     assert not matches(field, sel('[type="text" s]'))
+     assert not matches(find(tree(), "div"), sel('[id="MAIN"]'))
+ 
+ 
++@pytest.mark.parametrize("tag,src,expected", [
++    # On the list: value case is ignored...
++    ("input", '[type="text"]', True),
++    ("html", '[lang="EN-gb"]', True),
++    ("a", '[rel="nofollow"]', True),
++    ("a", '[rel="NOFOLLOW"]', True),
++    # ...and the `s` modifier overrides the list in the strict direction.
++    ("input", '[type="text" s]', False),
++    ("a", '[rel="nofollow" s]', False),
++    # Not on the list: value case is significant. `name`, `href`, `id` and
++    # `class` are all absent from it, which is what makes this test about
++    # membership rather than about the mechanism firing at all.
++    ("a", '[name="anchor"]', True),
++    ("a", '[name="ANCHOR"]', False),
++    ("a", '[href="/x"]', True),
++    ("a", '[href="/X"]', False),
++    ("div", '[id="Main"]', True),
++    ("div", '[id="MAIN"]', False),
++    ("div", '[class="box  wide"]', True),
++    ("div", '[class="BOX  WIDE"]', False),
++    # ...unless `i` asks for it, which overrides the list the other way.
++    ("a", '[name="ANCHOR" i]', True),
++    ("div", '[id="MAIN" i]', True),
++])
++def test_attribute_value_case_follows_the_html_list(tag, src, expected):
++    """Deviation 4, pinned from both sides of the membership question: a
++    test that only checked list members would pass against a matcher that
++    compared every attribute value case-insensitively.
++    """
++    doc = wide()
++    assert any(matches(el, sel(src)) for el in find_all(doc, tag)) is expected
++
++
+ def test_attribute_names_fold_but_values_do_not():
+     doc = tree()
+     assert matches(find(doc, "div"), sel("[ID]"))
+     assert matches(find(doc, "div"), sel('[ID="Main"]'))
+     assert not matches(find(doc, "div"), sel('[ID="MAIN"]'))
+ 
+ 
+ # -- structural pseudo-classes --
+ 
+ 
+@@ -363,28 +396,64 @@ def test_attribute_names_fold_but_values_do_not():
+     ("even", [1, 3]),
+     ("2n", [1, 3]),
+     ("2n+1", [0, 2]),
+     ("n", [0, 1, 2, 3]),
+     ("n+2", [1, 2, 3]),
+     ("-n+2", [0, 1]),
+     ("3n-1", [1]),
+     ("0n+3", [2]),
+     ("banana", []),
+     ("2 of .sel", []),
++    # `'+'? n`, not `'+'? -n`: one sign, and no whitespace across it.
++    # `+-n` alone does not discriminate -- it wrongly parses to (-1, 0),
++    # whose only solutions are indices <= 0, so a broken matcher also
++    # returns []. `+-n+2` is the case that catches it, and is why both are
++    # here rather than the obvious one alone.
++    ("+n", [0, 1, 2, 3]),
++    ("+n+2", [1, 2, 3]),
++    ("+-n", []),
++    ("+-n+2", []),
++    ("+ n", []),
++    # The sign-vs-no-sign forms of deviation 6: the first three are valid,
++    # the fourth is not and is accepted anyway (the tokenizer has already
++    # lost the sign), and the fifth stays rejected because its invalidity
++    # survives tokenization as a negative Number after an explicit sign.
++    ("2n+1", [0, 2]),
++    ("2n + 1", [0, 2]),
++    ("2n +1", [0, 2]),
++    ("2n 1", [0, 2]),
++    ("2n + -1", []),
+ ])
+ def test_nth_child_formulas(formula, expected):
+     doc = wide()
+     lis = find_all(doc, "li")
+     selector = sel(f"li:nth-child({formula})")
+     assert [i for i, li in enumerate(lis) if matches(li, selector)] == expected
+ 
+ 
++def test_the_an_b_memo_is_per_selector_and_invisible():
++    """Deviation 14 memoizes the An+B parse onto the selector object. It
++    must not leak between selectors, and it must not disturb the equality or
++    hash that `RuleIndex` keys on -- deviation 10 of `selectors.py`.
++    """
++    doc = wide()
++    lis = find_all(doc, "li")
++    odd, even = sel("li:nth-child(odd)"), sel("li:nth-child(even)")
++    before = (odd == sel("li:nth-child(odd)"), hash(odd))
++    for _ in range(3):
++        assert [i for i, li in enumerate(lis) if matches(li, odd)] == [0, 2]
++        assert [i for i, li in enumerate(lis) if matches(li, even)] == [1, 3]
++    assert (odd == sel("li:nth-child(odd)"), hash(odd)) == before
++    assert odd != even
++    assert len({odd: 1, sel("li:nth-child(odd)"): 2}) == 1
++
++
+ def test_nth_child_works_without_annotate_positions():
+     """`element_index` is None until `annotate_positions` runs. A matcher
+     that read it blindly would treat every element as the first child.
+     """
+     doc = wide(annotate=False)
+     lis = find_all(doc, "li")
+     assert all(li.element_index is None for li in lis)
+     assert [i for i, li in enumerate(lis) if matches(li, sel("li:nth-child(2)"))] == [1]
+     assert [i for i, li in enumerate(lis) if matches(li, sel("li:first-child"))] == [0]
+ 
+diff --git a/tests/cssparse/test_matching_corpus.py b/tests/cssparse/test_matching_corpus.py
+index f2ef318..7624b98 100644
+--- a/tests/cssparse/test_matching_corpus.py
++++ b/tests/cssparse/test_matching_corpus.py
+@@ -103,20 +103,28 @@ PAGES = list(_pages())
+ def test_the_corpus_sweep_is_not_silently_empty():
+     assert CORPUS.is_dir()
+     assert len(PAGES) >= MIN_PAGES
+     assert sum(len(e) for _, e, _ in PAGES) >= MIN_ELEMENTS
+     assert sum(len(s) for _, _, s in PAGES) >= MIN_SELECTORS
+ 
+ 
+ def test_the_index_never_drops_a_rule_that_matches_a_real_page():
+     """Every element of every corpus page against every selector that page
+     ships -- the brute force the index replaces, used to check it.
++
++    Doubling as the "nothing here raises" sweep: selector features the
++    fixtures never exercise -- `:not(.notheme)`, `[dir="rtl"]`, stacked
++    compounds -- reach the matcher only through this loop, and an unhandled
++    branch in any of them is a crash rather than a False. A separate test
++    for that was deleted in fix round 1 rather than repaired: it carried a
++    `break` that ran each selector against `<html>` alone, and de-`break`ing
++    it would only have re-run this exact loop to assert less.
+     """
+     matched = 0
+     for name, elements, selectors in PAGES:
+         if not selectors:
+             # hn.html links its stylesheet instead of inlining it, which is
+             # normal and is not this test's failure.
+             continue
+         index = RuleIndex(selectors)
+         for element in elements:
+             candidates = index.candidates(element)
+@@ -130,25 +138,10 @@ def test_the_index_never_drops_a_rule_that_matches_a_real_page():
+ def test_the_index_narrows_real_pages_by_an_order_of_magnitude():
+     tested = brute = 0
+     for _, elements, selectors in PAGES:
+         if not selectors:
+             continue
+         index = RuleIndex(selectors)
+         tested += sum(len(index.candidates(e)) for e in elements)
+         brute += len(selectors) * len(elements)
+     assert brute > 0
+     assert tested / brute < MAX_CANDIDATE_FRACTION, tested / brute
+-
+-
+-def test_matching_a_real_page_does_not_raise():
+-    """Selector features the fixtures never exercise -- `:not(.notheme)`,
+-    `[dir="rtl"]`, stacked compounds -- reach the matcher here. Any of them
+-    hitting an unhandled branch is a crash, not a False.
+-    """
+-    seen = 0
+-    for _, elements, selectors in PAGES:
+-        for selector in selectors:
+-            for element in elements:
+-                assert matches(element, selector) in (True, False)
+-                seen += 1
+-                break
+-    assert seen >= MIN_SELECTORS

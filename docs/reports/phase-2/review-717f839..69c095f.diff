@@ -1,0 +1,384 @@
+# Review package: 717f839..69c095f
+
+## Commits
+69c095f cssparse: make pseudo-class arguments position-independent
+
+## Files changed
+ src/mayshay/cssparse/selectors.py       | 85 ++++++++++++++++++++++++++++-----
+ tests/cssparse/test_selectors.py        | 71 ++++++++++++++++++++++++---
+ tests/cssparse/test_selectors_corpus.py | 45 +++++++++++++----
+ 3 files changed, 172 insertions(+), 29 deletions(-)
+
+## Diff
+diff --git a/src/mayshay/cssparse/selectors.py b/src/mayshay/cssparse/selectors.py
+index 772d640..669bde7 100644
+--- a/src/mayshay/cssparse/selectors.py
++++ b/src/mayshay/cssparse/selectors.py
+@@ -125,40 +125,52 @@ later:
+    synthesized EOF token would be useful.
+ 10. **`pos` is excluded from equality, and every structure is hashable.**
+    `Compound.pos` and `Complex.pos` are `field(compare=False)`, so two
+    structurally identical selectors written at different source offsets
+    compare equal; `pos` remains for error messages and metrics, which is
+    all it was ever for. Each structure also defines `__hash__` in its own
+    class body -- a plain `@dataclass` with `eq=True` sets `__hash__` to
+    None -- because task H indexes rules by their rightmost compound, and a
+    dict keyed on compounds is the natural shape for that.
+ 
+-   Two consequences worth knowing. These are mutable objects carrying a
+-   value hash, the hazard `dataclasses` names `unsafe_hash`: a structure
+-   used as a dict key must not be mutated afterwards. The parser builds
+-   each one once and never touches it again, and nothing else should
+-   start. And `PseudoClassSelector.__hash__` covers the *name* only,
+-   because `argument` holds `CssToken`s, which are themselves unhashable
+-   dataclasses -- so `:nth-child(1)` and `:nth-child(2)` collide in a dict
+-   while still comparing unequal. That is correct, just less selective.
++   The guarantee has to be stated one level deeper than it looks.
++   `PseudoClassSelector.argument` holds `CssToken`s, and a token's own
++   equality *does* include its `pos` -- so a plain dataclass `__eq__` makes
++   `p:nth-child(2)` at offset 0 unequal to the same selector at offset 40
++   while their hashes agree, which is precisely the shape that puts two
++   entries in a dict where one belongs. `PseudoClassSelector` therefore has
++   a hand-written `__eq__`/`__hash__` that compares its argument through
++   `_token_key` (all of a token's fields except `pos`). It is the only
++   structure here with a custom `__eq__`, and it exists to keep *one*
++   convention in this module rather than to add a second: the tokenizer's
++   pos-in-equality is right for a token stream, and adapting at the one
++   boundary where a token is embedded in a selector is cheaper than
++   changing what a token means everywhere. Fixing it in `tokenizer.py`
++   instead was rejected because it would silently weaken every future test
++   that compares tokens, which is how this project has been bitten before.
++
++   These are mutable objects carrying a value hash, the hazard
++   `dataclasses` names `unsafe_hash`: a structure used as a dict key must
++   not be mutated afterwards. The parser builds each one once and never
++   touches it again, and nothing else should start.
+ 
+    This departs from `parser.py`, whose `pos` does participate in
+    equality, and the difference is what the objects are for: a
+    `QualifiedRule` is a stream artifact whose position is part of what a
+    test asserts about it, while a selector is a *value* that tasks H and J
+    compare and key on, where two identical selectors from different
+    offsets comparing unequal is a bug waiting to happen.
+ """
+ 
+ from __future__ import annotations
+ 
+-from dataclasses import dataclass, field
++from dataclasses import dataclass, field, fields
+ from typing import Iterable
+ 
+ from mayshay.cssparse.tokenizer import (
+     Colon,
+     Comma,
+     CssToken,
+     Delim,
+     EOFToken,
+     Function,
+     Hash,
+@@ -279,38 +291,53 @@ class AttributeSelector:
+     name: str
+     operator: str | None = None
+     value: str | None = None
+     case: str | None = None
+ 
+     def __hash__(self) -> int:
+         return hash((AttributeSelector, self.name, self.operator, self.value,
+                      self.case))
+ 
+ 
+-@dataclass
++@dataclass(eq=False)
+ class PseudoClassSelector:
+     """`:hover`, `:nth-child(2n+1)`, `:not(.a, .b)`.
+ 
+     `argument` is None for a non-functional pseudo-class, else the raw token
+     run between the parens, whitespace included and delimiters excluded.
+     `selectors` is set only for the pseudo-classes of `_SELECTOR_ARG_PSEUDOS`
+     -- see deviation 3.
++
++    The only structure with a hand-written `__eq__`, and the only one that
++    needs it: `argument` holds `CssToken`s, whose own equality includes
++    `pos`. Comparing them through `_token_key` is what keeps deviation 10's
++    guarantee true for `p:nth-child(2)` and not only for `p.c`.
+     """
+ 
+     name: str
+     argument: list[CssToken] | None = None
+     selectors: SelectorList | None = None
+ 
++    def _key(self) -> tuple:
++        return (self.name, _argument_key(self.argument), self.selectors)
++
++    def __eq__(self, other: object) -> bool:
++        if not isinstance(other, PseudoClassSelector):
++            return NotImplemented
++        return self._key() == other._key()
++
+     def __hash__(self) -> int:
+-        # Name only: `argument` holds CssTokens, which are unhashable
+-        # dataclasses. See deviation 10.
+-        return hash((PseudoClassSelector, self.name))
++        # `selectors` is left out: it is derived from `argument`, so it can
++        # never distinguish two pseudo-classes whose arguments agree. Hash
++        # and equality stay consistent -- the hash uses a subset.
++        return hash((PseudoClassSelector, self.name,
++                     _argument_key(self.argument)))
+ 
+ 
+ @dataclass
+ class PseudoElementSelector:
+     """`::before`, and the four legacy one-colon spellings."""
+ 
+     name: str
+ 
+     def __hash__(self) -> int:
+         return hash((PseudoElementSelector, self.name))
+@@ -426,20 +453,52 @@ class _Cursor:
+         if self.tokens:
+             last = self.tokens[-1]
+             return last.pos if last.pos < 0 else last.pos + 1
+         return -1
+ 
+ 
+ def _is_delim(tok: CssToken | None, value: str) -> bool:
+     return isinstance(tok, Delim) and tok.value == value
+ 
+ 
++def _token_key(token: CssToken) -> tuple:
++    """A hashable identity for a token that ignores *where* it was written.
++
++    `CssToken`s keep `pos` inside their own equality -- that is the
++    tokenizer's convention and it is right for a token stream. It is wrong
++    for the one selector structure that embeds tokens
++    (`PseudoClassSelector.argument`), because this module has already
++    decided that a selector's identity does not include its source offset
++    (deviation 10). Without this, `p:nth-child(2)` written at two different
++    offsets compares unequal and occupies two entries in a dict keyed by
++    compound.
++
++    Built from `dataclasses.fields` rather than a per-token-type table, so a
++    token type added to `tokenizer.py` later is handled without an edit
++    here. The class *name*, not the class object, leads the tuple, so two
++    token types with identical fields still key apart.
++    """
++    return (type(token).__name__,) + tuple(
++        getattr(token, f.name) for f in fields(token) if f.name != "pos"
++    )
++
++
++def _argument_key(argument: list[CssToken] | None) -> tuple | None:
++    """`None` for a non-functional pseudo-class, so `:where` and `:where()`
++    -- which mean different things, see `_pseudo_class_specificity` -- do
++    not compare equal.
++    """
++    if argument is None:
++        return None
++    return tuple(_token_key(token) for token in argument)
++
++
+ def _adjacent(first: CssToken, second: CssToken) -> bool:
+     """Whether two one-character delims were written with nothing between
+     them. See deviation 1 for why this is `pos` arithmetic and not just list
+     adjacency.
+     """
+     if first.pos < 0 or second.pos < 0:
+         return True
+     return second.pos == first.pos + 1
+ 
+ 
+diff --git a/tests/cssparse/test_selectors.py b/tests/cssparse/test_selectors.py
+index c958ec7..45bd2f8 100644
+--- a/tests/cssparse/test_selectors.py
++++ b/tests/cssparse/test_selectors.py
+@@ -428,23 +428,80 @@ def test_equal_selectors_hash_equal_and_key_the_same_dict_entry():
+     assert a == b and hash(a) == hash(b)
+     assert len({a, b}) == 1
+     assert {a: "rule"}[b] == "rule"
+     # The rightmost compound is what task H will index on.
+     assert {a.compounds[-1]: 1}[sel("span p.c").selectors[0].compounds[-1]] == 1
+ 
+ 
+ def test_different_selectors_are_not_conflated_by_the_hash():
+     """The hash is allowed to collide; equality is not allowed to."""
+     distinct = [sel(s).selectors[0] for s in
+-                ("a b", "ab", "a > b", "a + b", "a.b", "a#b", "[a]", "[a=b]")]
++                ("a b", "ab", "a > b", "a + b", "a.b", "a#b", "[a]", "[a=b]",
++                 ":nth-child(1)", ":nth-child(2)", ":lang(en)", ":lang(fr)",
++                 ":hover", ":where", ":where()", ":not(.a)", ":not(.b)")]
+     assert len(set(distinct)) == len(distinct)
+-    # Argument tokens are outside PseudoClassSelector.__hash__ (they are
+-    # unhashable dataclasses), so these two may collide -- but must not be
+-    # equal, and must not merge in a dict.
+-    one, two = sel(":nth-child(1)").selectors[0], sel(":nth-child(2)").selectors[0]
+-    assert one != two
+-    assert len({one, two}) == 2
++
++
++# The interaction that the pos-independence tests above do NOT reach: a
++# functional pseudo-class stores its argument as raw `CssToken`s, and a
++# token's own equality includes `pos`. Every test before this one uses type,
++# class or attribute compounds, all of which are pos-free by construction --
++# so they pass against a parser for which the deviation-10 guarantee is
++# false. See the task report's fix round 2.
++
++
++POSITION_INDEPENDENT = [
++    "p",
++    "p.c#i",
++    "div > p",
++    ":hover",                    # non-functional pseudo-class
++    ":where",                    # bare, argument is None
++    ":where()",                  # functional, argument is empty
++    ":lang(en)",                 # raw argument, one token
++    ":nth-child(2n + 1)",        # raw argument, five tokens incl. whitespace
++    "p:nth-of-type(3)",          # ...in a compound with a type selector
++    "li:nth-child(2)",
++    ":not(.a)",                  # parsed argument *and* raw tokens
++    ":is(#i, p)",
++    'div > p:nth-child(2n+1)[a~="v"]',
++]
++
++
++@pytest.mark.parametrize("src", POSITION_INDEPENDENT)
++def test_the_same_selector_at_a_different_offset_is_the_same_selector(src):
++    """Deviation 10's guarantee, stated at the level it has to hold: not
++    just `Compound.pos`, but anything a compound transitively contains.
++    """
++    here, there = sel(src).selectors[0], sel(f"   {src}").selectors[0]
++    assert here == there
++    assert hash(here) == hash(there)
++
++
++@pytest.mark.parametrize("src", POSITION_INDEPENDENT)
++def test_a_dict_keyed_on_a_compound_does_not_split_by_offset(src):
++    """Task H indexes rules by their rightmost compound. Two stylesheets
++    that write the same rule at different offsets must land in one entry,
++    or the same rule is applied twice.
++    """
++    here = sel(src).selectors[0].compounds[-1]
++    there = sel(f"   {src}").selectors[0].compounds[-1]
++    assert len({here: "a", there: "b"}) == 1
++    assert {here: "a"}[there] == "a"
++    assert len({sel(src), sel(f"   {src}")}) == 1
++
++
++def test_a_functional_pseudo_class_still_compares_its_argument():
++    """Position-independent must not mean argument-blind: the fix must not
++    swing past correct into `:nth-child(1) == :nth-child(2)`.
++    """
++    assert sel(":nth-child(1)") != sel(":nth-child(2)")
++    assert sel(":lang(en)") != sel(":lang(fr)")
++    assert sel(":nth-child(2n+1)") != sel(":nth-child(2n + 1)")  # whitespace
++    assert sel(":where") != sel(":where()")  # None argument vs empty one
++    assert sel(":not(.a)") != sel(":not(.b)")
++    assert simples(":hover")[0] != TypeSelector("hover")
++    assert simples(":hover")[0] != PseudoElementSelector("hover")
+ 
+ 
+ def test_specificity_never_carries_between_columns():
+     """Eleven classes are (0, 11, 0), not (1, 1, 0)."""
+     assert specificity(sel(".c" * 11).selectors[0]) == (0, 11, 0)
+diff --git a/tests/cssparse/test_selectors_corpus.py b/tests/cssparse/test_selectors_corpus.py
+index 8117d33..9babfc3 100644
+--- a/tests/cssparse/test_selectors_corpus.py
++++ b/tests/cssparse/test_selectors_corpus.py
+@@ -98,27 +98,33 @@ def _nested_preludes(block: list[CssToken]):
+                 prelude = []
+             depth += 1
+             continue
+         if isinstance(tok, RBrace):
+             depth = max(0, depth - 1)
+             continue
+         if depth == 0:
+             prelude.append(tok)
+ 
+ 
+-def _sweep():
+-    """(files, style elements, preludes) across the whole corpus."""
++def _sweep(prefix=""):
++    """(files, style elements, preludes) across the whole corpus.
++
++    `prefix` is prepended to every stylesheet before tokenizing. Whitespace
++    at the start of a stylesheet cannot change how it tokenizes, but it
++    shifts every token's `pos`, which is how the position-independence test
++    below reaches real selectors instead of hand-written ones.
++    """
+     files, elements, preludes = set(), 0, []
+     for name, css in _style_bodies():
+         files.add(name)
+         elements += 1
+-        for rule in parse_stylesheet(css):
++        for rule in parse_stylesheet(prefix + css):
+             if isinstance(rule, QualifiedRule):
+                 preludes.append((name, rule.prelude))
+             elif isinstance(rule, AtRule) and rule.block is not None:
+                 for prelude in _nested_preludes(rule.block):
+                     preludes.append((name, prelude))
+     return files, elements, preludes
+ 
+ 
+ SWEEP = _sweep()
+ 
+@@ -152,34 +158,55 @@ def test_every_selector_in_the_corpus_parses():
+         for selector in parsed.selectors:
+             assert isinstance(selector, Complex)
+             # Every triple is non-negative and finite; the point is that
+             # specificity runs over real input at all.
+             assert all(n >= 0 for n in specificity(selector))
+             selectors += 1
+     assert failures == []
+     assert selectors >= MIN_SELECTORS
+ 
+ 
+-def test_corpus_selectors_are_hashable_and_position_independent():
++def test_corpus_selectors_are_hashable():
+     """Task H keys rules by their rightmost compound. Every compound the
+-    corpus produces must survive being put in a dict, and two identical
+-    selectors from different offsets must land in the same bucket.
++    corpus produces must survive being put in a dict.
+     """
+     _, _, preludes = SWEEP
+     index = {}
+     for name, prelude in preludes:
+         for selector in parse_selector_list(prelude).selectors:
+             index.setdefault(selector.compounds[-1], []).append(name)
+     assert index
+-    a = parse_selector_list(list(CssTokenizer("div > p").tokenize()))
+-    b = parse_selector_list(list(CssTokenizer("   div>p   ").tokenize()))
+-    assert a == b and hash(a.selectors[0]) == hash(b.selectors[0])
++
++
++def test_corpus_selectors_are_position_independent():
++    """The whole corpus, parsed twice from sources offset against each
++    other: every selector must compare and hash the same, and every
++    rightmost compound must land in one dict entry.
++
++    Hand-written pos-independence tests only reach the shapes someone
++    thought to write. This reaches the 20 functional pseudo-classes the
++    corpus actually ships -- `:not(.notheme)` and friends -- whose raw
++    argument tokens carry a `pos` of their own, which is exactly the
++    interaction that made the first version of deviation 10 false.
++    """
++    _, _, here = SWEEP
++    _, _, there = _sweep("\n\n")
++    assert len(here) == len(there) >= MIN_RULES
++    pairs = 0
++    for (name, a), (_, b) in zip(here, there):
++        first, second = parse_selector_list(a), parse_selector_list(b)
++        assert first == second, name
++        for x, y in zip(first.selectors, second.selectors):
++            assert hash(x) == hash(y)
++            assert len({x.compounds[-1]: 1, y.compounds[-1]: 2}) == 1
++            pairs += 1
++    assert pairs >= MIN_SELECTORS
+ 
+ 
+ @pytest.mark.parametrize("src,why", [
+     # Deviation 1 -- browser parity against the letter of the spec. Blink
+     # and Gecko both lex `~=` at the character level; the spec says a
+     # comment here has no effect on parsing. We follow the engines.
+     ('[a~/**/="v"]', "comment inside a match operator"),
+     ('[a ~ = "v"]', "whitespace inside a match operator"),
+     # Deviation 4 -- namespaces need @namespace, which nothing interprets.
+     ("ns|div", "namespace prefix"),
