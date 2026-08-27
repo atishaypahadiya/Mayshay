@@ -109,10 +109,23 @@ Deliberate deviations and omissions
    rejects them (its deviation 3), so a declaration using one is dropped and
    counted in `declarations_dropped`. Implementing them means intercepting
    the keyword before the value parser sees it; it is a listed Phase 3 gap.
-2. **`@media`, `@supports` and `@import` are counted and skipped**, not
-   evaluated -- `at_rules_skipped`. Every rule inside a `@media` block is
-   therefore absent from the cascade, not applied unconditionally. Applying
-   them would be worse: `@media print` would repaint the screen.
+2. **`@media` is evaluated when a `viewport` is passed; every other at-rule
+   is counted and skipped** -- `at_rules_skipped`, and `at_rule_<name>` per
+   name. Rules inside a non-matching `@media` are absent from the cascade
+   rather than applied unconditionally, which is the right direction to
+   fail: applying `@media print` would repaint the screen.
+
+   Passing no viewport keeps Phase 2's behaviour exactly -- every at-rule
+   skipped -- so figures measured before `cssparse/media.py` existed stay
+   reproducible instead of being silently restated. What evaluating `@media`
+   recovered, measured on the corpus at 1280x1024: Wikipedia's `flex`
+   element count went from 4 to 204, and `grid` from 0 to 2. Before it, 51%
+   of the Hacker News page's CSS and 46% of Wikipedia's never reached the
+   cascade at all.
+
+   `@supports` is still skipped, and so is any `@media` whose query names a
+   feature outside `media.py`'s scope; both are counted rather than dropped
+   silently. See that module for the full list.
 3. **`<link rel=stylesheet>` is counted, never fetched** -- `net/` is Phase
    5. See `_count_link_stylesheets` for why the count is worth having.
 4. **`:hover`, `:focus`, `:visited` and friends never match** (matching.py's
@@ -184,6 +197,11 @@ from dataclasses import dataclass, field, fields
 
 from mayshay.cssparse.matching import RuleIndex, matches
 from mayshay.cssparse.parser import AtRule, CssParser, QualifiedRule
+from mayshay.cssparse.media import (
+    Viewport,
+    matches as media_matches,
+    parse_media_query_list,
+)
 from mayshay.cssparse.selectors import (
     Complex,
     SelectorParseError,
@@ -664,7 +682,11 @@ def _selector_of(rule: object) -> Complex:
 
 
 def _parse_sheet(
-    source: str, origin: str, order: object, metrics: Counter[str]
+    source: str,
+    origin: str,
+    order: object,
+    metrics: Counter[str],
+    viewport: object | None = None,
 ) -> list[_StyleRule]:
     """Parse one stylesheet into `_StyleRule`s.
 
@@ -672,40 +694,114 @@ def _parse_sheet(
     `__next__`) so declaration numbers keep increasing across every sheet in
     the document, which is what makes later sheets win ties against earlier
     ones.
+
+    `viewport` is optional. Without one, at-rules are counted and skipped
+    (Phase 2 deviation 2). With one, `@media` preludes are evaluated against
+    it and matching blocks contribute their rules.
     """
     parser = CssParser(source)
     rules: list[_StyleRule] = []
-    for rule in parser.parse_stylesheet():
-        if isinstance(rule, AtRule):
-            # Deviation 2: counted, not evaluated, and its block's rules are
-            # therefore not in the cascade at all.
-            metrics["at_rules_skipped"] += 1
-            continue
-        assert isinstance(rule, QualifiedRule)
-        if rule.block is None:
-            continue
-        try:
-            selector_list = parse_selector_list(rule.prelude)
-        except SelectorParseError:
-            # An unparseable prelude invalidates the whole rule, block
-            # included -- CSS Syntax 3 section 5.4.1. Not the declarations
-            # one at a time; the rule.
-            metrics["selectors_invalid"] += 1
-            continue
-        declarations = _parse_block(parser, rule.block, origin, order, metrics)
-        if not declarations:
-            continue
-        for selector in selector_list.selectors:
-            rules.append(
-                _StyleRule(
-                    selector=selector,
-                    specificity=specificity(selector),
-                    declarations=declarations,
-                )
-            )
+    _collect_rules(parser, parser.parse_stylesheet(), origin, order, metrics,
+                   rules, viewport, depth=0)
     metrics["tokenizer_parse_errors"] += parser.tokenizer.metrics["parse_errors"]
     metrics["css_parse_errors"] += len(parser.errors)
     return rules
+
+
+def _ascii_lower(text: str) -> str:
+    """ASCII-only case fold, for at-rule names.
+
+    A third copy, for the reason `tokenizer.py` and `values.py` each state
+    for theirs: importing another module's private name is the worse
+    coupling. `str.lower()` is wrong here too -- it folds U+212A KELVIN SIGN
+    to `k`, so `@\u212aeyframes` would be taken for `@keyframes` and its
+    block descended into.
+    """
+    return "".join(chr(ord(ch) + 0x20) if "A" <= ch <= "Z" else ch for ch in text)
+
+
+# How deep to descend through nested at-rules. `@media` inside `@media` is
+# common; five levels is far past anything real, and the cap is here so a
+# pathological sheet cannot turn parsing into a recursion.
+_MAX_AT_RULE_DEPTH = 5
+
+
+def _collect_rules(
+    parser: CssParser,
+    rule_list: list,
+    origin: str,
+    order: object,
+    metrics: Counter[str],
+    out: list[_StyleRule],
+    viewport: object | None,
+    depth: int,
+) -> None:
+    """Flatten a rule list into `out`, descending into matching `@media`.
+
+    With no viewport this is Phase 2's behaviour exactly: every at-rule is
+    counted and skipped, and nothing inside one reaches the cascade. With a
+    viewport, `@media` preludes are evaluated and the rules inside a
+    matching block are spliced in at the point the block appeared -- which
+    is what preserves source order between a `@media` block and the rules
+    around it.
+    """
+    for rule in rule_list:
+        if isinstance(rule, AtRule):
+            name = _ascii_lower(rule.name)
+            metrics[f"at_rule_{name}"] += 1
+            if viewport is None or name != "media" or rule.block is None:
+                # Deviation 2: counted, not evaluated, and its block's rules
+                # are therefore not in the cascade at all.
+                metrics["at_rules_skipped"] += 1
+                continue
+            if depth >= _MAX_AT_RULE_DEPTH:
+                metrics["at_rules_too_deep"] += 1
+                metrics["at_rules_skipped"] += 1
+                continue
+            queries = parse_media_query_list(rule.prelude)
+            if not media_matches(queries, viewport, metrics):
+                metrics["media_blocks_not_matched"] += 1
+                continue
+            metrics["media_blocks_matched"] += 1
+            _collect_rules(
+                parser, parser.parse_rules(rule.block), origin, order,
+                metrics, out, viewport, depth + 1,
+            )
+            continue
+        _append_qualified_rule(rule, parser, origin, order, metrics, out)
+
+
+def _append_qualified_rule(
+    rule: object,
+    parser: CssParser,
+    origin: str,
+    order: object,
+    metrics: Counter[str],
+    out: list[_StyleRule],
+) -> None:
+    """Turn one QualifiedRule into zero or more `_StyleRule`s on `out`."""
+    assert isinstance(rule, QualifiedRule)
+    if rule.block is None:
+        return
+    try:
+        selector_list = parse_selector_list(rule.prelude)
+    except SelectorParseError:
+        # An unparseable prelude invalidates the whole rule, block
+        # included -- CSS Syntax 3 section 5.4.1. Not the declarations
+        # one at a time; the rule.
+        metrics["selectors_invalid"] += 1
+        return
+    declarations = _parse_block(parser, rule.block, origin, order, metrics)
+    if not declarations:
+        return
+    for selector in selector_list.selectors:
+        out.append(
+            _StyleRule(
+                selector=selector,
+                specificity=specificity(selector),
+                declarations=declarations,
+            )
+        )
 
 
 def _parse_block(
@@ -988,13 +1084,24 @@ def _inherit_from(parent: ComputedStyle) -> ComputedStyle:
     return style
 
 
-def style_document(document: Node, author_css: list[str]) -> Counter[str]:
+def style_document(
+    document: Node,
+    author_css: list[str],
+    viewport: Viewport | None = None,
+) -> Counter[str]:
     """Attach a `ComputedStyle` to every node of `document`.
 
     `author_css` is a list of stylesheet sources -- what a driver got from
     somewhere other than the document itself. In-document `<style>` elements
     are found and cascaded automatically; `<link rel=stylesheet>` is counted
     and not fetched.
+
+    `viewport` is optional and opt-in. Without one, at-rules are counted and
+    skipped exactly as they were through Phase 2 -- which keeps every figure
+    measured before `@media` support reproducible, so the two can be
+    compared rather than conflated. With one, `@media` blocks whose queries
+    match contribute their rules to the cascade; see `cssparse/media.py` for
+    what is evaluated and what is merely recorded.
 
     Returns this stage's metrics, ready for `metrics.emit("cssparse", ...)`.
     Writing them is the driver's job, not this function's.
@@ -1019,12 +1126,12 @@ def style_document(document: Node, author_css: list[str]) -> Counter[str]:
     _count_link_stylesheets(elements, metrics)
 
     order = _Counter()
-    rules = _parse_sheet(UA_CSS, "ua", order, metrics)
+    rules = _parse_sheet(UA_CSS, "ua", order, metrics, viewport)
     metrics["ua_rules"] = len(rules)
 
     for source in author_css:
         metrics["author_stylesheets"] += 1
-        rules.extend(_parse_sheet(source, "author", order, metrics))
+        rules.extend(_parse_sheet(source, "author", order, metrics, viewport))
 
     for element in elements:
         if element.tag_name != "style":
@@ -1034,7 +1141,7 @@ def style_document(document: Node, author_css: list[str]) -> Counter[str]:
             metrics["style_elements_skipped"] += 1
             continue
         metrics["style_elements"] += 1
-        rules.extend(_parse_sheet(source, "author", order, metrics))
+        rules.extend(_parse_sheet(source, "author", order, metrics, viewport))
 
     metrics["rules_total"] = len(rules)
     index = RuleIndex(rules, selector_of=_selector_of)
