@@ -50,6 +50,51 @@ Two counts that matter more than their share suggests:
 
 ## Task order
 
+### Task A2 — cascade repair
+
+Before box-tree construction, not as cleanup. At a 70% declaration drop
+rate a layout bug and a cascade bug are indistinguishable, and Phase 3
+would spend its budget telling them apart.
+
+**`var()`, common case only.** Custom properties (`--x`) inherit like any
+inherited property. `var(--x)` and `var(--x, fallback)` resolve at
+computed-value time. Deliberately out of scope, each with a counter:
+
+* `var()` nested inside another `var()`'s fallback --
+  `var_nested_fallback_skipped`
+* cycles, handled by a **substitution depth cap** rather than real cycle
+  detection -- `var_depth_exceeded`. A cap is O(1) and cannot be wrong in
+  the dangerous direction; full detection is a phase, not a task.
+* `var()` in a custom property's own value beyond one level of indirection
+* the guaranteed-invalid-value rules of Custom Properties 1 section 3, in
+  their full generality
+
+That is 233 of 257 dropped colour declarations recovered, and 557 Wikipedia
+declarations that currently evaluate to nothing.
+
+**Box-model longhands.** `margin-left`, `padding-top`, `border-color`,
+`border-left-width` and the other 24. `ComputedStyle` already carries every
+field; the gap is `values.py`'s property table alone. 395 declarations.
+
+**`ComputedStyle` additions** that Task D cannot start without:
+`white-space`, `line-height`, `font-family`, `font-weight`, `font-style`,
+`text-align`, `vertical-align`. Plus `box-sizing`, which changes what every
+width in Task C means and is cheaper to add now than to retrofit.
+
+**`INHERITED` expansion**, from two properties to nine: `color`,
+`font-size`, `font-family`, `font-weight`, `font-style`, `line-height`,
+`white-space`, `text-align`, `list-style-type`. One test per property. A
+property that silently fails to inherit produces plausible-looking wrong
+output, which is the hardest kind to notice and the reason this is one
+deliberate change rather than nine incidental ones.
+
+**`inherit` / `initial` / `unset`** accepted rather than dropped
+(`values.py` deviation 3). `revert` stays unsupported and counted -- it
+needs origin-level rollback the cascade does not model.
+
+Done when: the corpus-wide drop rate is reported before and after, per
+page. The number to move is Wikipedia's 70%.
+
 ### Task B — box tree construction
 
 The tree layout walks, built once from the styled DOM, so no later task
@@ -94,12 +139,32 @@ Block formatting context, top to bottom.
 elements are inline; a block layout that stubs line boxes has not rendered
 these pages, it has drawn their skeleton.
 
-* **Text measurement.** There is no font engine and there will not be one
-  this phase. The plan is a metrics table: a fixed advance-width table for
-  a monospace default plus a proportional approximation keyed on character
-  class, behind one `measure(text, style) -> width` interface so it can be
-  replaced with real font metrics later without touching line breaking.
-  Everything downstream must treat width as opaque.
+* **Text measurement: real font metrics from a vendored font.** Not an
+  approximation table. Three reasons, in the order they matter: Phase 4
+  rasterizes with Pillow regardless, and a table in layout with FreeType in
+  paint is two sources of truth that disagree until text overflows its own
+  boxes; forcing Chrome to the same font with a test stylesheet makes box
+  positions directly comparable, which is what turns "position error
+  against a reference renderer" into a Phase 6 chart rather than an
+  aspiration; and line breaking, baseline alignment and white-space
+  collapsing all stay hand-rolled, because glyph rasterization is a
+  separate discipline in the way TCP is.
+
+  **Metrics come from the font's `hmtx` table via `fontTools`, not from
+  `PIL.ImageFont.getlength`.** Measured, not assumed: Pillow returns
+  integer-rounded advances at 16px -- `"Hello world"` is 89.0 where the
+  font's own metrics give 89.6953 -- and setting `layout_engine=BASIC` or
+  `mode="L"` does not change it. A 0.7px error over eleven characters
+  compounds per glyph and per line, and it would make the Chrome comparison
+  measure our rounding rather than our layout. Reading `hmtx` directly is
+  exact, deterministic, linear in font size (one multiply), and involves no
+  rasterizer. This is also what a browser does: unhinted fractional
+  advances for layout, hinted rendering for paint. Pillow still owns
+  rasterization in Phase 4, over the same vendored file, so there is one
+  font and one metric definition.
+
+  Everything downstream treats width as opaque, behind one
+  `measure(text, style) -> width` interface.
 * **White-space collapsing**, per CSS Text 3: runs of spaces/tabs/newlines
   collapse to one space, leading/trailing collapse at line boundaries.
   This is where the Phase 1 whitespace measurement lands: 2,781 of 7,985
@@ -112,9 +177,15 @@ these pages, it has drawn their skeleton.
   counted and treated as `pre`.
 * **Line breaking**: greedy, at collapsed break opportunities. Not
   UAX #14 — a space-and-hyphen approximation, with the deviation named.
-* **Baseline alignment** within a line box: ascent/descent from the metrics
-  table, `vertical-align: baseline` and `top`/`bottom`/`middle`; the rest
-  counted.
+* **Baseline alignment** within a line box: ascent, descent and line gap
+  from the font's `hhea`/`OS/2` tables, `vertical-align: baseline` and
+  `top`/`bottom`/`middle`; the rest counted.
+* **`ex` and `ch` stop being approximations.** Phase 2 uses 0.5em for both.
+  The real values for DejaVu Sans at 16px are 8.75px (`ex`, from the `x`
+  glyph's bounding box -- DejaVu 2.35 ships OS/2 version 1 with no
+  `sxHeight` field, so the glyph is the source) and 10.1797px (`ch`, the
+  `0` advance). Both are 9% and 27% off respectively, which is enough to
+  move a line break.
 * Inline boxes that span a line break split into fragments. This is the
   part that makes inline layout structurally different from block, and it
   needs its own model in the box tree rather than an afterthought.
@@ -221,10 +292,12 @@ separate work.
 Named here so each is a number rather than an absence: `grid`,
 `float`, `position` other than `static`/`relative`, `overflow` scrolling,
 `border-collapse`, `flex-wrap`, `order`, `align-self`, `align-content`,
-`@supports`, `prefers-*` media features, UAX #14 line breaking, real font
-metrics, and bidi/vertical writing modes.
+`@supports`, `prefers-*` media features, UAX #14 line breaking, kerning and
+ligatures (`hmtx` advances only, no `GPOS`/`GSUB`), font fallback and the
+full `font-family` list (one vendored face), bidi and vertical writing
+modes, and `revert`.
 
-## Open question for the next planning pass
+## The font, and why the version is recorded
 
 Task D's text measurement is the one place where a wrong choice is
 expensive to undo. A metrics table keeps the phase self-contained and
@@ -233,3 +306,28 @@ width in the output is approximate, so layout cannot be validated against a
 browser by comparing numbers — only by comparing structure. If numeric
 comparison against a reference render is wanted later, that decision has to
 be made before Task D, not after.
+
+## A rule that needs amending before Task D
+
+CLAUDE.md forbids browser libraries for core parsing and names
+`tinycss2`/`cssutils`/`cssselect` outright, with one recorded exception:
+`html.entities.html5`, permitted because it is *data* -- the WHATWG named
+reference list -- and every matching rule around it is hand-rolled.
+
+`fontTools` in `src/mayshay/` is the same shape of decision and deserves
+the same explicit treatment rather than being smuggled in. It reads a
+binary font file into glyph advances and vertical metrics; it makes no
+layout decision. Line breaking, white-space collapsing, baseline alignment
+and every box position stay hand-rolled. The alternative -- hand-rolling a
+TrueType table parser -- would be writing a binary deserializer, which is
+not what this project is for and would still produce the same numbers.
+
+Proposed amendment, to be agreed before Task D rather than after:
+
+> `fontTools` is permitted in `src/mayshay/layout/` for reading font
+> metrics -- glyph advances from `hmtx`, vertical metrics from `hhea` and
+> `OS/2`. It is a binary format reader over vendored data, in the same
+> category as `html.entities.html5`. It must not make layout decisions:
+> text measurement is the only thing it is asked for, behind a single
+> `measure()` interface. Pillow is permitted in `paint/` for rasterization
+> only. Neither may be imported by `htmlparse` or `cssparse`.
