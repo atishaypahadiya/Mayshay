@@ -39,13 +39,19 @@ from mayshay.cssparse.tokenizer import (
 from mayshay.dom.node import Element, Text
 from mayshay.htmlparse.treebuilder import TreeBuilder
 
-CORPUS = pathlib.Path(__file__).resolve().parents[2] / "data" / "corpus"
+from tests.support.corpus import CORPUS, page_paths
 
 # Floors, not exact counts: re-collecting the corpus should not break the
-# build, but losing most of it must. Actuals when written: 3 HTML files, 2
-# of them carrying <style> (hn.html links its CSS instead and contributes
-# nothing), 19 <style> elements, 193 style rules -- 156 top-level and 37
-# inside @media -- and 279 selectors.
+# build, but losing most of it must. Actuals, unchanged across the
+# 2026-08-27 re-collection: 3 HTML files, 2 of them carrying <style> (the
+# Hacker News page links its CSS instead and contributes nothing here), 19
+# <style> elements, 193 style rules -- 156 top-level and 37 inside @media --
+# and 279 selectors.
+#
+# This sweep sees in-document <style> only. The corpus now also carries 237
+# KB of external CSS per docs/corpus.md, which would be far broader
+# real-world coverage for "every selector parses" -- worth folding in, but a
+# deliberate scope change, not a silent one.
 MIN_HTML_FILES = 3
 MIN_FILES_WITH_STYLE = 2
 MIN_STYLE_ELEMENTS = 15
@@ -63,7 +69,7 @@ def _style_bodies():
     """The text of every `<style>` element in the corpus, found with this
     engine's own tree builder rather than a regex.
     """
-    for path in sorted(CORPUS.glob("*.html")):
+    for path in page_paths():
         document = TreeBuilder(path.read_text(errors="replace")).build()
         for node in _walk(document):
             if isinstance(node, Element) and node.tag_name == "style":
@@ -71,7 +77,10 @@ def _style_bodies():
                     c.data for c in node.children if isinstance(c, Text)
                 )
                 if text.strip():
-                    yield path.name, text
+                    # The slug, not path.name: every page's file is now
+                    # `page.html`, so keying on the filename would count
+                    # three pages as one.
+                    yield path.parent.name, text
 
 
 def _nested_preludes(block: list[CssToken]):
@@ -136,9 +145,10 @@ def test_the_corpus_sweep_is_not_silently_empty():
     files, elements, preludes = SWEEP
     assert CORPUS.is_dir()
     # Corpus files and files that carry CSS are counted separately: a page
-    # with no <style> is normal (hn.html links its stylesheet), a corpus
+    # with no <style> is normal (the Hacker News page links its
+    # stylesheet), a corpus
     # with no pages is the bug.
-    assert len(list(CORPUS.glob("*.html"))) >= MIN_HTML_FILES
+    assert len(page_paths()) >= MIN_HTML_FILES
     assert len(files) >= MIN_FILES_WITH_STYLE, files
     assert elements >= MIN_STYLE_ELEMENTS
     assert len(preludes) >= MIN_RULES
