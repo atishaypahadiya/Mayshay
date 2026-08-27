@@ -35,6 +35,7 @@
 | H | Selector matching against the DOM |
 | I | Property values for the nine-property set |
 | J | Cascade, inheritance, computed values, UA stylesheet |
+| K | `scripts/error_report.py` — committed measurement for whole-corpus parse-error agreement (runnable any time after B) |
 
 A–D are cleanup and can run in any order among themselves; E–J are strictly sequential.
 
