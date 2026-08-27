@@ -73,6 +73,66 @@ and validated nothing -- while looking like it worked.
 **Caught by** asking a second CDP method (`getContentQuads`) the same
 question and getting three answers where the first gave one.
 
+## The sharper case: a diagnostic downstream of the defect
+
+Instances 1 and 3 were wrong measurements. Instance 2 was worse, and the
+difference is worth naming.
+
+When a width came back as `89.0`, the natural next question is "am I on a
+hinted path?" -- and there are two obvious ways to ask it:
+
+    ImageFont.truetype(path, 16, layout_engine=ImageFont.Layout.BASIC)
+    font.getlength(text, mode="L")
+
+Both return `89.0`. The check that should have caught the rounding returns
+the same number as the thing it was checking, so it reads as
+**confirmation**: hinting is not the problem, the number is fine, move on.
+
+That is a false green, and it is strictly worse than no check at all. No
+check leaves uncertainty, which is a state that still prompts caution. A
+passing check converts that uncertainty into confidence -- confidence
+pointing in the wrong direction, held more firmly for having been
+"verified".
+
+The reason it fails is structural, not incidental: **both diagnostics are
+downstream of the same rounding.** They vary an input to a pipeline whose
+final step discards the fractional part. Nothing you can vary upstream of a
+truncation will reveal the truncation. The diagnostic and the defect share
+an implementation path, so the diagnostic inherits the defect's blind spot.
+
+### The criterion
+
+This is what decides when "ask a second method" is mandatory rather than
+prudent:
+
+> **A check can only detect defects that are not upstream of it.** If the
+> candidate diagnostic shares an implementation path with the thing being
+> diagnosed, it cannot fail when that path is wrong, and a green result
+> from it carries no information.
+
+So before trusting a check, ask what it shares with its subject. If the
+answer is "the code that might be broken", the check is decorative and an
+independent second derivation is the only thing that works. If the answer
+is "nothing but the question", it is real evidence.
+
+Concretely, in this project:
+
+* Measuring advances with Pillow and diagnosing with Pillow's own options
+  shares the rasterizer. `fontTools` reading `hmtx` shares only the file.
+* Checking a cascade counter by reading another counter the same function
+  emits shares the function. Counting the same thing from the DOM is
+  independent.
+* Validating our HTML parser against trees our own parser produced shares
+  everything. `html5lib-tests` fixtures share only the input.
+
+The project already applied this once before it had a name.
+`scripts/collect.py` uses BeautifulSoup to find `<link rel=stylesheet>`
+elements rather than `mayshay.htmlparse`, and the reason recorded in its
+docstring is exactly this: a parser defect would otherwise become a corpus
+defect, and the corpus would then validate the parser that shaped it. The
+corpus is the measuring instrument; it must not be built with the tool
+under measurement.
+
 ## The shape
 
 In all three the output had the right type, a plausible magnitude, and no
@@ -100,7 +160,9 @@ number is reasonable, because it always was.
   and confirm it moves.
 * **When two methods can answer the same question, ask both once** before
   building on either. It is one throwaway script at design time and a
-  rebuilt harness afterwards.
+  rebuilt harness afterwards. This is mandatory, not prudent, whenever the
+  first method's own diagnostics share an implementation path with it --
+  see the criterion above.
 * **Prefer the source closest to the data.** `hmtx` over a rasterizer's
   convenience wrapper; the manifest over a directory glob; the token stream
   over a regex. Each layer of convenience is a place a value can be
