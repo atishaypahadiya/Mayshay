@@ -51,6 +51,23 @@ Package root is `src/mayshay/`. Imports look like:
   running is one line.
   This applies to decisions as well as claims: a test deferred as
   "correct by inspection" is an unexecuted claim wearing a decision's clothes.
+- Every cross-stage comparison must distinguish wrong output from wrong
+  input, and report upstream divergence separately from the thing being
+  measured. Carry two identifiers, not one: when they agree the comparison
+  is valid, and when they disagree the stage above diverged. Attributing an
+  `htmlparse` defect to layout is the same failure as attributing a cascade
+  defect to layout -- which is why Phase 3 repairs the cascade before it
+  builds a box tree, at a 70% declaration drop rate a layout bug and a
+  cascade bug are indistinguishable.
+- A measurement is verified by a second measurement obtained a different
+  way, never by inspection and never by internal consistency. Three
+  figures on this project were wrong while looking right: the display
+  census before `@media` evaluation, `PIL.getlength`'s integer advances,
+  and `DOM.getBoxModel`'s union box for wrapping inlines. Each had the
+  right type and a plausible magnitude. See `docs/measurement-hazards.md`.
+  A suspiciously clean result -- exactly zero, exactly integral, exactly
+  unchanged -- is a claim about the instrument until a probe proves
+  otherwise.
 - Non-ASCII in test data is written as an escape (\u212a), never as a literal.
   Kelvin sign vs ASCII K, NBSP vs space, and combining marks all read
   identically in a terminal.
