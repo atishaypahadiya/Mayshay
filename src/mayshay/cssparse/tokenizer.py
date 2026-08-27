@@ -61,11 +61,12 @@ Deliberate deviations from the spec, documented so they don't surprise us later:
 7. **`*=`, `~=`, `|=`, `^=`, `$=` and `||` are NOT single tokens.** The 2014
    CR of css-syntax-3 had <substring-match-token> and friends; the current
    spec removed them, leaving the match operators to be reassembled by the
-   selector parser from two delims. This is worth knowing because it is the
-   one place a spec-correct implementation *disagrees* with tinycss2, which
-   still implements the 2014 CR -- it is the only structural divergence over
-   the 21KB of real <style> bodies in data/corpus/ (the other is deviation 4,
-   int vs float). Task G's selector parser has to join them.
+   selector parser from two delims. Worth knowing because it is one of
+   exactly TWO places a spec-correct implementation disagrees with tinycss2,
+   which still implements the 2014 CR, over the 21KB of real <style> bodies
+   in data/corpus/: this one, the only *structural* divergence, and
+   deviation 4's int-vs-float, which is a representation difference at the
+   same token boundaries. Task G's selector parser has to join them.
 8. **NULL and lone surrogates are replaced with U+FFFD during preprocessing**
    (spec 3.3), unlike `htmlparse`, which deliberately passes NUL through
    untouched (see deviation 5 there). CSS has no conformance corpus pinning
@@ -342,6 +343,7 @@ class CssTokenizer:
         self.pos = 0
         self.errors: list[tuple[int, str]] = []
         self.metrics: Counter[str] = Counter()
+        self._tokenized = False
 
     @staticmethod
     def _preprocess(source: str) -> str:
@@ -410,7 +412,7 @@ class CssTokenizer:
         and emits a token; nothing raises.
         """
         self.errors.append((self.pos if pos is None else pos, message))
-        self.metrics["css_parse_errors"] += 1
+        self.metrics["parse_errors"] += 1
 
     # -- spec predicates ---------------------------------------------------
 
@@ -456,7 +458,28 @@ class CssTokenizer:
     # -- main loop ---------------------------------------------------------
 
     def tokenize(self) -> Iterator[CssToken]:
-        """Yield tokens until and including EOFToken."""
+        """Yield tokens until and including EOFToken.
+
+        **Single use.** A tokenizer owns a cursor, an error list and a metrics
+        Counter, and all three are consumed by one pass: a second call would
+        resume from `pos == len(source)`, yield nothing but EOF, and overwrite
+        `tokenize_time_ms` with the time that took. Raise instead. Construct a
+        new tokenizer, or `list()` the first pass if you need to re-read it.
+
+        Not a generator itself, deliberately: a generator's body does not run
+        until it is first advanced, so the guard would fire at iteration
+        rather than at the offending call, which is the wrong place to be
+        told about it.
+        """
+        if self._tokenized:
+            raise RuntimeError(
+                "CssTokenizer.tokenize() is single-use; construct a new "
+                "CssTokenizer to tokenize the same source again"
+            )
+        self._tokenized = True
+        return self._tokenize()
+
+    def _tokenize(self) -> Iterator[CssToken]:
         elapsed = 0.0
         while True:
             started = time.perf_counter()
@@ -471,7 +494,7 @@ class CssTokenizer:
                 return
             # EOF is a sentinel, not a token of the source: counting it would
             # put every "tokens per byte" ratio off by one.
-            self.metrics["css_tokens"] += 1
+            self.metrics["tokens"] += 1
             yield token
 
     # -- 4.3.1 consume a token ---------------------------------------------
@@ -588,10 +611,10 @@ class CssTokenizer:
             if end == -1:
                 self.pos = len(self.source)
                 self._error("unterminated comment", start)
-                self.metrics["css_comments"] += 1
+                self.metrics["comments"] += 1
                 return
             self.pos = end + 2
-            self.metrics["css_comments"] += 1
+            self.metrics["comments"] += 1
 
     # -- 4.3.3 consume a numeric token -------------------------------------
 
@@ -628,13 +651,13 @@ class CssTokenizer:
             ):
                 # `url("a.png")` is a Function token followed by a String. The
                 # url-token below exists only for the unquoted form.
-                self.metrics["css_functions"] += 1
+                self.metrics["functions"] += 1
                 return Function(name, pos=start)
             return self._consume_url(start)
 
         if self._peek(1) == "(":
             self._next()
-            self.metrics["css_functions"] += 1
+            self.metrics["functions"] += 1
             return Function(name, pos=start)
 
         return Ident(name, pos=start)
@@ -660,7 +683,7 @@ class CssTokenizer:
                 # stream recovers instead of swallowing the rest of the file.
                 self._reconsume(ch)
                 self._error("newline in string", self.pos)
-                self.metrics["css_bad_strings"] += 1
+                self.metrics["bad_strings"] += 1
                 return BadString(pos=start)
             if ch == "\\":
                 nxt = self._at()
@@ -693,24 +716,32 @@ class CssTokenizer:
         while True:
             ch = self._next()
             if ch == ")":
-                self.metrics["css_urls"] += 1
+                self.metrics["urls"] += 1
                 return Url("".join(out), pos=start)
             if ch is EOF:
                 self._error("eof in url")
-                self.metrics["css_urls"] += 1
+                self.metrics["urls"] += 1
                 return Url("".join(out), pos=start)
             if ch in WHITESPACE:
                 while (nxt := self._at()) is not EOF and nxt in WHITESPACE:
                     self._next()
                 if self._at() == ")":
                     self._next()
-                    self.metrics["css_urls"] += 1
+                    self.metrics["urls"] += 1
                     return Url("".join(out), pos=start)
                 if self._at() is EOF:
                     self._error("eof in url")
-                    self.metrics["css_urls"] += 1
+                    self.metrics["urls"] += 1
                     return Url("".join(out), pos=start)
-                self._error("whitespace inside unquoted url", self.pos)
+                # NO parse error here, deliberately. 4.3.6's whitespace branch
+                # designates one for the EOF sub-case above and for nothing
+                # else -- unlike the quote/paren/non-printable and invalid-
+                # escape branches below, which each say "this is a parse
+                # error" in so many words. `url(a b)` is malformed and yields
+                # a <bad-url-token>, but the spec does not count it, so
+                # neither do we: `parse_errors` is a conformance signal and
+                # inflating it would corrupt the corpus-wide baseline. The
+                # bad url is still counted, as `bad_urls`.
                 return self._consume_bad_url_remnants(start)
             if ch in ('"', "'", "(") or _is_non_printable(ch):
                 self._error(f"unexpected {ch!r} inside unquoted url", self.pos - 1)
@@ -733,8 +764,18 @@ class CssTokenizer:
         trailing whitespace character is part of the escape rather than a
         separator that survives, and out-of-range values do not raise.
         """
+        # Counted on every path, including the three that yield U+FFFD. The
+        # counter answers "how many escapes were in this stylesheet", which is
+        # a property of the input; an escape that resolves to the replacement
+        # character was still written, and dropping it would make `escapes`
+        # disagree with `parse_errors` on exactly the inputs worth looking at.
+        self.metrics["escapes"] += 1
         ch = self._next()
         if ch is EOF:
+            # Unreachable today: all four call sites check `_is_valid_escape`
+            # first, and a backslash at EOF fails that test, so the caller
+            # emits a Delim and never gets here. Kept because 4.3.7 has the
+            # branch and a fifth caller would need it.
             self._error("eof in escape")
             return REPLACEMENT
         if ch in HEX_DIGITS:
@@ -748,9 +789,7 @@ class CssTokenizer:
             value = int(digits, 16)
             if value == 0 or value > MAX_CODE_POINT or 0xD800 <= value <= 0xDFFF:
                 return REPLACEMENT
-            self.metrics["css_escapes"] += 1
             return chr(value)
-        self.metrics["css_escapes"] += 1
         return ch
 
     # -- 4.3.11 consume an ident sequence ----------------------------------
@@ -821,7 +860,7 @@ class CssTokenizer:
         while True:
             ch = self._next()
             if ch == ")" or ch is EOF:
-                self.metrics["css_bad_urls"] += 1
+                self.metrics["bad_urls"] += 1
                 return BadUrl(pos=start)
             if ch == "\\" and self._is_valid_escape(-1):
                 self._consume_escape()

@@ -31,10 +31,17 @@ def test_simple_declaration():
 
 def test_dimensions_and_percentages():
     got = toks("10px 50% 1.5em -3px")
+    # The brief asserted only `.value`/`.unit` on the three dimensions, which
+    # any token type carrying those two attributes would satisfy. The types
+    # are the point of the test -- 50% must not be a Dimension with unit "%".
+    assert isinstance(got[0], Dimension)
     assert (got[0].value, got[0].unit) == (10, "px")
     assert isinstance(got[1], Percentage) and got[1].value == 50
+    assert not hasattr(got[1], "unit")
+    assert isinstance(got[2], Dimension)
     assert (got[2].value, got[2].unit) == (1.5, "em")
-    assert got[3].value == -3
+    assert isinstance(got[3], Dimension)
+    assert (got[3].value, got[3].unit) == (-3, "px")
 
 
 def test_numbers_with_exponents():
@@ -236,9 +243,33 @@ def test_url_with_internal_space_is_a_bad_url():
     tk = CssTokenizer("url(a b) x")
     got = [t for t in tk.tokenize() if not isinstance(t, Whitespace)]
     assert isinstance(got[0], BadUrl)
-    assert tk.errors
     # Recovery: the bad-url remnants stop at the ')', so 'x' still tokenizes.
     assert isinstance(got[1], Ident) and got[1].value == "x"
+    # And NO parse error: 4.3.6's whitespace branch designates one only for
+    # its EOF sub-case. The malformed url is reported as a bad_urls count, not
+    # as a parse error -- see test_bad_url_from_whitespace_is_not_a_parse_error.
+    assert tk.errors == []
+    assert tk.metrics["bad_urls"] == 1
+
+
+def test_bad_url_from_whitespace_is_not_a_parse_error_but_others_are():
+    """4.3.6 designates a parse error on three of its four bad-url paths.
+
+    Getting this wrong in the permissive direction inflates the corpus-wide
+    parse-error rate that task K measures, and a wrong baseline is worse than
+    no baseline -- so the asymmetry is pinned rather than assumed.
+    """
+    from mayshay.cssparse.tokenizer import BadUrl
+
+    quiet = CssTokenizer("url(a b)")
+    assert isinstance([t for t in quiet.tokenize()][0], BadUrl)
+    assert quiet.errors == []
+
+    for src in ("url(a'b)", 'url(a"b)', "url(a(b)", "url(a\\\nb)"):
+        loud = CssTokenizer(src)
+        tokens = list(loud.tokenize())
+        assert any(isinstance(t, BadUrl) for t in tokens), src
+        assert loud.errors, src
 
 
 def test_unquoted_url_may_contain_characters_no_other_token_permits():
@@ -319,15 +350,66 @@ def test_errors_record_an_offset_and_a_message():
 def test_metrics_are_populated():
     tk = CssTokenizer("a { color: red }")
     tokens = list(tk.tokenize())
-    assert tk.metrics["css_tokens"] == len(tokens) - 1   # EOF excluded
+    assert tk.metrics["tokens"] == len(tokens) - 1   # EOF excluded
     assert tk.metrics["tokenize_time_ms"] > 0.0
-    assert tk.metrics["css_parse_errors"] == 0
+    assert tk.metrics["parse_errors"] == 0
+
+
+def test_metric_keys_are_unprefixed_like_htmlparse():
+    """`metrics.py` is long format with a `stage` column.
+
+    `stage=cssparse, key=css_tokens` says "css" twice, and htmlparse emits
+    bare `start_tags` / `parse_errors`, so a prefix on one side only makes
+    every pivot over (stage, key) special-case this stage.
+    """
+    tk = CssTokenizer(r'a /* c */ { background: url(x) rgb(1,2,3) "\26" }')
+    list(tk.tokenize())
+    assert tk.metrics
+    assert not [key for key in tk.metrics if key.startswith("css_")]
+    for key in ("tokens", "comments", "functions", "urls", "escapes"):
+        assert tk.metrics[key] > 0, key
 
 
 def test_parse_error_metric_counts_errors():
     tk = CssTokenizer("a /* unterminated")
     list(tk.tokenize())
-    assert tk.metrics["css_parse_errors"] == len(tk.errors) > 0
+    assert tk.metrics["parse_errors"] == len(tk.errors) > 0
+
+
+def test_escapes_are_counted_even_when_they_yield_the_replacement_char():
+    """Out-of-range, surrogate and NUL escapes are still escapes.
+
+    The counter answers "how many escapes were written in this stylesheet",
+    which is a property of the input, so the three U+FFFD paths must count.
+    Note U+FFFD is itself an ident code point under deviation 2, and each
+    escape eats its own trailing space, so the single-spaced form is ONE
+    ident of three replacement characters -- the same trailing-space rule the
+    brief got wrong in test_escape_sequences, in a second guise.
+    """
+    tk = CssTokenizer(r"\110000 \D800 \0 ")
+    got = [t for t in tk.tokenize() if not isinstance(t, Whitespace)]
+    assert isinstance(got[0], Ident) and got[0].value == "�" * 3
+    assert tk.metrics["escapes"] == 3
+
+    spaced = CssTokenizer(r"\110000  \D800  \0  ")
+    idents = [t for t in spaced.tokenize() if isinstance(t, Ident)]
+    assert [t.value for t in idents] == ["�", "�", "�"]
+    assert spaced.metrics["escapes"] == 3
+
+
+def test_tokenize_is_single_use():
+    """A second pass would resume at EOF and overwrite tokenize_time_ms."""
+    tk = CssTokenizer("a { color: red }")
+    first = list(tk.tokenize())
+    assert len(first) > 1
+    with pytest.raises(RuntimeError, match="single-use"):
+        tk.tokenize()
+    # And it raises at the call, not at the first next(): a generator body
+    # would defer the guard past the point that made the mistake.
+    tk2 = CssTokenizer("a")
+    tk2.tokenize()
+    with pytest.raises(RuntimeError):
+        tk2.tokenize()
 
 
 # --------------------------------------------------------------------------
