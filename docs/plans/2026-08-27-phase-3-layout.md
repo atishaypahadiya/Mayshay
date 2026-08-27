@@ -288,6 +288,18 @@ Both are correct decisions for Phase 2 and both become Task D's problem:
 `Viewport` to resolve against — `media.py` has one, and `_length_to_px`
 should take it rather than returning `None`.
 
+**8a. Percentages resolve against three different things, not one.**
+`font-size: 50%` and `line-height: 50%` must be resolved at cascade time
+(the reference is a font size, which the cascade knows); `width: 50%` and
+`margin-top: 5%` must not (the reference is a containing-block dimension);
+`vertical-align: 50%` is resolvable only when `line-height` is a number or
+a length, and needs font metrics when it is `normal`. Task C resolves the
+second category and Task D the remainder of the third. The full rule,
+the current audit, and the traps -- `margin-top` resolving against
+*width*, and a unitless `line-height` inheriting as a number -- are in
+`docs/percentage-resolution.md`. Read it before adding any
+percentage-accepting property.
+
 **8. Computed values are not used values, deliberately.** Percentages and
 `auto` survive symbolically, which is exactly right and is the single most
 helpful thing Phase 2 did for this phase. Noted so it is not "fixed".
