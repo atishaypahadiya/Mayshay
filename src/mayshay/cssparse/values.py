@@ -170,11 +170,15 @@ Task J or Phase 3 later:
       metrics that arrive with Task D; `1.2 x font-size` is what every
       engine happens to use and is not what the spec says, so resolving it
       here would bake a guess into a value nothing could later distinguish
-      from a declared one. A `<percentage>` likewise stays `Percent` --
-      that *is* a deviation from CSS 2.1's letter, which computes it
-      against the element's own font-size, and it is taken so the whole
-      percentage family resolves in one place in Task D. One `125%` in the
-      corpus depends on it (executed).
+      from a declared one. A `<number>` stays a number for the opposite
+      reason -- CSS 2.1 10.8.1 says the computed value of a numeric
+      line-height *is* the number, and the number is what inherits.
+      A `<percentage>`, uniquely among this engine's percentages, is
+      **not** left symbolic: it refers to the element's own font-size,
+      which the cascade knows, so `cascade._PERCENT_OF_OWN_FONT_SIZE`
+      resolves it to a length there and that length inherits. A percentage
+      width refers to the containing block and must stay symbolic; same
+      token type, opposite rule, and the reason is which quantity it names.
     * **`font-family` is a tuple of names, kept as parsed**, generics
       included and not distinguished. Nothing consumes the list this phase
       -- Phase 3 renders with one vendored font -- so a `serif`-vs-family
@@ -943,12 +947,17 @@ def _parse_line_height(tokens: list[CssToken]) -> object | None:
     the computed-vs-used mistake `Percent` and `AUTO` exist to avoid, and
     the wrong number would look entirely reasonable.
 
-    A `<percentage>` likewise stays a `Percent`, which *is* a deviation from
-    the spec's letter -- CSS 2.1 says a percentage line-height computes to
-    an absolute length against the element's own font-size. It is kept
-    symbolic for consistency with `normal` and with every other percentage
-    in this engine; Task D resolves the family in one place. One `125%` in
-    the corpus depends on it (executed).
+    A `<number>` is kept as a number, not multiplied by anything: CSS 2.1
+    10.8.1 says the computed value of a numeric line-height *is* the number,
+    and the number is what inherits -- the multiplication is per element at
+    used-value time.
+
+    A `<percentage>` reaches the cascade as a `Percent` and is resolved
+    there, unlike every other percentage in this engine. See
+    `cascade._PERCENT_OF_OWN_FONT_SIZE` for why the two are opposite: a
+    percentage width refers to the containing block, which does not exist
+    yet; a percentage line-height refers to the element's own font-size,
+    which does.
     """
     tok = _single_token(tokens)
     if tok is None:
@@ -1342,23 +1351,6 @@ _KNOWN_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
 _OPEN_IDENT_PROPERTIES: frozenset[str] = frozenset({"list-style-type"})
 
 
-def _var_functions(tokens: list[CssToken]) -> bool:
-    """Does this value contain a *well-formed* `var()` reference?
-
-    Well-formed means `var(` followed immediately by an identifier starting
-    with `--`. A `var()` with anything else first is a syntax error a browser
-    drops too, so it deliberately does not count here and falls through to
-    `invalid`.
-    """
-    for i, tok in enumerate(tokens):
-        if not isinstance(tok, Function) or _ascii_lower(tok.value) != "var":
-            continue
-        rest = _trim(tokens[i + 1:])
-        if rest and isinstance(rest[0], Ident) and rest[0].value.startswith("--"):
-            return True
-    return False
-
-
 def _has_unsupported_construct(name: str, tokens: list[CssToken]) -> bool:
     """Does this value use valid CSS that this module documents as out of
     scope? See `_KNOWN_UNSUPPORTED_KEYWORDS` for the separation this draws.
@@ -1378,6 +1370,169 @@ def _has_unsupported_construct(name: str, tokens: list[CssToken]) -> bool:
             if name in _OPEN_IDENT_PROPERTIES:
                 return True
     return False
+
+
+# --------------------------------------------------------------------------
+# Custom properties and var() substitution
+# --------------------------------------------------------------------------
+#
+# The trap this shape exists to avoid: declarations are parsed **once per
+# sheet** and the resulting objects are shared by every element the rule
+# matches, but `color: var(--accent)` computes to a different value per
+# element, because `--accent` is itself cascaded and inherited. Substituting
+# at sheet-parse time is wrong and would produce entirely plausible output
+# on a test page with one element. So this module supplies only the textual
+# substitution; *when* to run it is the cascade's decision, and the cascade
+# runs it per element after that element's custom properties are known.
+
+# Depth cap rather than real cycle detection, deliberately. Custom Properties
+# 1 section 3 defines cycle detection over the whole dependency graph, which
+# is a phase and not a task. A cap is O(1) and cannot be wrong in the
+# dangerous direction: the worst it does is refuse a legal eight-deep chain,
+# which is a counted refusal rather than a hang or a wrong value.
+VAR_SUBSTITUTION_DEPTH_CAP = 8
+
+# Why a substitution was refused. Each is a counter name in the cascade, so
+# every out-of-scope case is a number rather than an absence.
+VAR_UNKNOWN_NO_FALLBACK = "var_unknown_no_fallback"
+VAR_NESTED_FALLBACK_SKIPPED = "var_nested_fallback_skipped"
+VAR_DEPTH_EXCEEDED = "var_depth_exceeded"
+VAR_MALFORMED = "var_malformed"
+
+
+def is_custom_property(name: str) -> bool:
+    """Is this declaration a custom property?
+
+    **Not normalised.** Custom property names are case-*sensitive*
+    (Custom Properties 1 section 2), unlike every other property name this
+    module sees, so `--Accent` and `--accent` are two different properties.
+    Running `normalize_property_name` over one would silently merge them.
+    """
+    return name.startswith("--")
+
+
+def contains_var_reference(tokens: list[CssToken]) -> bool:
+    """Does this value contain a well-formed `var()` reference?
+
+    Well-formed means `var(` followed by an identifier starting with `--`.
+    A `var()` with anything else first is a syntax error a browser drops
+    too, so it deliberately does not count here: crediting the `var()` work
+    with a case `var()` can never recover would make its counter move for
+    the wrong reason.
+    """
+    for i, tok in enumerate(tokens):
+        if not isinstance(tok, Function) or _ascii_lower(tok.value) != "var":
+            continue
+        rest = _trim(tokens[i + 1:])
+        if rest and isinstance(rest[0], Ident) and rest[0].value.startswith("--"):
+            return True
+    return False
+
+
+def _matching_rparen(tokens: list[CssToken], start: int) -> int | None:
+    """Index of the `)` closing the `Function` at `start`, or None."""
+    depth = 0
+    for i in range(start, len(tokens)):
+        tok = tokens[i]
+        if isinstance(tok, Function):
+            depth += 1
+        elif isinstance(tok, RParen):
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
+def _split_var_arguments(
+    inner: list[CssToken],
+) -> tuple[list[CssToken], list[CssToken] | None]:
+    """`var()`'s inner tokens as (name, fallback-or-None).
+
+    Split at the **first** top-level comma, not on every comma: the fallback
+    is an arbitrary declaration value and may contain commas of its own
+    (`var(--font, Georgia, serif)` has one fallback, not two).
+    """
+    depth = 0
+    for i, tok in enumerate(inner):
+        if isinstance(tok, Function):
+            depth += 1
+        elif isinstance(tok, RParen):
+            depth -= 1
+        elif isinstance(tok, Comma) and depth == 0:
+            return inner[:i], inner[i + 1:]
+    return inner, None
+
+
+def substitute_var(
+    tokens: list[CssToken],
+    custom_properties: dict[str, tuple[CssToken, ...]],
+    _depth: int = 0,
+) -> tuple[list[CssToken] | None, str | None]:
+    """Replace every `var()` in `tokens` with what it names.
+
+    Returns `(substituted_tokens, None)` or `(None, reason)`, where `reason`
+    is one of the `VAR_*` constants above. Returning the reason rather than
+    incrementing a counter keeps this module free of the metrics object; the
+    cascade owns counting, as it owns every other counter.
+
+    Substitution is textual at the token level, which is what the spec says
+    it is: the `var()` function is replaced by the custom property's token
+    list and the result is then parsed as if it had been written that way.
+    That is also why an invalid result is a *drop* and not an error --
+    `width: var(--x)` with `--x: red` is a declaration a browser discards at
+    computed-value time.
+
+    Deliberately out of scope, each with its own reason so it is a number:
+
+    * `var()` inside another `var()`'s fallback, when the fallback is the
+      branch actually taken -- `VAR_NESTED_FALLBACK_SKIPPED`. When the
+      custom property *is* set the fallback is never looked at, matching the
+      spec (a fallback need not even be valid), so `var(--x, var(--y))` with
+      `--x` set resolves normally rather than being refused.
+    * a chain deeper than `VAR_SUBSTITUTION_DEPTH_CAP` -- `VAR_DEPTH_EXCEEDED`.
+    * an unset custom property with no fallback -- `VAR_UNKNOWN_NO_FALLBACK`.
+      (Per spec this makes the declaration invalid at computed-value time,
+      which is what dropping it amounts to.)
+    * the guaranteed-invalid-value rules of Custom Properties 1 section 3,
+      in their generality.
+    """
+    if _depth > VAR_SUBSTITUTION_DEPTH_CAP:
+        return None, VAR_DEPTH_EXCEEDED
+    out: list[CssToken] = []
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if not (isinstance(tok, Function) and _ascii_lower(tok.value) == "var"):
+            out.append(tok)
+            i += 1
+            continue
+        end = _matching_rparen(tokens, i)
+        if end is None:
+            return None, VAR_MALFORMED
+        name_tokens, fallback = _split_var_arguments(tokens[i + 1:end])
+        name_tokens = _trim(name_tokens)
+        if (
+            len(name_tokens) != 1
+            or not isinstance(name_tokens[0], Ident)
+            or not name_tokens[0].value.startswith("--")
+        ):
+            return None, VAR_MALFORMED
+        declared = custom_properties.get(name_tokens[0].value)
+        if declared is not None:
+            replacement, reason = substitute_var(
+                list(declared), custom_properties, _depth + 1
+            )
+            if replacement is None:
+                return None, reason
+        elif fallback is not None:
+            if contains_var_reference(fallback):
+                return None, VAR_NESTED_FALLBACK_SKIPPED
+            replacement = _trim(fallback)
+        else:
+            return None, VAR_UNKNOWN_NO_FALLBACK
+        out.extend(replacement)
+        i = end + 1
+    return out, None
 
 
 def classify_drop(name: str, tokens: list[CssToken]) -> str:
@@ -1401,7 +1556,7 @@ def classify_drop(name: str, tokens: list[CssToken]) -> str:
     if name not in SUPPORTED_PROPERTIES:
         return DROP_UNSUPPORTED_PROPERTY
     tokens = [tok for tok in tokens if not isinstance(tok, EOFToken)]
-    if _var_functions(tokens):
+    if contains_var_reference(tokens):
         return DROP_VAR_UNRESOLVED
     if _has_unsupported_construct(name, tokens):
         return DROP_UNSUPPORTED_VALUE
@@ -1421,8 +1576,16 @@ __all__ = [
     "Keyword",
     "Length",
     "Percent",
+    "VAR_DEPTH_EXCEEDED",
+    "VAR_MALFORMED",
+    "VAR_NESTED_FALLBACK_SKIPPED",
+    "VAR_SUBSTITUTION_DEPTH_CAP",
+    "VAR_UNKNOWN_NO_FALLBACK",
     "WideKeyword",
     "bare_wide_keyword",
+    "contains_var_reference",
+    "is_custom_property",
+    "substitute_var",
     "classify_drop",
     "expand_shorthand",
     "normalize_property_name",

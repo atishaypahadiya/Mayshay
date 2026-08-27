@@ -206,7 +206,35 @@ Deliberate deviations and omissions
     engine started accepting garbage. `values.classify_drop` decides;
     `_cascade_declarations` is the single place that calls it, for both
     `<style>` bodies and `style=` attributes.
-13. **Every declaration and error counter is a whole-document total** --
+13. **`var()` resolves per element, at computed-value time, and every
+    refusal is a counter.** Custom properties cascade and inherit like any
+    other declaration but keep their value as raw tokens; a declaration
+    containing a `var()` on a supported property is *deferred* rather than
+    dropped (`declarations_pending_var`) and resolved once per element
+    against that element's custom-property map.
+
+    Substituting at sheet-parse time would be wrong and would look right:
+    declarations are parsed once per sheet and shared by every element the
+    rule matches, so one `color: var(--accent)` would give every matching
+    element the same colour -- entirely plausible output, and correct on any
+    test page with one element. `_PendingValue` is what keeps the decision
+    where it belongs.
+
+    Out of scope, each a number: `var_nested_fallback_skipped` (a `var()`
+    inside another's fallback, on the branch actually taken),
+    `var_depth_exceeded` (an eight-deep substitution cap standing in for
+    real cycle detection -- O(1), and wrong only in the safe direction),
+    `var_unknown_no_fallback`, `var_malformed`, and
+    `var_substituted_value_invalid` for a substitution that succeeded and
+    produced a value the property does not accept.
+    `var_declarations_attempted` / `_resolved` / `_refused` bridge back to
+    the parse-time `declarations_pending_var`, and `_unmatched` accounts
+    for the rest. The split is not cosmetic: measured as one number,
+    Wikipedia's 353 deferred declarations reported 288 unresolved, of which
+    281 had simply never been asked for by any element -- their rules match
+    nothing on that page, which is ordinary for a large sheet. Seven were
+    attempted and refused.
+14. **Every declaration and error counter is a whole-document total** --
     `<style>` bodies, `style=` attributes and the UA sheet summed
     together. `tokenizer_parse_errors`
     and `css_parse_errors` include the inline path -- which they did not
@@ -236,7 +264,7 @@ from mayshay.cssparse.selectors import (
     parse_selector_list,
     specificity,
 )
-from mayshay.cssparse.tokenizer import CssTokenizer
+from mayshay.cssparse.tokenizer import CssTokenizer, EOFToken
 from mayshay.cssparse.ua import UA_CSS
 from mayshay.cssparse.values import (
     AUTO,
@@ -246,9 +274,13 @@ from mayshay.cssparse.values import (
     Keyword,
     Length,
     Percent,
+    SUPPORTED_PROPERTIES,
     WideKeyword,
     bare_wide_keyword,
     classify_drop,
+    contains_var_reference,
+    is_custom_property,
+    substitute_var,
     normalize_property_name,
     parse_declaration_value,
 )
@@ -513,6 +545,15 @@ class ComputedStyle:
     box_sizing: str = "content-box"
     list_style_type: str = "disc"
 
+    # This element's custom properties, name -> raw token tuple. Not a
+    # longhand and deliberately exempted from the drift assert below: it is
+    # a *map* of properties rather than one, its keys are open-ended, and it
+    # is never parsed until substituted. It inherits, which is what makes
+    # `var()` resolve per element rather than per rule; the dict is shared
+    # with the parent whenever the child declares none of its own, so an
+    # inheriting subtree costs one reference per node and not one dict.
+    custom_properties: dict = field(default_factory=dict)
+
     def get(self, prop: str) -> object:
         return getattr(self, _field_name(prop))
 
@@ -536,7 +577,7 @@ class ComputedStyle:
 # A sanity check that the dataclass and the property list cannot drift: a
 # longhand added to one and forgotten in the other is a property that
 # silently never cascades.
-_STYLE_FIELDS = {f.name for f in fields(ComputedStyle)}
+_STYLE_FIELDS = {f.name for f in fields(ComputedStyle)} - {"custom_properties"}
 assert _STYLE_FIELDS == {_field_name(p) for p in LONGHANDS}, (
     "ComputedStyle fields and LONGHANDS disagree: "
     f"{_STYLE_FIELDS ^ {_field_name(p) for p in LONGHANDS}}"
@@ -721,12 +762,36 @@ _KEYWORD_VALUED = frozenset({
 _KEYWORD_PRESERVED = frozenset({"line-height"})
 
 
+# The one property whose `<percentage>` must NOT stay symbolic, and the
+# distinction is worth stating rather than remembering:
+#
+#   * `width: 50%` resolves against the CONTAINING BLOCK, which does not
+#     exist until layout. It stays `Percent(50)`.
+#   * `line-height: 150%` resolves against the element's OWN font-size
+#     (CSS 2.1 10.8.1), which is known right here -- and it is the resulting
+#     *length* that inherits, not the percentage.
+#
+# Same token type, opposite handling, and the reason is which quantity the
+# percentage refers to. Leaving it symbolic is not a conservative choice: a
+# child with a smaller font-size would resolve the inherited `Percent(150)`
+# against its own size and get a correctly-proportioned, subtly wrong number
+# that nothing downstream could distinguish from the right one.
+#
+# A `<number>` line-height is the opposite case and is correctly left alone:
+# CSS 2.1 10.8.1 says its computed value *is* the number, and the number is
+# what inherits -- the multiplication happens per element at used-value time,
+# which is Task D's.
+_PERCENT_OF_OWN_FONT_SIZE = frozenset({"line-height"})
+
+
 def _computed_value(
     prop: str, value: object, *, font_px: float, root_px: float, own_color: object
 ) -> object:
     """One specified value -> its computed value.
 
-    `Percent` and `AUTO` fall through untouched, which is the point.
+    `AUTO` falls through untouched, and so does `Percent` on every property
+    but the one in `_PERCENT_OF_OWN_FONT_SIZE` -- which is the point, and
+    the exception is the point too.
     """
     if isinstance(value, Keyword):
         if value.name == "currentcolor":
@@ -743,6 +808,8 @@ def _computed_value(
     if isinstance(value, Length):
         px = _length_to_px(value, font_px=font_px, root_px=root_px)
         return value if px is None else Length(px, "px")
+    if isinstance(value, Percent) and prop in _PERCENT_OF_OWN_FONT_SIZE:
+        return Length(round(value.value / 100.0 * font_px, 6), "px")
     return value
 
 
@@ -761,6 +828,45 @@ _RANK_UA_IMPORTANT = 5
 
 _NORMAL_RANK = {"ua": _RANK_UA_NORMAL, "author": _RANK_AUTHOR_NORMAL}
 _IMPORTANT_RANK = {"ua": _RANK_UA_IMPORTANT, "author": _RANK_AUTHOR_IMPORTANT}
+
+
+@dataclass
+class _PendingValue:
+    """A declaration whose value contains `var()`, kept unparsed.
+
+    **The architectural point of Task A2's largest item.** Declarations are
+    parsed once per sheet and the resulting objects are shared by every
+    element the rule matches; `color: var(--accent)` computes to a different
+    value per element, because `--accent` is itself cascaded and inherited.
+    So the value cannot be parsed at sheet time at all, and this object is
+    what a `_Declaration` carries instead: the property name and the raw
+    tokens, resolved per element in `_compute_style`.
+
+    One `_PendingValue` is shared by every longhand its property governs
+    (`border: 1px solid var(--x)` produces twelve `_Declaration`s and one of
+    these), so the cascade can pick a winner per longhand as usual while the
+    substitution still runs once per element rather than twelve times.
+
+    `attempted` and `resolved` are what turn "353 declarations were
+    deferred" into three numbers instead of one. The single number was
+    measured first and was wrong in the usual way -- 288 of 353 "never
+    resolved" alongside a `var_unknown_no_fallback` of zero, which is
+    internally inconsistent and reads as a catastrophic failure rate. A
+    second derivation (instrumenting `_resolve_pending` from outside)
+    found 281 of the 288 had never been *attempted*: their rules match no
+    element on that page, which is an ordinary property of a real
+    stylesheet and not a var() failure at all. Only 7 were attempted and
+    refused.
+
+    Hence two flags, not one: `var_declarations_refused` is the number that
+    means something went wrong, and `var_declarations_unmatched` is the
+    number that does not.
+    """
+
+    prop_name: str
+    tokens: tuple
+    attempted: bool = False
+    resolved: bool = False
 
 
 @dataclass
@@ -951,7 +1057,43 @@ def _cascade_declarations(
     out: list[_Declaration] = []
     for decl in declarations:
         metrics["declarations_seen"] += 1
+        rank = important_rank if decl.important else normal_rank
+
+        if is_custom_property(decl.name):
+            # A custom property is an ordinary declaration that cascades and
+            # inherits like any other -- but its value is almost-anything and
+            # is not parsed until it is substituted, so it is kept as raw
+            # tokens. The name is NOT normalised: custom property names are
+            # case-sensitive.
+            metrics["custom_properties_declared"] += 1
+            metrics["declarations_kept"] += 1
+            out.append(_Declaration(
+                decl.name,
+                tuple(tok for tok in decl.value if not isinstance(tok, EOFToken)),
+                rank,
+                next(order),
+            ))
+            continue
+
         longhands = parse_declaration_value(decl.name, decl.value)
+        if longhands is None and contains_var_reference(decl.value):
+            name = normalize_property_name(decl.name)
+            if name in SUPPORTED_PROPERTIES:
+                # Deferred, not dropped: the value has no grammar to check
+                # until it is substituted, and substitution is per element.
+                # The longhands it *will* set are known from the property
+                # name alone, which is what lets the cascade pick a winner
+                # per longhand without knowing the value yet.
+                pending = _PendingValue(name, tuple(
+                    tok for tok in decl.value if not isinstance(tok, EOFToken)
+                ))
+                metrics["declarations_pending_var"] += 1
+                metrics["declarations_kept"] += 1
+                index = next(order)
+                for prop in LONGHANDS_OF[name]:
+                    out.append(_Declaration(prop, pending, rank, index))
+                continue
+
         if longhands is None:
             # Either a property outside our table, or a value whose grammar
             # is wrong. Both drop the declaration and keep its siblings,
@@ -968,7 +1110,6 @@ def _cascade_declarations(
                 metrics["wide_keyword_revert"] += 1
             continue
         longhands = _reset_omitted_longhands(decl.name, longhands)
-        rank = important_rank if decl.important else normal_rank
         index = next(order)
         for prop, value in longhands.items():
             out.append(_Declaration(prop, value, rank, index))
@@ -1127,6 +1268,27 @@ def _compute_style(
     """Compute one element's style. The order of the three steps below is
     the whole subject of this module."""
     style = _inherit_from(parent)
+
+    # 0. Custom properties, before anything that could reference one. They
+    #    cascade like ordinary declarations and inherit, so this element's
+    #    map is the parent's with its own winners layered on top -- and the
+    #    parent's dict is reused unchanged when there are none, so an
+    #    inheriting subtree does not allocate a dict per node.
+    own_custom = {k: v for k, v in declared.items() if is_custom_property(k)}
+    if own_custom:
+        style.custom_properties = {**parent.custom_properties, **own_custom}
+        declared = {
+            k: v for k, v in declared.items() if not is_custom_property(k)
+        }
+    else:
+        style.custom_properties = parent.custom_properties
+
+    # 0b. `var()` substitution, now that this element's custom properties
+    #     are known and before the value parser or the wide keywords see
+    #     anything. This is the whole reason `_PendingValue` exists: the
+    #     same `_Declaration` object is shared by every element the rule
+    #     matched, and the answer differs per element.
+    declared = _resolve_pending_values(declared, style.custom_properties, metrics)
     declared = _resolve_wide_keywords(declared, parent)
 
     # 1. font-size, against the PARENT's. Nothing else may be computed
@@ -1202,6 +1364,73 @@ def _zero_widths_of_borderless_sides(style: ComputedStyle) -> None:
     for style_prop, width_prop in zip(_BORDER_STYLE_PROPS, _BORDER_WIDTH_PROPS):
         if style.get(style_prop) in _BORDERLESS_STYLES:
             style.set(width_prop, _ZERO_LENGTH)
+
+
+def _resolve_pending(
+    pending: _PendingValue,
+    custom_properties: dict,
+    metrics: Counter[str],
+) -> dict[str, object] | None:
+    """Substitute one deferred declaration's `var()`s and parse the result.
+
+    Every refusal is a counter, never a silence: `var_substitutions` for the
+    ones that worked, one of the four `VAR_*` reasons for a substitution
+    this engine declined, and `var_substituted_value_invalid` when the
+    substitution succeeded and the *result* was not valid for the property
+    (`width: var(--x)` with `--x: red` -- a declaration a browser also
+    discards at computed-value time).
+    """
+    if not pending.attempted:
+        pending.attempted = True
+        metrics["var_declarations_attempted"] += 1
+    substituted, reason = substitute_var(list(pending.tokens), custom_properties)
+    if substituted is None:
+        metrics[reason] += 1
+        return None
+    longhands = parse_declaration_value(pending.prop_name, substituted)
+    if longhands is None:
+        metrics["var_substituted_value_invalid"] += 1
+        return None
+    metrics["var_substitutions"] += 1
+    if not pending.resolved:
+        # Once per declaration, not once per element: this is the
+        # declaration-level counterpart of `declarations_pending_var`.
+        metrics["var_declarations_resolved"] += 1
+        pending.resolved = True
+    return _reset_omitted_longhands(pending.prop_name, longhands)
+
+
+def _resolve_pending_values(
+    declared: dict[str, object],
+    custom_properties: dict,
+    metrics: Counter[str],
+) -> dict[str, object]:
+    """Replace every winning `_PendingValue` with the longhand it produced.
+
+    One substitution per `_PendingValue` per element, not one per longhand:
+    `border: 1px solid var(--x)` won twelve longhands with the same object,
+    and substituting twelve times would multiply every `var_*` counter by
+    twelve while changing no value.
+    """
+    if not any(isinstance(v, _PendingValue) for v in declared.values()):
+        return declared
+    cache: dict[int, dict[str, object] | None] = {}
+    out: dict[str, object] = {}
+    for prop, value in declared.items():
+        if not isinstance(value, _PendingValue):
+            out[prop] = value
+            continue
+        key = id(value)
+        if key not in cache:
+            cache[key] = _resolve_pending(value, custom_properties, metrics)
+        longhands = cache[key]
+        if longhands is not None and prop in longhands:
+            out[prop] = longhands[prop]
+        # Otherwise the longhand is simply not declared on this element and
+        # falls back to inheritance or its initial value -- which is what a
+        # browser does with a declaration that is invalid at computed-value
+        # time.
+    return out
 
 
 def _resolve_wide_keywords(
@@ -1408,6 +1637,21 @@ def style_document(
             # than carrying a special case up to its parent element.
             node.computed_style = _inherit_from(parent_style)
         metrics["nodes_styled"] += 1
+
+    # The bridge between the parse-time count and the runtime one, in three
+    # parts rather than one. `refused` is the residue of the old
+    # `var-unresolved` drop bucket -- declarations an element asked for and
+    # this engine could not produce. `unmatched` is not a failure of any
+    # kind: the rule matched no element on this page, which is true of most
+    # of a large stylesheet's rules and would be equally true of the same
+    # declarations without any `var()` in them. Reporting the two as one
+    # number said 288 where the real figure is 7.
+    metrics["var_declarations_refused"] = (
+        metrics["var_declarations_attempted"] - metrics["var_declarations_resolved"]
+    )
+    metrics["var_declarations_unmatched"] = (
+        metrics["declarations_pending_var"] - metrics["var_declarations_attempted"]
+    )
 
     metrics["cascade_time_ms"] = round((time.perf_counter() - started) * 1000, 3)
     return metrics
