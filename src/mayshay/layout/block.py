@@ -36,7 +36,7 @@ that case arrives as a named number rather than as a surprise, and
 ## The mechanical checks
 
 Vigilance has caught none of this class of defect on this project and
-mechanical checks have caught all of it, so there are three, all of them run
+mechanical checks have caught all of it, so there are four, all of them run
 on every layout rather than only under test:
 
 1. **The section 10.3.3 constraint equation, read off the geometry.** For
@@ -50,8 +50,19 @@ on every layout rather than only under test:
    into a collapsing group with at least one other edge or stands alone:
    `margin_edges_seen == margin_edges_collapsed + margin_edges_alone`. Task
    A2's `seen == kept + dropped`, applied to the thing that over-collapses.
-3. **A box-disposition partition.** Every box in the tree is laid out or
+3. **A collapse-barrier partition.** Every laid-out block box has two
+   vertical edges, and each is either open to collapsing or closed for
+   exactly one named reason: `collapse_barrier_edges_seen ==
+   collapse_barrier_edges_open + sum(margin_collapse_blocked_*)`. This is
+   the one that fails the moment a barrier joins the rule set and is
+   forgotten in the counting -- verified by injecting exactly that.
+4. **A box-disposition partition.** Every box in the tree is laid out or
    deferred for exactly one named reason, and the reasons sum.
+
+Each was verified by injection rather than assumed to fire: laying a child
+out against its parent's *border* width instead of its content width, and
+skipping the offset composition in `_absolutize`, are both caught by check
+1 and by nothing else in the suite.
 
 ## Not implemented, each counted
 

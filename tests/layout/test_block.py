@@ -1078,6 +1078,48 @@ def test_every_box_is_laid_out_or_deferred_for_exactly_one_named_reason():
     assert metrics["widths_deferred_shrink_to_fit"] == 3  # float, abs, inline-block
 
 
+def test_the_geometry_records_whether_a_box_collapsed_through():
+    """Recorded, not inferred. A box that collapsed through and a
+    zero-height box a barrier stopped are indistinguishable from the outside
+    -- both are empty rectangles of zero height -- and a census that guessed
+    from the geometry counted 78 of them on the corpus where the layout had
+    decided 58.
+
+    Both halves here: the bare empty box collapsed through, the one with a
+    single pixel of border did not, and they have the same zero content
+    height.
+    """
+    root, _ = laid_out(
+        between(
+            '<div id=through style="margin:10px 0"></div>'
+        )
+    )
+    assert geometry(root, "through").collapsed_through is True
+
+    stopped, _ = laid_out(
+        between('<div id=stopped style="margin:10px 0;border-top:1px solid"></div>')
+    )
+    assert geometry(stopped, "stopped").collapsed_through is False
+    assert geometry(stopped, "stopped").content.height == 0.0
+
+
+def test_a_whitespace_only_block_is_counted_as_inline_level_not_as_other():
+    """A block container holding nothing but collapsible white space keeps
+    its blank text children -- Task B leaves an all-inline child list alone
+    -- correctly reports no line boxes, and then those children arrive in
+    the block-flow loop. Seven of them on the corpus, and they were landing
+    in `widths_deferred_other`, the bucket that is supposed to read zero.
+
+    The box itself still collapses through, which is the behaviour Chrome
+    shows for `<div style="margin:40px 0">   </div>`.
+    """
+    root, metrics = laid_out(between('<div id=m style="margin:40px 0">   </div>'))
+    assert metrics["widths_deferred_other"] == 0
+    assert metrics["widths_not_applicable_inline_level"] >= 1
+    assert geometry(root, "m").collapsed_through is True
+    assert gap(root, "a", "b") == 40.0
+
+
 def test_every_margin_edge_joins_a_group_or_stands_alone():
     root, metrics = laid_out(
         between('<div id=m style="margin:10%"></div>')
