@@ -66,7 +66,6 @@ from mayshay.layout.boxtree import build_box_tree
 VIEWPORT = Viewport(1280, 1024)
 
 NBSP = "\u00a0"
-EM_DASH = "\u2014"
 
 def reset(size: int = 16) -> str:
     """The stylesheet every fixture starts from.
