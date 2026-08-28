@@ -884,6 +884,42 @@ def test_line_boxes_block_collapse_through_and_whitespace_does_not():
     assert metrics_filled["heights_deferred_inline_content"] >= 1
 
 
+def test_a_nbsp_only_child_produces_a_line_box_and_blocks_collapse_through():
+    """Task D1. The same fixture as the test above with U+00A0 in place of
+    the three spaces, and the opposite answer.
+
+    `str.strip()` calls a run of NBSP blank, so the box reads as empty, it
+    collapses through, and the gap comes out 40 instead of 100 -- a
+    slightly-too-tight page and nothing else. CSS Text 3 does not treat
+    U+00A0 as white space: it is content, it produces a line box, and the
+    box is not empty.
+
+    Measured against Chrome 151 on the same three fixtures rather than
+    asserted -- and the first draft of this docstring had the number wrong,
+    which is why it was measured. Chrome's gap between the two siblings:
+
+        three spaces     40   collapsed through, box height 0
+        &nbsp;           96   40 + a 16px line box + 40
+        the letter x     96   identical to &nbsp;
+
+    The point is the second and third rows being the same and the first
+    being different. Our 40 and 80 differ from Chrome's 40 and 96 by
+    exactly the 16px line box, which is `heights_deferred_inline_content`
+    and Task D2's -- the same known deviation the `x` test above carries.
+
+    Zero corpus occurrences -- 707 calls to `_is_blank_text_box` across the
+    three pages, no disagreement. A `docs/synthetic-only-coverage.md` row.
+    """
+    nbsp = "\u00a0"
+    root, metrics = laid_out(
+        between(f'<div id=m style="margin:40px 0">{nbsp}</div>')
+    )
+    assert metrics["margins_collapsed_through_empty"] == 0
+    assert metrics["margin_collapse_blocked_line_box"] == 1
+    assert top(root, "m") == 60.0
+    assert top(root, "b") == 100.0
+
+
 def test_an_atomic_inline_child_blocks_collapse_through_too():
     """An `inline-block` inside the middle box is inline content, so the box
     has a line box and cannot collapse through. Chrome 151 agrees; the same

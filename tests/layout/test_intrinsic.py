@@ -209,6 +209,32 @@ def test_nbsp_does_not_collapse_and_is_wider_than_the_collapsed_case():
     )
 
 
+def test_an_atomic_inline_is_opaque_to_collapsing_not_transparent():
+    """A space either side of an `inline-block` gives TWO spaces, not one.
+
+    The box is content: it interrupts a collapsible run the way a letter
+    does, so the run before it and the run after it are separate runs. An
+    implementation that walked past the box -- treating it the way an empty
+    `<span>` really is treated -- would let the two spaces meet and collapse
+    into one, and the page would come out 4.45px narrow with nothing else
+    wrong.
+
+    Chrome 151 `width: max-content`: 66.7188 for
+    `<i>a</i> <inline-block 40px> <i>b</i>`, which is
+    a + space + 40 + space + b with both spaces present.
+    """
+    got = sizes(
+        '<div id=t><i>a</i> <span style="display:inline-block;width:40px">'
+        "</span> <i>b</i></div>"
+    )
+    assert got.max_content == pytest.approx(66.7188, abs=5 * LAYOUT_UNIT)
+    assert got.max_content == pytest.approx(
+        advance("a") + 2 * advance(" ") + 40.0 + advance("b"), abs=1e-9
+    )
+    # And the collapsed-into-one answer, which must NOT be what we produce.
+    assert got.max_content > advance("a") + advance(" ") + 40.0 + advance("b")
+
+
 def test_every_text_box_carries_its_collapsed_text_after_layout():
     root, metrics = laid_out("<div id=t>  hello   world  </div>")
     texts = [box.text for box in root.walk() if box.origin == "text"]
