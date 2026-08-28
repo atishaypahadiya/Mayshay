@@ -300,6 +300,43 @@ produced the fixture the plan actually needed. That is the usual pattern
 here and it is worth expecting: the second derivation tends to pay for
 itself twice.
 
+### Instance twelve: the tooling participates
+
+Writing the Task D1 brief, the coordinator put a literal U+00A0 into the
+sentence warning against literal non-ASCII in test data. The rule and its
+violation in the same clause.
+
+The correction is the interesting half. The first fix searched for the
+offending text typed with an **ordinary space** where the file held U+00A0.
+`str.replace` found nothing, returned the string unchanged, `write_text`
+succeeded, and nothing raised. The operation reported success and changed
+nothing — and the two characters are identical on screen, which is the
+entire reason the rule exists.
+
+What caught it was an independent check printed alongside the edit: the set
+of remaining non-ASCII codepoints, which still contained `\xa0`. Not the
+edit's own success.
+
+**This generalises the false-green criterion beyond measurement code.** An
+edit that cannot fail is not evidence that it did anything, in exactly the
+way `getlength`'s hinting options were not evidence about rounding. A
+search-and-replace whose pattern does not match is indistinguishable, from
+its return value, from one that matched and applied cleanly. Both are
+"success".
+
+So the criterion should be read as covering **any tool feedback**, not just
+diagnostics:
+
+> A tool reporting success is exactly as trustworthy as a diagnostic
+> returning the expected number. Neither is evidence unless it could have
+> reported otherwise.
+
+The practical form: after an edit that matters, assert the **postcondition**
+— the codepoint is gone, the count changed, the file differs — rather than
+trusting that the edit ran. That is what worked here, and it is the same
+move as the tree-hash check on the branch rewrite, which caught two
+truncations that every intermediate command had reported as fine.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -312,6 +349,7 @@ Every instance in this document was caught by **measurement**:
 | 4 var() denominator | an implementer reproducing the figure and disagreeing |
 | 10 `boxes_inline_split` | noticing 34 splits produced 2 fragments, and looking |
 | 11 zero-margin collapse-through | probing Chrome before writing the claim into a brief |
+| 12 literal NBSP, and a silent no-op edit | printing the remaining non-ASCII set, not the edit's success |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced
