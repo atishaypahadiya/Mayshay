@@ -17,6 +17,7 @@ from mayshay.cssparse.cascade import (
     INHERITED,
     LONGHANDS,
     ComputedStyle,
+    _field_name,
     style_document,
 )
 from mayshay.cssparse.values import (
@@ -874,12 +875,49 @@ def test_computed_style_has_one_field_per_longhand():
     """Injection: dropping a longhand from `LONGHANDS` while leaving the
     dataclass field, so the property silently never cascades. The module's
     own module-level assert catches the reverse."""
-    assert len(LONGHANDS) == 35
+    assert len(LONGHANDS) == 39
     for prop in LONGHANDS:
-        assert hasattr(ComputedStyle(), prop.replace("-", "_")), prop
+        # `_field_name`, not `replace("-", "_")`: `float`'s field is
+        # `float_` because the plain name would shadow the builtin inside
+        # the class body. Spelling the rule out here rather than repeating
+        # the transformation is the point of exporting it.
+        assert hasattr(ComputedStyle(), _field_name(prop)), prop
     assert set(LONGHANDS) >= {
         "display", "width", "height", "color", "background-color", "font-size",
     }
+
+
+def test_the_barrier_properties_cascade_and_do_not_inherit():
+    """Task C's four. `float`'s field is `float_` -- the plain name would
+    shadow the builtin inside the class body -- and the rename is the way
+    this could silently half-work: `ComputedStyle.get("float")` has to keep
+    answering, or every consumer that goes through the property name reads
+    the initial value forever while the field holds the cascaded one.
+
+    Non-inheritance is asserted for all four rather than assumed. A `float`
+    that inherited would put every descendant of a floated element out of
+    flow, which renders as a page and is not one.
+    """
+    doc = styled(
+        "<!DOCTYPE html><body><div><span></span></div></body>",
+        "div { overflow: hidden; float: left; clear: both; position: absolute }",
+    )
+    div = find(doc, "div").computed_style
+    assert (div.overflow, div.float_, div.clear, div.position) == (
+        "hidden", "left", "both", "absolute",
+    )
+    # Reached by property name as well as by field name.
+    for prop, expected in (
+        ("overflow", "hidden"), ("float", "left"),
+        ("clear", "both"), ("position", "absolute"),
+    ):
+        assert div.get(prop) == expected, prop
+        assert prop not in INHERITED, prop
+
+    span = find(doc, "span").computed_style
+    assert (span.overflow, span.float_, span.clear, span.position) == (
+        "visible", "none", "none", "static",
+    )
 
 
 def test_two_computed_styles_do_not_share_mutable_state():

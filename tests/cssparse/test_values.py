@@ -311,7 +311,7 @@ def test_the_box_model_longhands_are_supported():
     for name, src in supported.items():
         assert val(name, src) is not None, name
 
-    assert len(SUPPORTED_PROPERTIES) == 45
+    assert len(SUPPORTED_PROPERTIES) == 49
     box_model = SUPPORTED_PROPERTIES - {
         "display", "width", "height", "font-size", "color",
         "background-color", "margin", "padding", "border",
@@ -319,6 +319,10 @@ def test_the_box_model_longhands_are_supported():
         "white-space", "line-height", "font-family", "font-weight",
         "font-style", "text-align", "vertical-align", "box-sizing",
         "list-style-type",
+        # Task C's four, counted separately for the same reason: they are
+        # not box-model longhands, they are the properties CSS 2.1 section
+        # 8.3.1 states its margin-collapsing barriers in terms of.
+        "overflow", "float", "clear", "position",
     }
     assert len(box_model) == 27, sorted(box_model)
 
@@ -477,6 +481,8 @@ def test_the_property_table_and_its_derived_sets_agree():
         "font-style": "italic", "text-align": "center",
         "vertical-align": "middle", "box-sizing": "border-box",
         "list-style-type": "square",
+        "overflow": "hidden", "float": "left",
+        "clear": "both", "position": "absolute",
     })
     assert set(samples) == SUPPORTED_PROPERTIES, (
         "a property was added to the table without a sample here: "
@@ -511,6 +517,62 @@ def test_valid_css_this_module_does_not_implement_is_unsupported_value():
     assert val("width", "4px") is not None
     assert val("color", "rgb(0, 0, 0)") is not None
     assert val("border", "1px solid red") is not None
+
+
+def test_the_barrier_properties_parse_their_keywords_and_reject_others():
+    """Phase 3 Task C added `overflow`, `float`, `clear` and `position`.
+
+    None of the four is *implemented* -- no float is placed, nothing is
+    clipped -- and that is exactly why they are easy to add wrongly. They
+    exist because CSS 2.1 section 8.3.1 states its margin-collapsing
+    barriers in terms of them; an engine that cannot read `overflow`
+    collapses a margin across a new block formatting context and the page
+    comes out plausibly too tight rather than visibly broken.
+
+    Both directions per property, so this cannot pass with a parser wired to
+    accept every identifier.
+    """
+    accepted = {
+        "overflow": ("visible", "hidden", "scroll", "auto", "clip"),
+        "float": ("none", "left", "right", "inline-start", "inline-end"),
+        "clear": ("none", "left", "right", "both", "inline-start", "inline-end"),
+        "position": ("static", "relative", "absolute", "fixed", "sticky"),
+    }
+    for prop, values in accepted.items():
+        for value in values:
+            assert val(prop, value) == {prop: Keyword(value)}, (prop, value)
+        # ASCII case folding, and only ASCII: U+212A KELVIN SIGN is not `k`.
+        assert val(prop, values[0].upper()) == {prop: Keyword(values[0])}
+        assert val(prop, "banana") is None, prop
+        assert val(prop, "10px") is None, prop
+    # The four keyword sets are distinct, not one shared list: `both` is a
+    # `clear` value and nothing else, `sticky` a `position` value and
+    # nothing else.
+    assert val("float", "both") is None
+    assert val("clear", "sticky") is None
+    assert val("overflow", "static") is None
+    assert val("position", "hidden") is None
+
+
+def test_two_value_overflow_is_unsupported_value_not_invalid():
+    """`overflow` is a shorthand for `overflow-x`/`overflow-y` in CSS
+    Overflow 3 and a single keyword here. `overflow: hidden auto` is
+    therefore valid CSS this module declines, and it must not land in
+    `invalid` -- that bucket is the one the Phase 3 plan says may never
+    shrink, and a wrongly-filed declaration makes the alarm meaningless.
+
+    Executed on the corpus: Wikipedia's sheets carry `overflow: hidden auto`
+    twice, and before this rule existed they moved that page's `invalid`
+    count from 0 to 2 the moment `overflow` became a supported property.
+    """
+    assert val("overflow", "hidden auto") is None
+    assert why("overflow", "hidden auto") == DROP_UNSUPPORTED_VALUE
+    assert why("overflow", "auto hidden") == DROP_UNSUPPORTED_VALUE
+    # One value still parses, and a genuinely malformed one is still
+    # `invalid`, so this is not "overflow is always unsupported-value".
+    assert val("overflow", "hidden") == {"overflow": Keyword("hidden")}
+    assert why("overflow", "hidden banana") == DROP_INVALID
+    assert why("overflow", "#fff") == DROP_INVALID
 
 
 def test_a_wide_keyword_is_unsupported_value_on_every_property():

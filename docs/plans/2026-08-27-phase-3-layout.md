@@ -326,6 +326,71 @@ indistinguishable. Item 7 is resolved by Task D's font and Task C's
 viewport. Item 8 is not a problem to fix; it is recorded so it is not
 "fixed".
 
+## Intrinsic sizing is one capability, not three accommodations
+
+Decided before Task D writes its measurement code, for the same reason the
+stylesheet ordering was fixed at the chokepoint rather than at the symptom:
+three tasks need this and would otherwise each discover it separately and
+build a local workaround.
+
+**The Task C/D boundary does not fall along `display` values. It falls
+along whether a box's used size depends on the intrinsic dimensions of its
+contents** — its max-content and min-content sizes. A block-level box's
+`width: auto` comes from the containing block and needs nothing from its
+content. Everything below needs both.
+
+Measured against Chrome 151, containing block 900px, the same two-character
+and forty-one-character contents in each case:
+
+| case | short | long | driven by |
+|---|---:|---:|---|
+| block, `width: auto` | 900.00 | 900.00 | the containing block |
+| table cell, `width: auto` | **19.27** | **394.95** | its content |
+| flex item, `flex-basis: auto` | **19.27** | **394.95** | its content |
+| `inline-block` | **19.27** | **394.95** | its content |
+
+The three content-driven rows are not merely similar, they are
+**identical to the hundredth of a pixel**. It is one computation reached by
+three routes:
+
+* **Task C** — shrink-to-fit for `inline-block` (90 on the corpus), and for
+  floats and absolute positioning when those arrive.
+* **Task E** — automatic table layout, where column widths come from the
+  min-content and max-content widths of the cells.
+* **Task F** — `flex-basis: auto` resolving to the item's content size.
+
+### Where it lives
+
+`src/mayshay/layout/intrinsic.py`, with two functions over a box subtree:
+
+    min_content_width(box) -> float     # the widest unbreakable unit
+    max_content_width(box) -> float     # no wrapping at all
+
+Both are built on Task D's single `measure(text, style) -> float` seam and
+on nothing else. That is not only about avoiding duplicate code: every
+decision in `docs/fonts.md` lands at that seam and nowhere else — `hmtx`
+rather than `PIL.getlength`, `hhea` rather than the two `OS/2` conventions
+for line boxes, and kerning deliberately omitted at a measured +0.137%.
+Three call sites would mean three places for one of those to drift, and a
+drifted vertical-metric choice is a systematic offset that looks like a
+layout bug. CSS 2.1 §10.3.5's
+shrink-to-fit formula then has one implementation that all three consumers
+call:
+
+    used = min(max(min_content, available), max_content)
+
+**Task D implements this as a named capability, not as an inline-block
+accommodation.** Task C cannot — it has no text measurement — so Task C
+leaves these boxes symbolic, counts them in
+`widths_deferred_shrink_to_fit`, and leaves the seam named rather than
+inventing a local approximation. Tasks E and F consume the same two
+functions rather than growing their own.
+
+Getting this wrong is cheap to avoid now and expensive later: three
+independent implementations of min-content would disagree on the same page,
+and the disagreement would show up as a layout error with no single place
+to fix it.
+
 ## The Chrome comparison contract
 
 Decided before Task D, because it constrains Task D's output format and

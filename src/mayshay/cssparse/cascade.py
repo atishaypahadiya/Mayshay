@@ -323,6 +323,16 @@ LONGHANDS: tuple[str, ...] = (
     "vertical-align",
     "box-sizing",
     "list-style-type",
+    # Phase 3 Task C. Read by block layout to decide what is in flow and
+    # where a margin may not collapse; none of the four is implemented as
+    # behaviour, and layout counts every place it declines to act. Task A2
+    # added the properties Task D needed and stopped there -- these four are
+    # the ones Task C needs, and section 8.3.1's barriers are unstatable
+    # without them.
+    "overflow",
+    "float",
+    "clear",
+    "position",
 )
 
 # The inherited properties, per the CSS property definitions. `display`, the
@@ -418,6 +428,10 @@ INITIAL_SPECIFIED: dict[str, object] = {
     "vertical-align": Keyword("baseline"),
     "box-sizing": Keyword("content-box"),
     "list-style-type": Keyword("disc"),
+    "overflow": Keyword("visible"),
+    "float": Keyword("none"),
+    "clear": Keyword("none"),
+    "position": Keyword("static"),
 }
 
 # Which longhands each property governs -- *all* of them, not just the ones
@@ -466,8 +480,17 @@ def _reset_omitted_longhands(name: str, longhands: dict[str, object]) -> dict[st
     return longhands
 
 
+# `float` is a builtin and a `ComputedStyle` annotation would shadow it
+# inside the class body, so its field is `float_`. The override is explicit
+# rather than a rule ("append an underscore to reserved names") because one
+# exception is cheaper to read than a rule with one member, and the drift
+# assert below fails loudly if a property ever loses its field.
+_FIELD_NAME_OVERRIDES: dict[str, str] = {"float": "float_"}
+
+
 def _field_name(prop: str) -> str:
-    return prop.replace("-", "_")
+    override = _FIELD_NAME_OVERRIDES.get(prop)
+    return override if override is not None else prop.replace("-", "_")
 
 
 @dataclass
@@ -545,6 +568,18 @@ class ComputedStyle:
     box_sizing: str = "content-box"
     list_style_type: str = "disc"
 
+    # Phase 3 Task C. None of the four is *implemented* -- no float is
+    # placed, no positioned box is offset, nothing is clipped -- and each is
+    # counted where layout declines to act. They are cascaded because CSS
+    # 2.1 section 8.3.1 states its margin-collapsing barriers in terms of
+    # them: without `overflow` an engine collapses a margin across a new
+    # block formatting context, and the page comes out quietly too tight
+    # rather than visibly broken.
+    overflow: str = "visible"
+    float_: str = "none"
+    clear: str = "none"
+    position: str = "static"
+
     # This element's custom properties, name -> raw token tuple. Not a
     # longhand and deliberately exempted from the drift assert below: it is
     # a *map* of properties rather than one, its keys are open-ended, and it
@@ -608,7 +643,10 @@ _ABSOLUTE_PX = {
 _EM_MULTIPLE = {"em": 1.0, "ex": 0.5, "ch": 0.5}
 
 # Need a viewport. Kept symbolic -- see the module docstring.
-_VIEWPORT_UNITS = frozenset({"vw", "vh", "vmin", "vmax"})
+# Public: layout has to recognise the units the cascade could not
+# resolve, and a second copy of the set in `layout/block.py` is exactly the
+# kind of quiet duplication that drifts.
+VIEWPORT_UNITS = frozenset({"vw", "vh", "vmin", "vmax"})
 
 
 def _length_to_px(
@@ -629,7 +667,7 @@ def _length_to_px(
         return round(length.value * multiple * font_px, 6)
     if unit == "rem":
         return round(length.value * root_px, 6)
-    if unit in _VIEWPORT_UNITS:
+    if unit in VIEWPORT_UNITS:
         return None
     raise ValueError(f"unhandled length unit {unit!r}")
 
@@ -750,6 +788,10 @@ _KEYWORD_VALUED = frozenset({
     "vertical-align",
     "box-sizing",
     "list-style-type",
+    "overflow",
+    "float",
+    "clear",
+    "position",
 }) | frozenset(_BORDER_STYLE_PROPS)
 
 # Properties whose computed value keeps the `Keyword` wrapper rather than
