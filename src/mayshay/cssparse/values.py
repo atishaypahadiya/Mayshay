@@ -872,7 +872,11 @@ def expand_shorthand(name: str, parsed: dict[str, object]) -> dict[str, object]:
 # Text and box-sizing properties (Phase 3 Task A2, deliverable 3)
 # --------------------------------------------------------------------------
 
-_WHITE_SPACE_KEYWORDS = frozenset({
+# Public, unlike its neighbours: `layout.text` asserts its own behaviour
+# table against this set at import, so a seventh value added here and
+# forgotten there fails loudly instead of collapsing text an author asked
+# to preserve. The name is the link, so it cannot be private.
+WHITE_SPACE_KEYWORDS = frozenset({
     "normal", "pre", "nowrap", "pre-wrap", "pre-line", "break-spaces",
 })
 
@@ -1183,7 +1187,7 @@ _PROPERTY_PARSERS: dict[str, object] = {
     # is not something line-box code can be written against, and because
     # retrofitting `box-sizing` after Task C would mean revisiting every
     # width in it.
-    "white-space": _one("white-space", _keyword_parser(_WHITE_SPACE_KEYWORDS)),
+    "white-space": _one("white-space", _keyword_parser(WHITE_SPACE_KEYWORDS)),
     "font-style": _one("font-style", _keyword_parser(_FONT_STYLE_KEYWORDS)),
     "text-align": _one("text-align", _keyword_parser(_TEXT_ALIGN_KEYWORDS)),
     "box-sizing": _one("box-sizing", _keyword_parser(_BOX_SIZING_KEYWORDS)),
