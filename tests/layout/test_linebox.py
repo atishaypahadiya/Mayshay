@@ -833,6 +833,55 @@ def test_the_line_box_width_check_catches_an_unaccounted_advance():
         assert_line_box(line)
 
 
+def test_character_conservation_across_line_layout():
+    """Task D1's character conservation, carried one stage further.
+
+    D1 asserts every input character was kept, transformed or removed. This
+    asserts every character D1 **kept** either reached an inline fragment
+    or sits in a subtree this engine declines to lay out -- a float or an
+    absolutely positioned box.
+
+    The residual is what makes it useful rather than tautological. On the
+    corpus it reads 3,227 characters in 30 out-of-flow subtrees, and **all
+    58 combining marks on the corpus are inside one of them** -- so UAX
+    #14's LB9 has zero corpus coverage in line layout even though the marks
+    are sitting in the box tree. No count of characters or of boxes shows
+    that; this one does.
+    """
+    root, metrics = laid_out(
+        '<div style="width:300px">visible text here'
+        '<span style="float:left">floated text</span></div>'
+    )
+    assert metrics["line_chars_not_laid_out"] == len("floated text")
+    assert metrics["line_subtrees_not_laid_out"] == 1
+    assert (
+        metrics["line_chars_in_fragments"] + metrics["line_chars_not_laid_out"]
+        == metrics["text_chars_kept"] + metrics["text_chars_transformed"]
+    )
+
+
+def test_the_conservation_check_catches_text_that_never_reached_a_line():
+    """Injection: a fragment that loses its text is invisible otherwise --
+    the page renders, the lines are just shorter."""
+    from collections import Counter
+
+    from mayshay.layout.boxtree import Box
+    from mayshay.layout.linebox import assert_text_conservation
+
+    orphan = Box(display="inline", origin="text", node=None)
+    orphan.text = "twelve chars"
+    root = Box(display="block", origin="anonymous", children=[orphan])
+    metrics: Counter[str] = Counter()
+    metrics["text_chars_kept"] = 12
+    assert_text_conservation(root, metrics)
+    assert metrics["line_chars_not_laid_out"] == 12
+
+    metrics = Counter()
+    metrics["text_chars_kept"] = 20
+    with pytest.raises(AssertionError, match="is on a line box or in a subtree"):
+        assert_text_conservation(root, metrics)
+
+
 def test_the_alignment_partition_catches_a_value_added_and_forgotten():
     from collections import Counter
 

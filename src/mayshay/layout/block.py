@@ -984,6 +984,33 @@ def _account_inline_box(box: Box, metrics: Counter[str], *, cb_width: float) -> 
     with no obvious cause.
     """
     metrics["layout_boxes_seen"] += 1
+    style = _style_of(box)
+    out_of_flow = _is_out_of_flow(style)
+    if out_of_flow is not None:
+        # A float or an absolutely positioned box **inside** an inline
+        # formatting context. Task C takes these out of the block flow and
+        # Task D2 has to take them out of the inline flow for the same
+        # reason: neither is laid out, and leaving one in the line would
+        # push every word after it along by a width Chrome does not put
+        # there. That is the `clear` trap from the other end -- disagreeing
+        # with a browser on the case we can reach in order to half-handle
+        # one we cannot.
+        #
+        # Found by the character-conservation check, not by reading: the
+        # float's text was reaching a fragment and the count of characters
+        # never laid out was 0 where it should have been the float's.
+        metrics[
+            "layout_float_skipped"
+            if out_of_flow == "float"
+            else "layout_absolute_skipped"
+        ] += 1
+        metrics["widths_shrink_to_fit_resolved"] += 1
+        _resolve_shrink_to_fit(box, cb_width=cb_width, metrics=metrics)
+        for child in box.children:
+            for descendant in child.walk():
+                metrics["layout_boxes_seen"] += 1
+                metrics["layout_boxes_deferred_subtree"] += 1
+        return
     if box.display in ATOMIC_INLINE_DISPLAYS:
         metrics["widths_shrink_to_fit_resolved"] += 1
         _resolve_shrink_to_fit(box, cb_width=cb_width, metrics=metrics)
@@ -1320,6 +1347,7 @@ def assert_layout_constraints(
     _assert_margin_edge_partition(metrics)
     _assert_collapse_barrier_partition(metrics)
     linebox_module.assert_line_partitions(metrics)
+    linebox_module.assert_text_conservation(root, metrics)
     _assert_geometry(root, cb_x=0.0, cb_width=initial_containing_block_width)
 
 

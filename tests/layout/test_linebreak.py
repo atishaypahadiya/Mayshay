@@ -259,10 +259,11 @@ def test_the_class_table_covers_every_punctuation_character_in_the_corpus():
     """The fallback counter, as a test rather than as a report line.
 
     Every letter and digit falls through the general-category fallback and
-    is classified correctly, so the number that matters is the other one:
-    a character that is neither a letter, a digit nor a combining mark and
-    got `AL` by default. On the corpus that is **zero** -- 61,667 letters
-    and digits took the fallback and nothing else did.
+    is classified correctly, and so does every combining mark, which LB9
+    resolves to its base's class anyway. The number that matters is the
+    third bucket: a character that is none of those and got `AL` by
+    default. On the corpus that is **zero** -- 61,667 letters and digits
+    and 58 combining marks took the fallback and nothing else did.
 
     Asserted on the characters the corpus actually contains rather than on
     the corpus itself, so it does not need the pages present.
@@ -283,7 +284,9 @@ def test_the_fallback_counter_splits_letters_from_everything_else():
     for char in "aZ9":
         LB.line_break_class(char, metrics=metrics)
     LB.line_break_class(ASTERISM, metrics=metrics)  # not in the table
+    LB.line_break_class(COMBINING_ACUTE, metrics=metrics)
     assert metrics["linebreak_class_fallback_letter_or_digit"] == 3
+    assert metrics["linebreak_class_fallback_combining_mark"] == 1
     assert metrics["linebreak_class_fallback_other"] == 1
 
 

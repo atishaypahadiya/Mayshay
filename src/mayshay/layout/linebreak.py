@@ -54,13 +54,16 @@ character in the corpus is ASCII punctuation plus U+00A0, U+2013, U+2014
 and a tail of combining marks -- with ranges for the ideographic blocks and
 a documented fallback for everything else.
 
-The fallback is **counted**, and split in two, because one number would say
-nothing: every letter and digit on the page takes it and is classified
+The fallback is **counted**, and split three ways, because one number would
+say nothing: every letter and digit on the page takes it and is classified
 correctly, so a single counter reads 61,667 on this corpus and means "there
 is text here". `linebreak_class_fallback_other` is the one that matters --
 a character that is neither a letter, a digit nor a combining mark and got
 `AL` from a default is exactly where a missing table entry hides a wrong
-break opportunity.
+break opportunity. Combining marks get their own bucket for the same
+reason in miniature: LB9 resolves them to whatever they attach to, so they
+are never wrong, and 58 of them on the corpus would have made the bucket
+that must read zero read 58.
 """
 
 from __future__ import annotations
@@ -243,11 +246,18 @@ def line_break_class(ch: str, *, metrics: Counter[str] | None = None) -> str:
         # **other** one: a character that is neither a letter, a digit nor
         # a combining mark, classified `AL` by a default, is exactly where
         # a missing table entry would hide a wrong break opportunity.
-        metrics[
-            "linebreak_class_fallback_letter_or_digit"
-            if category[0] in ("L", "N")
-            else "linebreak_class_fallback_other"
-        ] += 1
+        if category[0] in ("L", "N"):
+            bucket = "linebreak_class_fallback_letter_or_digit"
+        elif category[0] == "M":
+            # A combining mark, which LB9 resolves to whatever it attaches
+            # to anyway. Its own bucket rather than lumped in with `other`,
+            # because `other` is the one that has to read zero and 58
+            # Devanagari, Bengali and Burmese marks on the corpus would
+            # make it read 58 while nothing was wrong.
+            bucket = "linebreak_class_fallback_combining_mark"
+        else:
+            bucket = "linebreak_class_fallback_other"
+        metrics[bucket] += 1
     if category in ("Mn", "Mc", "Me"):
         return CM
     if category == "Nd":
@@ -283,6 +293,7 @@ _TAILORED_NO_BREAK_AFTER: dict[int, str] = {
 
 COUNTER_NAMES: tuple[str, ...] = (
     "linebreak_class_fallback_letter_or_digit",
+    "linebreak_class_fallback_combining_mark",
     "linebreak_class_fallback_other",
     "linebreak_opportunities",
     "linebreak_opportunities_at_space",

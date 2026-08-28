@@ -161,7 +161,8 @@ LAYOUT_HEADLINE = (
     ("widths_not_applicable_inline_level", "inline-level boxes: no own width"),
     ("widths_deferred_other", "boxes fitting none of the three: must be 0"),
     ("heights_from_children", "auto heights resolved from in-flow children"),
-    ("heights_deferred_inline_content", "auto heights waiting on line boxes"),
+    ("heights_from_line_boxes", "auto heights resolved from line boxes"),
+    ("heights_deferred_inline_content", "auto heights still waiting: must be 0"),
     ("heights_percentage_fallback_auto", "% heights against an auto parent"),
     ("margins_collapsed", "collapse events between adjoining groups"),
     ("margins_collapsed_through_empty", "boxes that collapsed through"),
@@ -235,6 +236,82 @@ TEXT_HEADLINE = (
     ("intrinsic_percentage_width_as_auto", "...% width treated as auto (Sizing 3)"),
     ("intrinsic_percentage_edge_as_zero", "...% margin/padding taken as zero"),
     ("intrinsic_text_collapsed_on_demand", "text not pre-collapsed: must be 0"),
+    ("intrinsic_uax14_break_inside_a_run", "min-content breaks inside a word"),
+)
+
+# Task D2. Three populations again, and again they are not interchangeable:
+#
+#   line_ifc_contexts_laid_out   inline formatting contexts that produced at
+#                                least one line box
+#   line_boxes                   the line boxes themselves
+#   line_fragments               one per inline box per line it appears on
+#
+# The `vertical_align_applied_*` rows count boxes ALIGNED ON A LINE BOX,
+# which is a different and much smaller population than the element boxes
+# with a computed `vertical-align` -- 30 boxes compute `top` on this corpus
+# and none of them is inline-level, so the rule fires zero times. Both
+# numbers are correct and a bare "vertical-align: top, 30" says neither.
+LINE_HEADLINE = (
+    ("line_ifc_contexts_laid_out", "inline formatting contexts laid out"),
+    ("line_boxes", "LINE BOXES produced"),
+    ("line_boxes_empty_zero_height", "...empty, so zero height (9.4.2)"),
+    ("line_breaks_soft", "breaks taken at a soft wrap opportunity"),
+    ("line_breaks_forced_segment", "breaks forced by a preserved newline"),
+    ("line_breaks_forced_br", "breaks forced by <br>"),
+    ("line_overflow_unbreakable", "lines overflowing: nothing to break at"),
+    ("line_chars_in_fragments", "characters that reached a line box"),
+    ("line_chars_not_laid_out", "...and those in a float or abs subtree"),
+    ("line_subtrees_not_laid_out", "out-of-flow subtrees skipped"),
+    ("line_out_of_flow_skipped", "...of those, taken off a line box"),
+    ("line_fragments", "INLINE FRAGMENTS (a second population)"),
+    ("line_fragments_text", "...text runs"),
+    ("line_fragments_inline_box", "...inline element boxes"),
+    ("line_fragments_atomic", "...atomic inlines"),
+    ("line_inline_boxes_fragmented", "boxes that crossed a line break"),
+    ("line_empty_inline_boxes", "inline boxes with no content of their own"),
+    ("line_replaced_zero_size", "replaced elements sized zero: a known gap"),
+    ("line_strut_suppressed_no_direct_text",
+     "strut suppressed: a measured divergence from CSS 2.1 10.8"),
+    ("line_break_opportunities_masked_nowrap", "opportunities masked by nowrap"),
+    ("line_break_spaces_extra_opportunity", "extra opportunities: break-spaces"),
+    ("linebreak_opportunities", "SOFT WRAP OPPORTUNITIES (a third population)"),
+    ("linebreak_opportunities_at_space", "...at a space"),
+    ("linebreak_opportunities_other", "...anywhere else UAX #14 allows"),
+    ("linebreak_tailored_no_break_after_solidus", "Chrome tailoring: after /"),
+    ("linebreak_tailored_no_break_after_exclamation", "...after !"),
+    ("linebreak_tailored_no_break_after_vertical_line", "...after |"),
+    ("linebreak_class_fallback_combining_mark", "combining marks (LB9)"),
+    ("linebreak_class_fallback_other",
+     "characters classified AL by default: must be 0"),
+    ("text_line_trailing_space_trimmed", "line-end spaces trimmed (Phase II)"),
+    ("text_line_trailing_space_hung", "...hung instead, under pre-wrap"),
+    ("text_line_leading_space_trimmed", "line-start spaces trimmed: must be 0"),
+    ("text_align_start", "lines aligned: start"),
+    ("text_align_left", "...left"),
+    ("text_align_center", "...center"),
+    ("text_align_right", "...right"),
+    ("text_align_justify_as_start", "...justify, laid out as start"),
+    ("vertical_align_boxes_aligned", "BOXES ALIGNED ON A LINE (a fourth)"),
+    ("vertical_align_applied_baseline", "...baseline (the initial value)"),
+    ("vertical_align_applied_middle", "...middle"),
+    ("vertical_align_applied_top", "...top"),
+    ("vertical_align_applied_bottom", "...bottom"),
+    ("vertical_align_applied_text_top", "...text-top"),
+    ("vertical_align_applied_text_bottom", "...text-bottom"),
+    ("vertical_align_applied_sub", "...sub"),
+    ("vertical_align_applied_super", "...super"),
+    ("vertical_align_applied_length", "...a <length>"),
+    ("vertical_align_applied_percentage", "...a <percentage>"),
+    ("vertical_align_percent_resolved_in_layout",
+     "...of those, resolved here because line-height was normal"),
+    ("vertical_align_top_bottom_extended_line", "top/bottom grew the line"),
+    ("vertical_align_text_edge_against_empty_parent",
+     "text-top/-bottom against a parent with nothing on the line"),
+    ("vertical_align_atomic_baseline_from_last_line",
+     "atomic inline baseline from its last line box"),
+    ("vertical_align_atomic_baseline_from_margin_edge",
+     "...from its bottom margin edge instead"),
+    ("line_height_unit_unresolved", "vw/vh line-height the cascade left symbolic"),
 )
 
 CENSUS = (
@@ -298,6 +375,9 @@ def main(argv: list[str] | None = None) -> int:
         print("  text and intrinsic sizing")
         for key, population in TEXT_HEADLINE:
             print(f"    {counters.get(key, 0):>7}  {population}")
+        print("  line boxes and inline layout")
+        for key, population in LINE_HEADLINE:
+            print(f"    {counters.get(key, 0):>7}  {population}")
         print("  margin-collapsing census")
         for key, population in CENSUS:
             print(f"    {counters.get(key, 0):>7}  {population}")
@@ -313,7 +393,9 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     print("all pages")
-    for key, population in HEADLINE + LAYOUT_HEADLINE + TEXT_HEADLINE + CENSUS:
+    for key, population in (
+        HEADLINE + LAYOUT_HEADLINE + TEXT_HEADLINE + LINE_HEADLINE + CENSUS
+    ):
         print(f"    {totals.get(key, 0):>7}  {population}")
     print(f"    {100 * totals['boxes_pruned_total'] / totals['dom_elements']:>6.1f}%  "
           f"of DOM elements produce no box")

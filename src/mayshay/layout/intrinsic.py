@@ -400,7 +400,13 @@ def _measure_run(
         width = text_module.measure(piece, style, metrics=metrics)
         accumulator.content(width, width)
         return
-    flags = linebreak_module.break_opportunities(piece, metrics=metrics)
+    # No `metrics=` on purpose. `linebreak_opportunities` is a census of the
+    # opportunities the **line breaker** found, and intrinsic sizing walks
+    # much of the same text a second time: passing the counter here would
+    # add two populations under one name, which is the defect
+    # `docs/measurement-hazards.md` calls the unstated denominator. What
+    # this pass contributes has its own counter below.
+    flags = linebreak_module.break_opportunities(piece)
     start = 0
     for index in range(1, len(piece)):
         if not flags[index]:

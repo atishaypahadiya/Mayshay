@@ -92,6 +92,17 @@ from mayshay.layout.geometry import EPSILON, BoxGeometry, Edges, Rect
 from mayshay.layout.text import LineMetrics, line_metrics, measure
 from mayshay.layout.used import px_or_zero, style_of, text_style_of
 
+
+def _is_out_of_flow(style: ComputedStyle) -> bool:
+    """`float` or `position: absolute`/`fixed` -- neither is laid out.
+
+    Duplicated from `layout.block._is_out_of_flow` in spirit and not in
+    code: that one returns *which*, because the block flow counts the two
+    separately, and this one only needs to know whether the box is on the
+    line at all.
+    """
+    return style.float_ != "none" or style.position in ("absolute", "fixed")
+
 #: Tag names that generate a forced line break. `<br>` computes to
 #: `display: inline` with no children, so nothing structural distinguishes
 #: it from `<span></span>`; the tag name is the only signal there is.
@@ -160,6 +171,10 @@ _ALIGNMENT_COUNTERS: tuple[str, ...] = tuple(
 
 COUNTER_NAMES: tuple[str, ...] = (
     "line_boxes",
+    "line_out_of_flow_skipped",
+    "line_chars_in_fragments",
+    "line_chars_not_laid_out",
+    "line_subtrees_not_laid_out",
     "line_boxes_empty_zero_height",
     "line_strut_suppressed_no_direct_text",
     "line_ifc_contexts_laid_out",
@@ -451,6 +466,17 @@ def _flatten(root: Box, metrics: Counter[str]) -> list[_Item]:
                     _Item(_TEXT, child, text_style_of(child), ancestors, collapsed)
                 )
                 produced += 1
+            elif child.is_inline_level and _is_out_of_flow(style_of(child)):
+                # Not on any line, whether it is an `inline-block` or a
+                # plain `inline`. Tested **before** the atomic branch and
+                # not after: an out-of-flow `inline-block` reached the
+                # atomic branch first on the first draft and stayed on the
+                # line, which the out-of-flow counters disagreed with by
+                # exactly one. `layout.block` counts it and resolves its
+                # shrink-to-fit width; nothing places it, and
+                # `assert_text_conservation` says what that costs in text.
+                metrics["line_out_of_flow_skipped"] += 1
+                continue
             elif child.display in ATOMIC_INLINE_DISPLAYS:
                 items.append(_Item(_ATOMIC, child, style_of(child), ancestors))
                 produced += 1
@@ -1718,6 +1744,60 @@ def assert_line_box(line: LineBox) -> None:
     assert math.isclose(line.width, total, rel_tol=0.0, abs_tol=1e-6), (
         f"line box {line.index}: used width {line.width} is not the sum of "
         f"the advances placed on it, {total}"
+    )
+
+
+def assert_text_conservation(root: Box, metrics: Counter[str]) -> None:
+    """Every character that survived Phase I is on a line box or is not.
+
+    Task D1's character conservation, carried one stage further. D1 asserts
+    that every input character was kept, transformed or removed; this
+    asserts that every character D1 **kept** either reached an inline
+    fragment or sits in a subtree this engine declines to lay out.
+
+    The residual bucket is the point. On the corpus it reads **3,227
+    characters in 30 out-of-flow subtrees** -- 25 floats and 5 absolutely
+    positioned boxes, which Task C defers and Task D2 does not rescue -- and
+    every one of the 58 combining marks on the corpus is inside one of them.
+    So UAX #14's LB9 has zero corpus coverage in line layout even though the
+    marks are in the box tree, which is a fact no counter of characters or
+    of boxes would have shown.
+
+    Without this check a wrong `_flatten` -- one that walked past an inline
+    box, or dropped an item kind -- loses text silently: the page still
+    renders, the lines are just shorter, and nothing on this project has
+    ever caught that shape by looking.
+    """
+    in_fragments = 0
+    not_laid_out = 0
+    subtrees = 0
+
+    def walk(box: Box, deferred: bool) -> None:
+        nonlocal in_fragments, not_laid_out, subtrees
+        style = style_of(box)
+        here = deferred or style.float_ != "none" or style.position in (
+            "absolute", "fixed"
+        )
+        if here and not deferred:
+            subtrees += 1
+        if box.origin == "text" and box.text:
+            placed = sum(len(f.text) for f in box.fragments if f.text)
+            in_fragments += placed
+            not_laid_out += len(box.text) - placed
+        for child in box.children:
+            walk(child, here)
+
+    walk(root, False)
+    metrics["line_chars_in_fragments"] += in_fragments
+    metrics["line_chars_not_laid_out"] += not_laid_out
+    metrics["line_subtrees_not_laid_out"] += subtrees
+
+    survived = metrics["text_chars_kept"] + metrics["text_chars_transformed"]
+    total = in_fragments + not_laid_out
+    assert survived == total, (
+        "every character that survived white-space collapsing is on a line "
+        f"box or in a subtree that was not laid out: {survived} != "
+        f"{in_fragments} + {not_laid_out}"
     )
 
 
