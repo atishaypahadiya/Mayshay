@@ -62,8 +62,8 @@ box, viewport 1280x1024, `@media` evaluated, external sheets applied.
 | `vertical-align: <length>` on a line box | **0** | same | Task D2 |
 | `vertical-align: <percentage>` on a line box | **0** | same | Task D2 |
 | `vertical-align: text-top` on a line box | 1 | same | Task D2 |
-| `vertical-align: text-bottom` on a line box | 1 | same | Task D2 |
-| `vertical-align: middle` on a line box | 8 | same; 43 element boxes compute it | Task D2 |
+| `vertical-align: text-bottom` on a line box | **0** | same; the one element that computes it is inside a float, which is not laid out | Task D2 |
+| `vertical-align: middle` on a line box | 7 | same; 43 element boxes compute it | Task D2 |
 | a `<percentage>` `vertical-align` resolved at layout time | **0** | Task A2's `vertical_align_percent_deferred` | Task D2 |
 | `top`/`bottom` alignment growing the line box | **0** | line boxes (985) | Task D2 |
 | a preserved space **hanging** past a line end | **0** | runs of white space at a line end (254) | Task D2 |
@@ -118,17 +118,22 @@ smaller.
 is what baseline alignment does. Measured after D2:
 
     element boxes with a computed value      applied on a line box
-    baseline    7,533                        5,383
-    middle         43                            8
+    baseline    7,533                        5,375
+    middle         43                            7
     top            30                            0
     text-top        1                            1
-    text-bottom     1                            1
+    text-bottom     1                            0
     sub/super/bottom/<length>/<percentage>   0    0
 
-`top` is the sharp one: 30 element boxes compute it and **not one of them is
-inline-level**, so the rule that aligns a box to the top of its line box
-runs zero times on this corpus. A reader of the first table would have
-counted `top` as covered.
+Two rows are sharp. **`top`**: 30 element boxes compute it and not one of
+them is inline-level, so the rule that aligns a box to the top of its line
+box runs zero times. **`text-bottom`**: the single element that computes it
+sits inside a float, which this engine does not lay out, so it reaches no
+line box either -- this register's own warning that a count of 1 is one
+edit from being a count of 0, and here the edit was a bug fix elsewhere in
+the same task.
+
+A reader of the first table would have counted three of these as covered.
 
 ## Tagged for Task D2, before it runs
 

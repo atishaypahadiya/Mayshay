@@ -11,9 +11,11 @@ boxes is
 with `sub`, `super`, `bottom`, `<percentage>` and `<length>` all **zero** --
 and `baseline` at 7,533 is the *initial* value, so it counts boxes that
 never set the property rather than boxes that exercise it. Narrowed to the
-boxes that actually reach a line box, the corpus applies `middle` 8 times,
-`text-top` once, `text-bottom` once and every other non-default rule zero
-times.
+boxes that actually reach a line box, the corpus applies `middle` 7 times,
+`text-top` once, and every other non-default rule -- `top`, `bottom`,
+`text-bottom`, `sub`, `super`, `<length>`, `<percentage>` -- **zero**
+times. The `text-bottom` element is inside a float, which this engine does
+not lay out.
 
 So a green run of this file and a clean corpus render are **not** evidence
 that baseline alignment works. The Chrome numbers are.
@@ -918,9 +920,9 @@ def test_the_vertical_align_keyword_table_cannot_drift_from_the_parser():
 def test_every_corpus_page_lays_out_with_the_line_partitions_intact():
     """The corpus as a smoke test, which is all it can be here.
 
-    It exercises `baseline` 5,377 times and every other alignment rule
-    between zero and eight, so a green run says the machinery does not
-    crash on 986 line boxes of real markup and says **nothing** about
+    It exercises `baseline` 5,375 times and every other alignment rule
+    between zero and seven, so a green run says the machinery does not
+    crash on 985 line boxes of real markup and says **nothing** about
     whether `sub` is right. In-document CSS only, for the reason
     `test_block.py`'s corpus test gives: the external sheets need the
     manifest ordering that `scripts/corpus.py` owns.
