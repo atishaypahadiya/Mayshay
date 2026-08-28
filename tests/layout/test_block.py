@@ -791,7 +791,12 @@ def test_an_out_of_flow_sibling_never_joins_the_collapsing_group():
         assert boxes(root)["x"].geometry is None
         assert metrics[counter] == 1
         assert metrics["margin_collapse_blocked_out_of_flow"] == 1
-        assert metrics["widths_deferred_shrink_to_fit"] == 1
+        # Task D1 resolves the *width* of an out-of-flow box and still
+        # refuses to place it, which is why the geometry above is None
+        # while this counter has moved out of the deferred bucket.
+        assert metrics["widths_shrink_to_fit_resolved"] == 1
+        assert metrics["widths_deferred_shrink_to_fit"] == 0
+        assert boxes(root)["x"].shrink_to_fit_width is not None
 
 
 def test_an_in_flow_sibling_with_the_same_margin_does_join_it():
@@ -898,7 +903,13 @@ def test_an_atomic_inline_child_blocks_collapse_through_too():
     assert metrics["margins_collapsed_through_empty"] == 0
     assert metrics["margin_collapse_blocked_line_box"] == 1
     assert boxes(root)["ib"].geometry is None
-    assert metrics["widths_deferred_shrink_to_fit"] == 1
+    assert metrics["widths_shrink_to_fit_resolved"] == 1
+    assert metrics["widths_deferred_shrink_to_fit"] == 0
+    # `width: 10px` is specified, so shrink-to-fit does not run: the
+    # formula is what `width: auto` means on these boxes, not what they
+    # always do.
+    assert boxes(root)["ib"].shrink_to_fit_width == 10.0
+    assert metrics["widths_shrink_to_fit_specified"] == 1
 
 
 def test_a_table_internal_box_keeps_the_barrier_and_records_the_deviation():
@@ -1064,6 +1075,7 @@ def test_every_box_is_laid_out_or_deferred_for_exactly_one_named_reason():
     )
     parts = (
         metrics["widths_resolved"]
+        + metrics["widths_shrink_to_fit_resolved"]
         + metrics["widths_deferred_shrink_to_fit"]
         + metrics["widths_not_applicable_inline_level"]
         + metrics["widths_deferred_other"]
@@ -1075,7 +1087,8 @@ def test_every_box_is_laid_out_or_deferred_for_exactly_one_named_reason():
     # categories lands. It is a measurement, not a judgement, and it should
     # read zero.
     assert metrics["widths_deferred_other"] == 0
-    assert metrics["widths_deferred_shrink_to_fit"] == 3  # float, abs, inline-block
+    assert metrics["widths_shrink_to_fit_resolved"] == 3  # float, abs, inline-block
+    assert metrics["widths_deferred_shrink_to_fit"] == 0
 
 
 def test_the_geometry_records_whether_a_box_collapsed_through():

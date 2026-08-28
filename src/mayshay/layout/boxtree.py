@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from mayshay.dom.node import Comment, Document, DocumentType, Element, Node, Text
+from mayshay.layout.text import is_white_space_only
 
 # Inline-level outer display types. Everything else that generates a box is
 # block-level for our purposes, including the internal table displays --
@@ -40,6 +41,17 @@ from mayshay.dom.node import Comment, Document, DocumentType, Element, Node, Tex
 # mistaken for inline content.
 INLINE_LEVEL: frozenset[str] = frozenset(
     {"inline", "inline-block", "inline-flex", "inline-table"}
+)
+
+# Inline-level on the outside, a block container on the inside (CSS Display
+# 3 section 2.1). The distinction from `INLINE_LEVEL` is load-bearing in
+# three places and using the wrong set was a real Task B defect: an atomic
+# inline does **not** split around a block child, its width is
+# shrink-to-fit rather than absent, and it is opaque to the white-space
+# collapsing of the inline formatting context it sits in -- it establishes
+# its own.
+ATOMIC_INLINE_DISPLAYS: frozenset[str] = frozenset(
+    {"inline-block", "inline-flex", "inline-table"}
 )
 
 # Grid is classified but not implemented. The fallback is deliberate and
@@ -91,6 +103,23 @@ class Box:
     # are deferred to Task D and counted rather than given a guessed
     # rectangle.
     geometry: object | None = None
+
+    # Filled by Task D1 (`layout.inline`) on a text box: the source text
+    # after CSS Text 3 Phase I white-space collapsing, which is what
+    # `measure()` is given and what line breaking will break. `None` means
+    # "not processed" and is a real state -- it is what a box outside any
+    # inline formatting context has -- so it is distinguishable from `""`,
+    # a run that collapsed away entirely. 1,323 boxes on the corpus turn on
+    # exactly that distinction.
+    text: str | None = None
+
+    # Filled by Task D1 (`layout.block`) on a box whose width is
+    # shrink-to-fit: `inline-block` and its two siblings, floats, and
+    # absolutely positioned boxes. Separate from `geometry` because the
+    # *width* of a float resolves without the float being *placed*, and
+    # placement is not implemented -- so a float has a number here and
+    # `geometry is None`, which is the honest pair.
+    shrink_to_fit_width: float | None = None
 
     @property
     def is_inline_level(self) -> bool:
@@ -183,7 +212,23 @@ def _display_of(node: Node, metrics: Counter[str]) -> str | None:
 
 
 def _is_blank_text(node: Node) -> bool:
-    return isinstance(node, Text) and not node.data.strip()
+    """Is this a text node made only of CSS white space?
+
+    `layout.text.is_white_space_only`, not `str.strip()`. The two disagree
+    on U+00A0 NO-BREAK SPACE, U+000B, U+000C, U+2000-U+200A and U+3000,
+    none of which CSS Text 3 treats as white space. NBSP is the one that
+    occurs: 36 text boxes on the corpus contain nothing else, and
+    `str.strip()` calls every one of them blank -- which would discard a
+    `&nbsp;`-only run between two block siblings and give a block whose
+    only content is `&nbsp;` no line box, so it would collapse through.
+
+    Zero corpus occurrences of the disagreement reaching this function,
+    measured by wrapping it: the 36 all sit inside inline formatting
+    contexts, where this predicate is not consulted. Latent, not live --
+    which is why it is a `docs/synthetic-only-coverage.md` row as well as a
+    fix.
+    """
+    return isinstance(node, Text) and is_white_space_only(node.data)
 
 
 def _wrap_inline_runs(children: list[Box], metrics: Counter[str]) -> list[Box]:
