@@ -54,6 +54,18 @@ box, viewport 1280x1024, `@media` evaluated, external sheets applied.
 | percentage `width` treated as `auto` for an intrinsic size | 1 | same | Task D1 |
 | definite `width` short-circuiting shrink-to-fit | 5 | boxes whose width is shrink-to-fit (50) | Task D1 |
 | atomic inline nested inside another atomic inline | 3 | atomic inline boxes (51) | Task D1 |
+| CSS Text 3's East Asian segment-break removal | **0** | collapsible segment breaks in text boxes (1,086) | Task D1 |
+
+The East Asian row is the only one of the nine that is **not
+implemented**. CSS Text 3 section 4.1.2 removes a collapsible segment break
+rather than turning it into a space when the characters either side are of
+certain East Asian classes; this engine turns every collapsible break into
+a space. Measured before deciding to leave it: the corpus contains **18
+CJK characters in 80,580**, and of its 1,086 segment breaks, **zero** have
+CJK on both sides -- under a deliberately generous codepoint-range
+approximation, so a stricter reading of the rule cannot make it more than
+zero. It is listed here rather than silently omitted because the row is
+what will say when a widened corpus makes it matter.
 
 ### Why three of those rows are zero for the same reason
 
