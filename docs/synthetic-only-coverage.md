@@ -46,6 +46,32 @@ box, viewport 1280x1024, `@media` evaluated, external sheets applied.
 | `grid` / `inline-grid` | 2 | element boxes | Task B |
 | `list-item` | 2 | element boxes | Task B |
 
+## Tagged for Task D2, before it runs
+
+`vertical-align` is what baseline alignment is steered by, and the corpus
+steers it almost nowhere:
+
+    baseline     7,533
+    middle          43
+    top             30
+    text-top         1
+    text-bottom      1
+    sub, super, bottom, <percentage>, <length>   all 0
+
+**Baseline alignment therefore has essentially no corpus coverage**, and it
+is the part of D2 most likely to be subtly wrong: a mis-aligned baseline
+moves text by a few pixels within a correctly-sized line box, which renders
+as a page and reads as fine.
+
+Recorded here **before D2 is dispatched**, so that when D2 reports a green
+suite and a clean corpus render, the green is understood to cover
+`baseline` and almost nothing else. Same reasoning as the split-inline
+entry: the machinery is real, the tests are synthetic, and the corpus
+cannot tell anyone whether it works.
+
+`baseline` at 7,533 is not reassurance either — it is the default, so the
+count mostly measures how many boxes never set the property.
+
 ## The inverse finding
 
 The same measurement read the other way is more interesting than the gap
