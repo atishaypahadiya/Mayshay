@@ -389,6 +389,34 @@ answer different questions, and the property name does not say which.
 The mitigation is the same as for the unstated denominator, one level
 deeper: name the population *and* say whether defaults are in it.
 
+### Instance fourteen: a plausible number the spec appeared to endorse
+
+Task D1's `min-content` width for `a<inline-block 40px>b` came out at
+57.81px. Chrome gives **40.00**.
+
+The implementation had no soft wrap opportunity on either side of an atomic
+inline box, so the whole thing measured as one unbreakable unit. The number
+was plausible — it is the sum of parts that really are adjacent — and
+**reading CSS Text 3 supports the wrong answer**. The rule that settles it
+is in UAX #14, where U+FFFC (the object replacement character an atomic
+inline is treated as) is class CB and rule LB20 provides break
+opportunities on both sides.
+
+So this is not the usual "asserted from reading instead of running". The
+reading was done, in the document a reasonable person would consult, and it
+endorsed the defect. Only the second measurement disagreed.
+
+The same task found the mirror-image error in its own first draft: nothing
+said an atomic inline must be **opaque** to collapsing, and it is — the
+spaces on both sides survive. Two opposite mistakes about the same
+construct, both plausible, both caught by Chrome and neither by the spec
+text.
+
+The generalisation is narrow but worth having: **when a spec is layered,
+the layer you are reading may not be the one that decides.** CSS Text 3
+defers segmentation to UAX #14 without restating it, so a confident answer
+from the top layer is not evidence about the bottom one.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -403,6 +431,7 @@ Every instance in this document was caught by **measurement**:
 | 11 zero-margin collapse-through | probing Chrome before writing the claim into a brief |
 | 12 literal NBSP, and a silent no-op edit | printing the remaining non-ASCII set, not the edit's success |
 | 13 defaults counted as usage | splitting `display` counts by the origin of the winning declaration |
+| 14 atomic-inline min-content | Chrome disagreeing with a number CSS Text 3 appeared to endorse |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced
