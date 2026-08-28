@@ -55,6 +55,27 @@ box, viewport 1280x1024, `@media` evaluated, external sheets applied.
 | definite `width` short-circuiting shrink-to-fit | 5 | boxes whose width is shrink-to-fit (50) | Task D1 |
 | atomic inline nested inside another atomic inline | 3 | atomic inline boxes (51) | Task D1 |
 | CSS Text 3's East Asian segment-break removal | **0** | collapsible segment breaks in text boxes (1,086) | Task D1 |
+| `vertical-align: sub` **on a line box** | **0** | boxes aligned on a line box (5,383) | Task D2 |
+| `vertical-align: super` on a line box | **0** | same | Task D2 |
+| `vertical-align: top` on a line box | **0** | same; 30 element boxes compute it and none is inline-level | Task D2 |
+| `vertical-align: bottom` on a line box | **0** | same | Task D2 |
+| `vertical-align: <length>` on a line box | **0** | same | Task D2 |
+| `vertical-align: <percentage>` on a line box | **0** | same | Task D2 |
+| `vertical-align: text-top` on a line box | 1 | same | Task D2 |
+| `vertical-align: text-bottom` on a line box | 1 | same | Task D2 |
+| `vertical-align: middle` on a line box | 8 | same; 43 element boxes compute it | Task D2 |
+| a `<percentage>` `vertical-align` resolved at layout time | **0** | Task A2's `vertical_align_percent_deferred` | Task D2 |
+| `top`/`bottom` alignment growing the line box | **0** | line boxes (985) | Task D2 |
+| a preserved space **hanging** past a line end | **0** | runs of white space at a line end (254) | Task D2 |
+| `break-spaces` splitting a run of preserved spaces | **0** | same | Task D2 |
+| collapsible white space trimmed at a line **start** | **0** | line boxes (985) | Task D2 |
+| an inline box fragmented across a Task B split | **0** | boxes that crossed a line break (322); `boxes_inline_split` is 0 | Task D2 |
+| UAX #14 LB9 (a combining mark) reaching line layout | **0** | 58 marks in text boxes, every one inside an out-of-flow subtree | Task D2 |
+| `text-align: justify` | **0** | lines aligned (986) | Task D2 |
+| the `no break after \|` tailoring firing | **0** | 73 U+007C characters in text boxes | Task D2 |
+| U+00AD soft hyphen, where this engine and Chrome differ | **0** | characters in text boxes (80,580) | Task D2 |
+| U+200B ZWSP and U+2060 WORD JOINER | **0** | same | Task D2 |
+| a viewport-unit `line-height` reaching layout | **0** | line boxes (985) | Task D2 |
 
 The East Asian row is the only one of the nine that is **not
 implemented**. CSS Text 3 section 4.1.2 removes a collapsible segment break
@@ -85,6 +106,29 @@ not. Both were fixed in Task D1 and **no corpus number moved**, because all
 36 sit inside inline formatting contexts where neither predicate is
 consulted. The defect was real, latent, and invisible to the corpus -- which
 is precisely what this register is for.
+
+## What Task D2 found when it ran
+
+The section below was written **before** D2 was dispatched. It held up, and
+the narrowing is worth recording because it makes the gap larger rather than
+smaller.
+
+`vertical-align` on **element boxes** is one population and
+`vertical-align` **applied on a line box** is another, and only the second
+is what baseline alignment does. Measured after D2:
+
+    element boxes with a computed value      applied on a line box
+    baseline    7,533                        5,383
+    middle         43                            8
+    top            30                            0
+    text-top        1                            1
+    text-bottom     1                            1
+    sub/super/bottom/<length>/<percentage>   0    0
+
+`top` is the sharp one: 30 element boxes compute it and **not one of them is
+inline-level**, so the rule that aligns a box to the top of its line box
+runs zero times on this corpus. A reader of the first table would have
+counted `top` as covered.
 
 ## Tagged for Task D2, before it runs
 

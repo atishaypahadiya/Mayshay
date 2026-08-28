@@ -439,6 +439,106 @@ layers down from where a reader would stop.
 practical form: when a rule turns out to be delegated, read the delegate or
 measure — do not read the citing text more carefully.
 
+### Instance fifteen: a plain reading of the spec, and every engine disagrees
+
+Instance fourteen was a specification that **defers** -- CSS Text 3 pointing
+at UAX #14 -- and a reader who stopped at the citing layer getting a
+confident wrong answer. Task D2 found the next shape along: a specification
+that does **not** defer, says exactly what to do, and is wrong about the
+world.
+
+CSS 2.1 section 10.8 says a line box always contains a *strut*: a
+zero-width inline box carrying the block container's own font and
+`line-height`. Read plainly, that makes
+
+    <div style="font-size:16px"><span style="font-size:8px">x</span></div>
+
+18.40px tall, because the block's own 16px strut is the tallest thing on
+the line. **Chrome 151 makes it 9.** So does the same fixture with an
+explicit `line-height` on the block, which rules out inheritance as the
+explanation.
+
+Seven shapes were measured before any rule was written down:
+
+| fixture (in a 100px div, `font: 16px/normal Arial`) | Chrome |
+|---|---:|
+| `<span style="font-size:8px">x</span>` | 9 |
+| `<span style="font-size:8px;line-height:8px">x</span>` | 8 |
+| `x` | 18 |
+| `<span style="display:inline-block;width:10px;height:10px"></span>` | 10 |
+| `<span style="line-height:60px"><ib 10px></span>` | 10 |
+| `<span style="padding:0 2px"><ib 10px></span>` (40px font) | 45 |
+| `<br>` | 18 |
+
+One rule explains all seven: **an inline box contributes its font metrics
+to a line box only when it directly contains text or a forced break on that
+line, or has edges of its own** -- and the root inline box is not exempt,
+which is the part a plain reading gets wrong.
+
+Implementing the spec instead would have put this engine at odds with the
+reference renderer on every line whose text sits inside a smaller-font
+inline box, which on a real page is most of the small print. It fires
+**2,118 times on the corpus**, so it is not an edge case being tidied away.
+
+The generalisation is not "specs are wrong". It is narrower and more
+useful:
+
+> A specification sentence that no engine implements is still a
+> specification sentence. Reading it is not measuring, and on this project
+> the difference has now cost a number twice in two consecutive tasks --
+> once by reading the citing layer instead of the delegate, and once by
+> reading a layer that had no delegate and no implementer either.
+
+The countermeasure is the same one and it is cheap: before writing a rule
+down, put the smallest fixture that could distinguish two readings in front
+of the reference renderer. Six of the seven rows above took one Chrome run
+between them.
+
+### Instance sixteen: the literal NBSP, again, in the fixture for itself
+
+Instance twelve recorded a literal U+00A0 typed into the sentence warning
+against literal non-ASCII. Task D2 did it again, in a Chrome probe written
+to check the behaviour of `&nbsp;` -- and this time the character silently
+became U+0020 somewhere between the keyboard and the file.
+
+The probe reported that Chrome **collapsed an NBSP-only box through**,
+contradicting an earlier measurement and reading as a genuine finding about
+Chrome. It was a finding about the probe. Written as `\u00a0` the same
+fixture gives the earlier answer.
+
+What makes it worth a second entry is that the failure mode changed. In
+instance twelve the tool reported success and did nothing. Here the tool
+reported a **plausible different measurement**, which is the more dangerous
+half of the same problem: an edit that silently does nothing leaves the
+old value, and a fixture that silently changes gives a new one. The check
+that caught it was the same one -- print the codepoints, not the string.
+
+### Instance seventeen: a counter that must read zero, reading 58
+
+`linebreak_class_fallback_other` was built to read zero: it counts
+characters that are neither a letter, a digit nor a combining mark and got
+line-break class `AL` from a general-category default, which is exactly
+where a missing entry in a hand-written class table would hide.
+
+It read **58**, and nothing was wrong. The 58 were Devanagari, Bengali,
+Burmese and Khmer combining marks, which the fallback classifies **correctly**
+as `CM` and which UAX #14's LB9 then resolves to whatever they attach to.
+They were in the residual bucket because the bucket's definition had two
+categories in it and its name claimed one.
+
+Splitting the marks into a bucket of their own put it back to zero. The
+generalisation belongs with the unstated-denominator family: a residual
+bucket is only useful if everything *correct* has somewhere else to go.
+A residual that legitimately contains something can never be read as an
+alarm, which makes it decorative -- the same verdict this file gives a
+diagnostic that shares the defective path.
+
+The same pass found the mirror image: `linebreak_opportunities` had begun
+counting the line breaker's opportunities *and* intrinsic sizing's, two
+populations under one name, on text they both walk. That is instance four's
+shape with the two counts summed instead of reported separately, which is
+strictly worse -- a disagreement is visible and a sum is not.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -454,6 +554,9 @@ Every instance in this document was caught by **measurement**:
 | 12 literal NBSP, and a silent no-op edit | printing the remaining non-ASCII set, not the edit's success |
 | 13 defaults counted as usage | splitting `display` counts by the origin of the winning declaration |
 | 14 atomic-inline min-content | Chrome disagreeing with a number CSS Text 3 appeared to endorse |
+| 15 the line box strut | seven fixtures in Chrome before a rule was written down |
+| 16 the literal NBSP, again | printing the probe's codepoints after it produced a surprising result |
+| 17 a residual bucket reading 58 | the bucket being defined to read zero, and not reading zero |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced
