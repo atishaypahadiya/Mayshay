@@ -412,10 +412,32 @@ spaces on both sides survive. Two opposite mistakes about the same
 construct, both plausible, both caught by Chrome and neither by the spec
 text.
 
-The generalisation is narrow but worth having: **when a spec is layered,
-the layer you are reading may not be the one that decides.** CSS Text 3
-defers segmentation to UAX #14 without restating it, so a confident answer
-from the top layer is not evidence about the bottom one.
+The generalisation is wider than it first looks.
+
+> **A specification that defers to another specification is a pointer, not
+> a summary.** Reading the citing layer carefully produces a confident
+> wrong answer, which is worse than reading it carelessly — carelessness
+> leaves doubt, and care removes it.
+
+The deferrals this project sits on, all of them load-bearing:
+
+| citing layer | defers to | for |
+|---|---|---|
+| CSS Text 3 | UAX #14 | line break opportunities |
+| CSS 2.1 | Unicode Bidi | reordering |
+| HTML | CSS | element rendering and the UA sheet |
+| CSS Values | the font's own tables | `ex`, `ch`, and vertical metrics |
+| CSS Fonts | OpenType | which of three vertical-metric sets applies |
+
+Every one has already produced a defect or a decision on this project. The
+`ex`/`ch` values came from `OS/2` rather than the 0.5em fallback CSS Values
+describes; the `hhea`-versus-`OS/2` line-box choice is a question CSS does
+not answer at all; and the atomic-inline break opportunity is decided three
+layers down from where a reader would stop.
+
+**Task D2 sits directly on UAX #14** and will hit this repeatedly. The
+practical form: when a rule turns out to be delegated, read the delegate or
+measure — do not read the citing text more carefully.
 
 ### Writing a rule down does not install it
 

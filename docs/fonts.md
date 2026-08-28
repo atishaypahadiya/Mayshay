@@ -145,6 +145,30 @@ Reproduce from `data/fonts/LiberationSans-Regular.ttf` with `fontTools`;
 flatten `tt["kern"].kernTables` into `{(glyphA, glyphB): adjustment}` in
 font units and add the adjustment between consecutive glyph pairs.
 
+### The prediction was tested, and it held
+
+Written weeks before anything could check it, this file predicted that our
+advances would run **wide** on kerned pairs, and gave `AV` as +5.56%
+(21.3438 unkerned against 20.1562 kerned).
+
+Task D1 measured 25 fixtures against Chrome 151. **Twenty-four agree within
+Chrome's own LayoutUnit quantisation. The one disagreement is `AV`, at
+21.3438 against Chrome's 20.1563** — the predicted string, in the predicted
+direction, at the predicted magnitude.
+
+That is stronger evidence for the Arial metric-compatibility claim than
+across-the-board agreement would have been. **Agreement is consistent with
+both engines being wrong in the same way** — a shared font file, a shared
+rounding, a comparison that is really measuring itself. A predicted
+*disagreement*, at a magnitude derived independently from the font's `kern`
+table before any comparison existed, is not: it requires our advances and
+Chrome's to be right, and the one modelled difference between them to be
+exactly the modelled size.
+
+The whole cross-engine comparison rests on the metric-compatibility claim,
+and until D1 this was the one load-bearing assumption in `docs/fonts.md`
+with no measurement behind it.
+
 When the Phase 6 comparison harness exists, the measurement to report is
 **not** an average width error. A 0.137% aggregate alongside `To` at +9.50%
 means the error is not smoothly distributed -- it is near-zero almost

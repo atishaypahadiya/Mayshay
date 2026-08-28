@@ -72,11 +72,27 @@ stylesheet plus in-document `<style>` blocks only:
 
 | file             | elements | note                                        |
 |------------------|---------:|---------------------------------------------|
-| `wikipedia.html` |    7,778 | 36.3% whitespace (the Phase 1 headline)      |
+| `wikipedia.html` |    7,778 | 36.3% of TEXT NODES whitespace-only (the Phase 1 headline) |
 | `hn.html`        |      806 | zero in-document CSS -- its entire display distribution was our UA sheet |
 | `example.html`   |       12 |                                              |
 
 `link_stylesheets_skipped` was 0 / 1 / 2 for example / hn / wikipedia.
+
+**The Phase 1 headline needs its population stated, and did not have it.**
+"36.3% whitespace" is the share of *text nodes* that are whitespace-only. It
+is not a share of characters, and the two differ by a lot. On the same page:
+
+| measure | value |
+|---|---:|
+| text nodes that are whitespace-only | 2,721 of 7,505 (**36.3%**) |
+| characters living inside those nodes | 5,611 of 113,319 (5.0%) |
+| characters that **are** whitespace | 16,823 of 113,319 (**14.8%**) |
+
+The middle row was quoted for a while as "whitespace is only ~5% of
+characters", which is true of the nodes and false of the whitespace: most
+whitespace is the ordinary spaces between words inside content nodes. Task
+D1 measured the consequence — 82.8% of whitespace-only boxes survive
+collapsing as word separators rather than disappearing.
 
 **Do not mix these with numbers from a re-collected corpus.** A re-fetched
 Wikipedia article is a different document -- different element count,
