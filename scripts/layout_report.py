@@ -155,7 +155,9 @@ HEADLINE = (
 # correct denominator exists for most of them -- see `collapse_census`.
 LAYOUT_HEADLINE = (
     ("widths_resolved", "block-level boxes laid out"),
-    ("widths_deferred_shrink_to_fit", "inline-block/float/abs: needs Task D"),
+    ("widths_shrink_to_fit_resolved", "inline-block/float/abs: 10.3.5 applied"),
+    ("widths_shrink_to_fit_specified", "...of those, width was not auto"),
+    ("widths_deferred_shrink_to_fit", "shrink-to-fit still deferred: must be 0"),
     ("widths_not_applicable_inline_level", "inline-level boxes: no own width"),
     ("widths_deferred_other", "boxes fitting none of the three: must be 0"),
     ("heights_from_children", "auto heights resolved from in-flow children"),
@@ -184,6 +186,55 @@ LAYOUT_HEADLINE = (
     ("layout_inner_fallback_block", "flex/table laid out as block flow"),
     ("layout_table_box_margins_applied", "margins a browser drops (17.6)"),
     ("layout_viewport_unit_unresolved", "vw/vh the cascade left symbolic"),
+)
+
+# Task D1. Three populations sit in this block and they are NOT the same
+# denominator, which is the whole point of naming each one:
+#
+#   text_boxes_seen              text boxes surviving Task B's pruning and
+#                                blank-run discarding  -- 6,194
+#   text_boxes_whitespace_only   of those, the ones made only of CSS Text 3
+#                                white space           -- 1,287
+#   text_chars_in                characters in those boxes -- 80,580
+#
+# The DOM figures are larger and different: 7,985 text nodes and 117,378
+# characters, of which 2,781 nodes are blank under `str.strip()`. 1,458 of
+# those never reach a box at all, so the disposition below decides the fate
+# of 1,287, not of 2,781.
+TEXT_HEADLINE = (
+    ("text_ifc_contexts", "inline formatting contexts"),
+    ("text_boxes_seen", "TEXT BOXES processed (the population below)"),
+    ("text_boxes_content", "...with at least one non-white-space character"),
+    ("text_boxes_whitespace_only", "...made only of CSS white space"),
+    ("text_whitespace_collapsed_away", "......collapsed away entirely"),
+    ("text_whitespace_single_space", "......kept as one separating space"),
+    ("text_whitespace_preserved_verbatim", "......preserved verbatim (pre*)"),
+    ("text_whitespace_preserved_break", "......kept as a forced break"),
+    ("text_whitespace_other", "......none of the above: must be 0"),
+    ("text_chars_in", "CHARACTERS in those boxes (a second population)"),
+    ("text_chars_kept", "...copied through unchanged"),
+    ("text_chars_transformed", "...rewritten (tab/newline -> space)"),
+    ("text_chars_removed", "...removed"),
+    ("text_whitespace_trimmed_ifc_start", "......at the start of a context"),
+    ("text_whitespace_trimmed_ifc_end", "......at the end of a context"),
+    ("text_whitespace_collapsed_into_previous", "......into a previous space"),
+    ("text_whitespace_removed_around_segment_break", "......around a break"),
+    ("text_boxes_white_space_normal", "text boxes under white-space: normal"),
+    ("text_boxes_white_space_nowrap", "...nowrap"),
+    ("text_boxes_white_space_pre_wrap", "...pre-wrap"),
+    ("text_boxes_white_space_pre", "...pre"),
+    ("text_boxes_white_space_pre_line", "...pre-line"),
+    ("text_boxes_white_space_break_spaces", "...break-spaces"),
+    ("text_ifc_atomic_inlines", "atomic inlines opaque to collapsing"),
+    ("text_ifc_replaced_transparent", "replaced/br walked through: a known gap"),
+    ("text_missing_glyph", "characters with no glyph in the font"),
+    ("text_preserved_tab_approximated", "preserved tabs measured at tab-size"),
+    ("text_carriage_returns_normalised", "CR or CRLF normalised to LF"),
+    ("intrinsic_sizes_computed", "intrinsic size computations"),
+    ("intrinsic_specified_width_used", "...where a definite width short-cut it"),
+    ("intrinsic_percentage_width_as_auto", "...% width treated as auto (Sizing 3)"),
+    ("intrinsic_percentage_edge_as_zero", "...% margin/padding taken as zero"),
+    ("intrinsic_text_collapsed_on_demand", "text not pre-collapsed: must be 0"),
 )
 
 CENSUS = (
@@ -244,6 +295,9 @@ def main(argv: list[str] | None = None) -> int:
         print("  block layout")
         for key, population in LAYOUT_HEADLINE:
             print(f"    {counters.get(key, 0):>7}  {population}")
+        print("  text and intrinsic sizing")
+        for key, population in TEXT_HEADLINE:
+            print(f"    {counters.get(key, 0):>7}  {population}")
         print("  margin-collapsing census")
         for key, population in CENSUS:
             print(f"    {counters.get(key, 0):>7}  {population}")
@@ -259,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
             )
 
     print("all pages")
-    for key, population in HEADLINE + LAYOUT_HEADLINE + CENSUS:
+    for key, population in HEADLINE + LAYOUT_HEADLINE + TEXT_HEADLINE + CENSUS:
         print(f"    {totals.get(key, 0):>7}  {population}")
     print(f"    {100 * totals['boxes_pruned_total'] / totals['dom_elements']:>6.1f}%  "
           f"of DOM elements produce no box")

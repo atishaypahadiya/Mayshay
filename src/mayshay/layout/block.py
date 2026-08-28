@@ -79,10 +79,16 @@ import math
 from collections import Counter
 from dataclasses import dataclass, replace
 
-from mayshay.cssparse.cascade import VIEWPORT_UNITS, ComputedStyle
+from mayshay.cssparse.cascade import ComputedStyle
 from mayshay.cssparse.media import Viewport
-from mayshay.cssparse.values import AUTO, Length, Percent
-from mayshay.layout.boxtree import Box
+from mayshay.cssparse.values import AUTO, Percent
+from mayshay.layout import inline as inline_module
+from mayshay.layout import intrinsic as intrinsic_module
+from mayshay.layout.boxtree import ATOMIC_INLINE_DISPLAYS, Box
+from mayshay.layout.text import is_white_space_only
+from mayshay.layout.used import px as _px
+from mayshay.layout.used import px_or_zero as _px_or_zero
+from mayshay.layout.used import style_of as _style_of
 
 # Floating-point slack for the constraint assertions. Every number here is a
 # sum of a handful of terms, so a real violation is orders of magnitude
@@ -94,13 +100,6 @@ EPSILON = 1e-6
 # Task E or Task F; Task C lays their children out as block flow and counts
 # it, exactly as Task B counts `display: grid` falling back to `block`.
 BLOCK_CONTAINER_DISPLAYS: frozenset[str] = frozenset({"block", "list-item"})
-
-# Inline-level and atomic: an inline-level box on the outside, a block
-# container on the inside. Its width is shrink-to-fit, so it cannot be
-# resolved without Task D.
-ATOMIC_INLINE_DISPLAYS: frozenset[str] = frozenset(
-    {"inline-block", "inline-flex", "inline-table"}
-)
 
 # Block-level, but with a non-block inner formatting context. Each
 # establishes a new formatting context, which is what makes it a
@@ -138,7 +137,9 @@ COUNTER_NAMES: tuple[str, ...] = (
     # boxes and their disposition -- these five partition the tree
     "layout_boxes_seen",
     "widths_resolved",
+    "widths_shrink_to_fit_resolved",
     "widths_deferred_shrink_to_fit",
+    "widths_shrink_to_fit_specified",
     "widths_not_applicable_inline_level",
     "widths_deferred_other",
     # heights
@@ -182,12 +183,6 @@ COUNTER_NAMES: tuple[str, ...] = (
     "layout_length_unit_unexpected",
     "layout_boxes_deferred_subtree",
 )
-
-# The style an anonymous box is laid out with. Anonymous boxes have no
-# declarations of their own -- CSS 2.1 section 9.2.1.1 gives them the
-# initial value of every non-inherited property -- so one shared instance is
-# correct as long as nothing mutates it, and nothing here does.
-_ANONYMOUS_STYLE = ComputedStyle(display="block")
 
 # The computed initial value of every margin longhand, for the one place
 # that needs to know whether a margin was *declared* rather than what it
@@ -394,56 +389,6 @@ class _Result:
 # --------------------------------------------------------------------------
 
 
-def _px(value: object, *, basis: float, metrics: Counter[str]) -> float | None:
-    """A computed length or percentage as pixels, or None for `auto`.
-
-    `basis` is the containing block's **width** for every percentage this
-    module resolves, vertical margins and vertical padding included --
-    CSS 2.1 sections 8.3 and 8.4, and `docs/percentage-resolution.md`.
-    Measured against Chrome 151 rather than taken from the spec text: a
-    `margin-top: 10%` in a 400x800 containing block is 40px, not 80px.
-    """
-    if value is AUTO:
-        return None
-    if isinstance(value, Percent):
-        return float(value.value) / 100.0 * basis
-    if isinstance(value, Length):
-        if value.unit in VIEWPORT_UNITS:
-            # `cascade._length_to_px` returns None for `vw`/`vh`/`vmin`/
-            # `vmax` and the value survives symbolically. Resolving it *here*
-            # would give two answers for the same unit -- a `vw` box-model
-            # length would resolve and a `vw` font-size would not -- so it
-            # stays where it belongs: `_length_to_px` needs a viewport
-            # threaded through its two call sites, which is a cascade change
-            # and not a layout one. Counted, and treated as zero.
-            #
-            # Three occurrences on the corpus, all on example.com
-            # (`60vw` once, `15vh` twice) and all box-model.
-            metrics["layout_viewport_unit_unresolved"] += 1
-            return 0.0
-        if value.unit != "px":
-            metrics["layout_length_unit_unexpected"] += 1
-            return 0.0
-        return float(value.value)
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    metrics["layout_length_unit_unexpected"] += 1
-    return 0.0
-
-
-def _px_or_zero(value: object, *, basis: float, metrics: Counter[str]) -> float:
-    resolved = _px(value, basis=basis, metrics=metrics)
-    return 0.0 if resolved is None else resolved
-
-
-def _style_of(box: Box) -> ComputedStyle:
-    if box.origin == "element" and box.node is not None:
-        style = box.node.computed_style
-        if style is not None:
-            return style
-    return _ANONYMOUS_STYLE
-
-
 def _is_out_of_flow(style: ComputedStyle) -> str | None:
     """`"float"`, `"absolute"`, or None. Out-of-flow boxes never collapse
     their margins with in-flow siblings and contribute nothing to their
@@ -475,10 +420,21 @@ def _establishes_formatting_context(box: Box, style: ComputedStyle) -> str | Non
 
 
 def _is_blank_text_box(box: Box) -> bool:
+    """Is this a text box made only of CSS white space?
+
+    `layout.text.is_white_space_only`, not `str.strip()`: the two disagree
+    on U+00A0 and six other Unicode spaces that CSS Text 3 does not treat
+    as white space. A block whose only inline content is `&nbsp;` has a
+    line box and must not collapse through, and `str.strip()` says it has
+    none. Zero corpus occurrences -- 707 calls, none of them a
+    disagreement -- so this is a latent defect fixed rather than a
+    behaviour change, and it is a row in
+    `docs/synthetic-only-coverage.md` for that reason.
+    """
     return (
         box.origin == "text"
         and box.node is not None
-        and not box.node.data.strip()
+        and is_white_space_only(box.node.data)
     )
 
 
@@ -776,7 +732,9 @@ def _layout_block(
         # An inline formatting context. Task D measures it; here the box is
         # known to be non-empty (line boxes block collapse-through) and its
         # auto height is deferred rather than guessed at zero silently.
-        content_height, trailing = _defer_inline_content(box, metrics)
+        content_height, trailing = _defer_inline_content(
+            box, metrics, cb_width=horizontal.content_width
+        )
         collapsed_through = False
     else:
         if (
@@ -874,21 +832,79 @@ def _layout_block(
     )
 
 
+def _resolve_shrink_to_fit(box: Box, *, cb_width: float, metrics: Counter[str]) -> float:
+    """CSS 2.1 section 10.3.5 for one box, stored on the box.
+
+    Task D1's answer to Task C's largest deferral. The **width** of a
+    float, an absolutely positioned box or an `inline-block` resolves here;
+    its **position** does not, and floats are not placed at all. So this
+    writes `shrink_to_fit_width` and leaves `geometry` as None, which is
+    the honest pair -- giving these boxes a rectangle would put them at the
+    static position and make `_assert_geometry`'s section 10.3.3 tiling
+    fail, correctly, because a float's margin box does not span its
+    containing block.
+
+    `available` is the containing block's content width less this box's own
+    horizontal edges, per the section: the formula sizes the *content* box.
+    A specified `width` short-circuits the whole thing -- shrink-to-fit is
+    what `width: auto` means on these boxes, not what they always do.
+    """
+    style = _style_of(box)
+    edges = (
+        _px_or_zero(style.border_left_width, basis=cb_width, metrics=metrics)
+        + _px_or_zero(style.border_right_width, basis=cb_width, metrics=metrics)
+        + _px_or_zero(style.padding_left, basis=cb_width, metrics=metrics)
+        + _px_or_zero(style.padding_right, basis=cb_width, metrics=metrics)
+    )
+    margins = _px_or_zero(
+        style.margin_left, basis=cb_width, metrics=metrics
+    ) + _px_or_zero(style.margin_right, basis=cb_width, metrics=metrics)
+    available = max(0.0, cb_width - edges - margins)
+
+    declared = _px(style.width, basis=cb_width, metrics=metrics)
+    if declared is None:
+        content = intrinsic_module.shrink_to_fit(box, available, metrics=metrics)
+    else:
+        metrics["widths_shrink_to_fit_specified"] += 1
+        content = declared - edges if style.box_sizing == "border-box" else declared
+    box.shrink_to_fit_width = max(0.0, content)
+    return box.shrink_to_fit_width
+
+
 def _defer_inline_content(
-    box: Box, metrics: Counter[str]
+    box: Box, metrics: Counter[str], *, cb_width: float
 ) -> tuple[float, MarginGroup | None]:
-    """Account for an inline formatting context without measuring it."""
+    """Account for an inline formatting context without laying it out.
+
+    The height still waits on line boxes -- that is Task D2 -- but every
+    atomic inline inside gets its shrink-to-fit width here, because that
+    number does not need one.
+    """
     metrics["heights_deferred_inline_content"] += 1
     for child in box.children:
-        for descendant in child.walk():
-            metrics["layout_boxes_seen"] += 1
-            if descendant.display in ATOMIC_INLINE_DISPLAYS:
-                metrics["widths_deferred_shrink_to_fit"] += 1
-            elif descendant.is_inline_level:
-                metrics["widths_not_applicable_inline_level"] += 1
-            else:
-                metrics["layout_boxes_deferred_subtree"] += 1
+        _account_inline_box(child, metrics, cb_width=cb_width)
     return 0.0, None
+
+
+def _account_inline_box(box: Box, metrics: Counter[str], *, cb_width: float) -> None:
+    """One box inside an inline formatting context, and its descendants.
+
+    Recursive rather than `walk()`-flat for one reason: an atomic inline's
+    own content width is the containing block for anything nested inside
+    it, so the shrink-to-fit basis changes as the walk descends. Flattening
+    would size a nested `inline-block` against its grandparent.
+    """
+    metrics["layout_boxes_seen"] += 1
+    inner_cb = cb_width
+    if box.display in ATOMIC_INLINE_DISPLAYS:
+        metrics["widths_shrink_to_fit_resolved"] += 1
+        inner_cb = _resolve_shrink_to_fit(box, cb_width=cb_width, metrics=metrics)
+    elif box.is_inline_level:
+        metrics["widths_not_applicable_inline_level"] += 1
+    else:
+        metrics["layout_boxes_deferred_subtree"] += 1
+    for child in box.children:
+        _account_inline_box(child, metrics, cb_width=inner_cb)
 
 
 def _layout_children(
@@ -935,7 +951,10 @@ def _layout_children(
                 if out_of_flow == "float"
                 else "layout_absolute_skipped"
             ] += 1
-            _defer_subtree(child, metrics, reason="widths_deferred_shrink_to_fit")
+            _resolve_shrink_to_fit(child, cb_width=cb_width, metrics=metrics)
+            _defer_subtree(
+                child, metrics, reason="widths_shrink_to_fit_resolved"
+            )
             continue
         if child.is_inline_level:
             # Reached, and measured rather than assumed. Task B leaves a
@@ -1182,6 +1201,7 @@ def assert_layout_constraints(
 def _assert_box_partition(metrics: Counter[str]) -> None:
     parts = (
         metrics["widths_resolved"]
+        + metrics["widths_shrink_to_fit_resolved"]
         + metrics["widths_deferred_shrink_to_fit"]
         + metrics["widths_not_applicable_inline_level"]
         + metrics["widths_deferred_other"]
@@ -1314,8 +1334,17 @@ def layout_document(
     with anything.
     """
     metrics: Counter[str] = Counter()
-    for name in COUNTER_NAMES:
+    for name in COUNTER_NAMES + inline_module.COUNTER_NAMES + (
+        intrinsic_module.COUNTER_NAMES
+    ):
         metrics[name] = 0
+
+    # White-space processing first, over the whole tree. Intrinsic sizing
+    # reads `Box.text` and Task D2's line breaking will too; collapsing it
+    # once here is what stops the two from disagreeing about a space. It
+    # runs even when there is no root, so an empty document still emits a
+    # seeded row rather than no row.
+    inline_module.process_text(root, metrics)
     if root is None:
         return metrics
 

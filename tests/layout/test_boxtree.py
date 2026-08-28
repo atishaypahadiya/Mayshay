@@ -159,6 +159,35 @@ def test_whitespace_only_text_between_blocks_generates_nothing():
     assert metrics["boxes_blank_text_discarded"] >= 1
 
 
+def test_a_nbsp_only_run_between_blocks_is_content_and_is_not_discarded():
+    """The negative of the test above, and the one `str.strip()` gets wrong.
+
+    U+00A0 is `str.isspace()` and is **not** CSS Text 3 white space: it has
+    a real advance, never collapses, and is never a wrap opportunity. A run
+    of it between two blocks is content and must gain an anonymous block,
+    exactly as a letter would.
+
+    Zero corpus occurrences -- measured by wrapping `_is_blank_text` over
+    all three pages: 832 calls, no disagreement between the two
+    definitions. So this is a latent defect, and a
+    `docs/synthetic-only-coverage.md` row rather than a page that changed.
+
+    Written with an escape because a literal NBSP and a literal space are
+    the same three pixels of terminal.
+    """
+    nbsp = "\u00a0"
+    root, metrics = built(f"<div><p>a</p>{nbsp}<p>b</p></div>")
+    div = find(root, "/div[1]")
+    assert [origin for _, origin in kids(div)] == ["element", "anonymous", "element"]
+    assert metrics["boxes_anonymous"] == 1
+    assert metrics["boxes_blank_text_discarded"] == 0
+
+    # The same fixture with an ordinary space, to show the two disagree.
+    root, metrics = built("<div><p>a</p> <p>b</p></div>")
+    assert metrics["boxes_anonymous"] == 0
+    assert metrics["boxes_blank_text_discarded"] == 1
+
+
 def test_whitespace_beside_real_inline_content_is_kept():
     """The counterpart: a blank text node between two inlines is a real word
     separator, which is why blank text cannot simply be dropped at parse

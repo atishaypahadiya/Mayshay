@@ -194,11 +194,25 @@ these pages, it has drawn their skeleton.
 * **White-space collapsing**, per CSS Text 3: runs of spaces/tabs/newlines
   collapse to one space, leading/trailing collapse at line boundaries.
   This is where the Phase 1 whitespace measurement lands: 2,781 of 7,985
-  text nodes (34.8%) are whitespace-only, but they are only 4.8% of text
-  *characters* — inter-tag indentation, not content. Most collapse away
-  entirely. They must not each produce a line box, and they must not be
-  dropped at parse time either, because a whitespace text node between two
-  inline elements is a real space that separates two words.
+  text nodes (34.8%) are whitespace-only, and those nodes hold 5,671 of
+  117,378 characters (4.8%).
+
+  **Two corrections to the reasoning that figure was used for.** First, 4.8%
+  is the share of characters living *inside whitespace-only nodes* — the
+  share of characters that *are* whitespace is 17,426 (14.8%), three times
+  larger, because most whitespace is the ordinary spaces between words
+  inside content nodes. Using the first number to argue that whitespace is a
+  small part of the text is reasoning about one population from another.
+
+  Second, and measured by Task D1: **"most collapse away entirely" is
+  false.** Of the 1,287 whitespace-only boxes that reach the collapser,
+  169 (13.1%) collapse away, **1,065 (82.8%) survive as a single separating
+  space**, and 53 are preserved verbatim. The collapsing-away case had
+  already been taken by Task B's blank-run rule before D1 ever saw them.
+
+  They must not each produce a line box, and they must not be dropped at
+  parse time either, because a whitespace text node between two inline
+  elements is a real space that separates two words.
   `white-space: pre`/`nowrap` are in scope; `pre-wrap`/`break-spaces` are
   counted and treated as `pre`.
 * **Line breaking**: greedy, at collapsed break opportunities. Not

@@ -300,6 +300,123 @@ produced the fixture the plan actually needed. That is the usual pattern
 here and it is worth expecting: the second derivation tends to pay for
 itself twice.
 
+### Instance twelve: the tooling participates
+
+Writing the Task D1 brief, the coordinator put a literal U+00A0 into the
+sentence warning against literal non-ASCII in test data. The rule and its
+violation in the same clause.
+
+The correction is the interesting half. The first fix searched for the
+offending text typed with an **ordinary space** where the file held U+00A0.
+`str.replace` found nothing, returned the string unchanged, `write_text`
+succeeded, and nothing raised. The operation reported success and changed
+nothing — and the two characters are identical on screen, which is the
+entire reason the rule exists.
+
+What caught it was an independent check printed alongside the edit: the set
+of remaining non-ASCII codepoints, which still contained `\xa0`. Not the
+edit's own success.
+
+**This generalises the false-green criterion beyond measurement code.** An
+edit that cannot fail is not evidence that it did anything, in exactly the
+way `getlength`'s hinting options were not evidence about rounding. A
+search-and-replace whose pattern does not match is indistinguishable, from
+its return value, from one that matched and applied cleanly. Both are
+"success".
+
+So the criterion should be read as covering **any tool feedback**, not just
+diagnostics:
+
+> A tool reporting success is exactly as trustworthy as a diagnostic
+> returning the expected number. Neither is evidence unless it could have
+> reported otherwise.
+
+The practical form: after an edit that matters, assert the **postcondition**
+— the codepoint is gone, the count changed, the file differs — rather than
+trusting that the edit ran. That is what worked here, and it is the same
+move as the tree-hash check on the branch rewrite, which caught two
+truncations that every intermediate command had reported as fine.
+
+### A third shape: a default masquerading as a measurement
+
+Distinct from the two above. Not a wrong measurement, and not a false
+green: a count that is arithmetically correct, whose population is even
+stated, and which still does not mean what its size suggests.
+
+**Any count of a property's values includes elements that never set it.**
+The initial value's count measures *absence*, not usage — and because the
+initial value is the one most elements have, it is usually the largest
+number in the table. A big number that looks like heavy coverage.
+
+`vertical-align: baseline` at 7,533 is the clean case: `baseline` is the
+initial value, so that count is mostly a census of boxes that never touched
+the property. It is not evidence that baseline alignment is exercised.
+
+The one that had already been used for a decision is `display: inline` at
+67.8% of boxes, which was cited to justify Task D's scope. Split by the
+origin of the winning declaration, over all 8,593 styled elements:
+
+| computed `display` | author | UA sheet | initial |
+|---|---:|---:|---:|
+| inline | 1,120 | 4,696 | 13 |
+| block | 80 | 1,162 | 0 |
+| none | 263 | 256 | 0 |
+| flex | 205 | 0 | 0 |
+| inline-block | 90 | 0 | 0 |
+| inline-flex | 28 | 0 | 0 |
+| grid | 2 | 0 | 0 |
+| **total** | **1,797** | **6,783** | **13** |
+
+Of the 5,829 elements computing `inline`, **19.2% are because author CSS
+said so and 80.6% are our own UA stylesheet's default.**
+
+**What this does and does not change.** It does not overturn Task D's
+scope: 5,829 boxes need inline layout whether an author asked for it or an
+`<a>` simply is inline, and the workload claim survives intact. What it
+overturns is any claim about *richness* — the corpus exercises the common
+inline path heavily and the varied one barely, which is the same story
+`vertical-align` (almost all `baseline`) and `white-space` (`nowrap` and
+nothing else interesting) already told from two other directions. Three
+independent measurements agreeing is worth more than any of them alone.
+
+Note also which rows are 100% author: `flex`, `grid`, `inline-block`,
+`inline-flex`. The values a page had to ask for are exactly the ones a UA
+sheet never supplies, so **an author-declared count is the better measure
+of what a page actually does**, and a UA-inclusive count is the better
+measure of how much work the engine has to do. Neither is wrong; they
+answer different questions, and the property name does not say which.
+
+The mitigation is the same as for the unstated denominator, one level
+deeper: name the population *and* say whether defaults are in it.
+
+### Instance fourteen: a plausible number the spec appeared to endorse
+
+Task D1's `min-content` width for `a<inline-block 40px>b` came out at
+57.81px. Chrome gives **40.00**.
+
+The implementation had no soft wrap opportunity on either side of an atomic
+inline box, so the whole thing measured as one unbreakable unit. The number
+was plausible — it is the sum of parts that really are adjacent — and
+**reading CSS Text 3 supports the wrong answer**. The rule that settles it
+is in UAX #14, where U+FFFC (the object replacement character an atomic
+inline is treated as) is class CB and rule LB20 provides break
+opportunities on both sides.
+
+So this is not the usual "asserted from reading instead of running". The
+reading was done, in the document a reasonable person would consult, and it
+endorsed the defect. Only the second measurement disagreed.
+
+The same task found the mirror-image error in its own first draft: nothing
+said an atomic inline must be **opaque** to collapsing, and it is — the
+spaces on both sides survive. Two opposite mistakes about the same
+construct, both plausible, both caught by Chrome and neither by the spec
+text.
+
+The generalisation is narrow but worth having: **when a spec is layered,
+the layer you are reading may not be the one that decides.** CSS Text 3
+defers segmentation to UAX #14 without restating it, so a confident answer
+from the top layer is not evidence about the bottom one.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -312,6 +429,9 @@ Every instance in this document was caught by **measurement**:
 | 4 var() denominator | an implementer reproducing the figure and disagreeing |
 | 10 `boxes_inline_split` | noticing 34 splits produced 2 fragments, and looking |
 | 11 zero-margin collapse-through | probing Chrome before writing the claim into a brief |
+| 12 literal NBSP, and a silent no-op edit | printing the remaining non-ASCII set, not the edit's success |
+| 13 defaults counted as usage | splitting `display` counts by the origin of the winning declaration |
+| 14 atomic-inline min-content | Chrome disagreeing with a number CSS Text 3 appeared to endorse |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced

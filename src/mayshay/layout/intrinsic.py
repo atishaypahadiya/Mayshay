@@ -1,4 +1,4 @@
-"""Intrinsic sizing -- one capability, three consumers. Not implemented yet.
+"""Intrinsic sizing -- one capability, three consumers. Phase 3 Task D1.
 
 `min_content_width` and `max_content_width` are the two numbers that CSS
 2.1's shrink-to-fit formula (section 10.3.5) is built from:
@@ -20,9 +20,9 @@ resolves in Task C without any of this and the other three cannot.
 
 **Consumers, so this module has one implementation and not three:**
 
-* Task C -- shrink-to-fit for `inline-block`, floats and absolutely
-  positioned boxes. Those boxes are laid out nowhere today; Task C counts
-  them in `widths_deferred_shrink_to_fit` and leaves them without geometry.
+* Task D1 -- shrink-to-fit for `inline-block`, floats and absolutely
+  positioned boxes. 50 boxes on the corpus, which Task C counted in
+  `widths_deferred_shrink_to_fit` and left without geometry.
 * Task E -- automatic table layout's column widths.
 * Task F -- `flex-basis: auto` resolution on the main axis.
 
@@ -30,48 +30,331 @@ Three independent implementations would disagree on the same page with no
 single place to fix it. That is the same argument as fixing stylesheet
 cascade ordering at the chokepoint rather than at each symptom.
 
-**Blocked on Task D**, not on a decision. Both functions bottom out in
-`measure(text, style) -> width` over the vendored font's `hmtx` advances,
-which does not exist yet. Everything above that seam -- white-space
-collapsing to find the widest unbreakable run for min-content, and the
-no-break-anywhere sum for max-content -- is this module's own work and is
-hand-rolled like the rest.
+## The two sizes, and the one thing that separates them
+
+Both walk the same tree and measure the same glyphs. The difference is
+entirely in what a **soft wrap opportunity** does:
+
+* max-content takes no break, so a space is 4.4453px of advance like any
+  other glyph;
+* min-content takes every break, so a space is a boundary and contributes
+  nothing.
+
+Which is why `layout.text.tokenize` exists rather than `str.split()`.
+Under `white-space: nowrap` there are no soft wrap opportunities at all,
+so the two sizes are **equal** and a `nowrap` box's min-content width is
+its whole run -- the single most consequential thing on this corpus, where
+`nowrap` is on 24% of element boxes and `pre` is on none.
+
+## What is approximated, and counted
+
+* A `<percentage>` `width`, `margin` or `padding` on a descendant resolves
+  against a containing block that is not yet sized. CSS Sizing 3 section
+  5.2.1 says to treat such a `width` as `auto`; the percentage margins and
+  padding are taken as zero. Both are counted rather than silently applied
+  against a basis of 0, which would look identical in the output.
+* Floats do not shorten lines, per the partial-implementation principle in
+  the Phase 3 plan, so a float inside a box contributes to that box's
+  intrinsic sizes as though it were in flow.
+* `min-width` / `max-width` are not parsed by `cssparse` at all and so
+  cannot clamp anything here.
 """
 
 from __future__ import annotations
 
-from mayshay.layout.boxtree import Box
+from collections import Counter
+from dataclasses import dataclass
+
+from mayshay.cssparse.cascade import ComputedStyle
+from mayshay.cssparse.values import AUTO, Percent
+from mayshay.layout import text as text_module
+from mayshay.layout.boxtree import ATOMIC_INLINE_DISPLAYS, Box
+from mayshay.layout.used import px, px_or_zero, style_of, text_style_of
+
+COUNTER_NAMES: tuple[str, ...] = (
+    "intrinsic_sizes_computed",
+    "intrinsic_percentage_width_as_auto",
+    "intrinsic_percentage_edge_as_zero",
+    "intrinsic_text_collapsed_on_demand",
+    "intrinsic_specified_width_used",
+    "intrinsic_atomic_inline_break_opportunity",
+)
 
 
-def min_content_width(box: Box) -> float:
+@dataclass(frozen=True)
+class IntrinsicSizes:
+    """`(min_content, max_content)` for one box's **contents**.
+
+    Inner sizes: the box's own margins, borders and padding are not
+    included. The *contribution* -- inner size plus edges -- is what a
+    parent adds up, and it is computed by `outer_sizes` where those edges
+    have already been resolved.
+
+    `min_content <= max_content` is asserted on construction. It is the
+    cheapest possible check and it fails loudly the moment a soft wrap
+    opportunity is counted into the wrong one of the two.
+    """
+
+    min_content: float
+    max_content: float
+
+    def __post_init__(self) -> None:
+        assert self.min_content <= self.max_content + 1e-9, (
+            "min-content must not exceed max-content: "
+            f"{self.min_content} > {self.max_content} -- a soft wrap "
+            "opportunity was counted into the wrong size"
+        )
+
+
+
+def intrinsic_sizes(box: Box, *, metrics: Counter[str] | None = None) -> IntrinsicSizes:
+    """Both intrinsic sizes of `box`'s contents, in one walk.
+
+    One function rather than two because the traversal, the white-space
+    handling and the font measurement are shared; computing them separately
+    would measure every glyph twice and give two places for the tokenizer
+    to be consulted differently.
+    """
+    metrics = Counter() if metrics is None else metrics
+    metrics["intrinsic_sizes_computed"] += 1
+    return _inner_sizes(box, metrics)
+
+
+def min_content_width(box: Box, *, metrics: Counter[str] | None = None) -> float:
     """The narrowest this box's contents can be without overflowing: the
-    width of its widest unbreakable run, after white-space collapsing.
-
-    Needs Task D's `measure()`.
-    """
-    raise NotImplementedError(
-        "intrinsic sizing needs Task D's text measurement; Task C counts the "
-        "boxes that want it in widths_deferred_shrink_to_fit"
-    )
+    width of its widest unbreakable run, after white-space collapsing."""
+    return intrinsic_sizes(box, metrics=metrics).min_content
 
 
-def max_content_width(box: Box) -> float:
+def max_content_width(box: Box, *, metrics: Counter[str] | None = None) -> float:
     """The width this box's contents would take with no line breaking at
-    all.
-
-    Needs Task D's `measure()`.
-    """
-    raise NotImplementedError(
-        "intrinsic sizing needs Task D's text measurement; Task C counts the "
-        "boxes that want it in widths_deferred_shrink_to_fit"
-    )
+    all."""
+    return intrinsic_sizes(box, metrics=metrics).max_content
 
 
-def shrink_to_fit(box: Box, available_width: float) -> float:
+def shrink_to_fit(
+    box: Box, available_width: float, *, metrics: Counter[str] | None = None
+) -> float:
     """CSS 2.1 section 10.3.5, the one place the formula is written down.
 
     `min(max(min-content, available), max-content)`.
+
+    Both sizes come from a single walk: calling `min_content_width` and
+    `max_content_width` here would traverse and measure the subtree twice,
+    and -- worse -- would let the two answers come from two different
+    traversals if this module ever grows a cache.
     """
-    return min(
-        max(min_content_width(box), available_width), max_content_width(box)
+    sizes = intrinsic_sizes(box, metrics=metrics)
+    return min(max(sizes.min_content, available_width), sizes.max_content)
+
+
+# --------------------------------------------------------------------------
+# The walk
+# --------------------------------------------------------------------------
+
+
+def _inner_sizes(box: Box, metrics: Counter[str]) -> IntrinsicSizes:
+    if any(child.is_inline_level for child in box.children):
+        return _inline_sizes(box, metrics)
+    minimum = maximum = 0.0
+    for child in box.children:
+        sizes = outer_sizes(child, metrics)
+        minimum = max(minimum, sizes.min_content)
+        maximum = max(maximum, sizes.max_content)
+    return IntrinsicSizes(minimum, maximum)
+
+
+def outer_sizes(box: Box, metrics: Counter[str]) -> IntrinsicSizes:
+    """A box's intrinsic **contributions**: inner sizes plus its own edges.
+
+    `basis=0.0` on every percentage is deliberate and is the reason
+    `_specified_content_width` exists separately: a percentage *width* must
+    behave as `auto` and fall through to the contents, while a percentage
+    *margin* or *padding* really is taken as zero. Resolving both against a
+    zero basis would give a percentage width of 0px, which is a different
+    and much worse answer that looks the same in a counter.
+    """
+    style = style_of(box)
+    edges = _horizontal_edges(style, metrics)
+    specified = _specified_content_width(style, metrics)
+    if specified is not None:
+        metrics["intrinsic_specified_width_used"] += 1
+        if style.box_sizing == "border-box":
+            specified = max(0.0, specified - edges.inside)
+        return IntrinsicSizes(specified + edges.total, specified + edges.total)
+    inner = _inner_sizes(box, metrics)
+    return IntrinsicSizes(
+        inner.min_content + edges.total, inner.max_content + edges.total
     )
+
+
+@dataclass(frozen=True)
+class _Edges:
+    #: border + padding, the part `box-sizing: border-box` subtracts.
+    inside: float
+    #: border + padding + margin, the part a parent must make room for.
+    total: float
+
+
+def _horizontal_edges(style: ComputedStyle, metrics: Counter[str]) -> _Edges:
+    for value in (
+        style.margin_left,
+        style.margin_right,
+        style.padding_left,
+        style.padding_right,
+    ):
+        if isinstance(value, Percent):
+            metrics["intrinsic_percentage_edge_as_zero"] += 1
+    inside = (
+        px_or_zero(style.border_left_width, basis=0.0, metrics=metrics)
+        + px_or_zero(style.border_right_width, basis=0.0, metrics=metrics)
+        + px_or_zero(style.padding_left, basis=0.0, metrics=metrics)
+        + px_or_zero(style.padding_right, basis=0.0, metrics=metrics)
+    )
+    margins = px_or_zero(
+        style.margin_left, basis=0.0, metrics=metrics
+    ) + px_or_zero(style.margin_right, basis=0.0, metrics=metrics)
+    return _Edges(inside=inside, total=inside + margins)
+
+
+def _specified_content_width(
+    style: ComputedStyle, metrics: Counter[str]
+) -> float | None:
+    """A definite `width` in pixels, or None when the contents decide.
+
+    CSS Sizing 3 section 5.2.1: for an intrinsic contribution, a
+    percentage `width` behaves as `auto`. The containing block has no
+    definite size at this point -- that is the whole reason intrinsic
+    sizing is being asked for -- so a percentage of it is not a number.
+    """
+    if style.width is AUTO:
+        return None
+    if isinstance(style.width, Percent):
+        metrics["intrinsic_percentage_width_as_auto"] += 1
+        return None
+    resolved = px(style.width, basis=0.0, metrics=metrics)
+    return None if resolved is None else max(0.0, resolved)
+
+
+# --------------------------------------------------------------------------
+# Inline content
+# --------------------------------------------------------------------------
+
+
+class _InlineAccumulator:
+    """Runs and lines, which is the whole of intrinsic inline sizing.
+
+    * A **run** is content with no soft wrap opportunity inside it. The
+      widest run is the min-content width.
+    * A **line** is everything between forced breaks. The widest line is
+      the max-content width.
+
+    Runs and lines advance by *different* amounts for the same child: an
+    atomic inline contributes its own min-content width to the run and its
+    max-content width to the line, because it can wrap internally when the
+    line is tight and will not when it is not.
+    """
+
+    def __init__(self) -> None:
+        self.min_content = 0.0
+        self.max_content = 0.0
+        self.run = 0.0
+        self.line = 0.0
+
+    def content(self, minimum: float, maximum: float) -> None:
+        self.run += minimum
+        self.line += maximum
+
+    def soft_break(self, space_width: float) -> None:
+        self.min_content = max(self.min_content, self.run)
+        self.run = 0.0
+        self.line += space_width
+
+    def forced_break(self) -> None:
+        self.min_content = max(self.min_content, self.run)
+        self.max_content = max(self.max_content, self.line)
+        self.run = 0.0
+        self.line = 0.0
+
+    def finish(self) -> IntrinsicSizes:
+        self.forced_break()
+        return IntrinsicSizes(self.min_content, self.max_content)
+
+
+def _inline_sizes(box: Box, metrics: Counter[str]) -> IntrinsicSizes:
+    accumulator = _InlineAccumulator()
+    _walk_inline(box, accumulator, metrics)
+    return accumulator.finish()
+
+
+def _walk_inline(
+    box: Box, accumulator: _InlineAccumulator, metrics: Counter[str]
+) -> None:
+    wraps = text_module.behaviour_of(style_of(box).white_space).wraps
+    for child in box.children:
+        if child.origin == "text":
+            _measure_text(child, accumulator, metrics)
+        elif child.display in ATOMIC_INLINE_DISPLAYS:
+            # There **is** a soft wrap opportunity on both sides of an
+            # atomic inline. It is easy to assume otherwise -- nothing
+            # separates it from the letter beside it -- and this engine did
+            # until Chrome 151 was asked: `a<span style="display:inline-
+            # block;width:40px"></span>b` has a min-content width of 40.00,
+            # not 57.81, so Chrome breaks either side of the box rather
+            # than keeping `a`, the box and `b` on one unbreakable run.
+            #
+            # UAX #14 is where it comes from: an atomic inline is
+            # U+FFFC OBJECT REPLACEMENT CHARACTER, line-break class CB, and
+            # rule LB20 breaks before and after CB. Under `nowrap` there is
+            # no soft wrap opportunity anywhere, so the flushes do not
+            # happen and the run runs straight through.
+            sizes = outer_sizes(child, metrics)
+            if wraps:
+                accumulator.soft_break(0.0)
+                metrics["intrinsic_atomic_inline_break_opportunity"] += 2
+            accumulator.content(sizes.min_content, sizes.max_content)
+            if wraps:
+                accumulator.soft_break(0.0)
+        elif child.is_inline_level:
+            # A non-atomic inline box. Its horizontal borders, padding and
+            # margins sit *inside* the line, at the two ends of its
+            # content, so they widen the current run rather than starting a
+            # new one -- there is no break opportunity at an inline box's
+            # edge.
+            edges = _horizontal_edges(style_of(child), metrics)
+            accumulator.content(edges.total, edges.total)
+            _walk_inline(child, accumulator, metrics)
+        else:
+            # Block-level inside an inline run: Task B should have wrapped
+            # or split it away. Contribute it as its own line rather than
+            # silently dropping it.
+            sizes = outer_sizes(child, metrics)
+            accumulator.forced_break()
+            accumulator.content(sizes.min_content, sizes.max_content)
+            accumulator.forced_break()
+
+
+def _measure_text(
+    box: Box, accumulator: _InlineAccumulator, metrics: Counter[str]
+) -> None:
+    style = text_style_of(box)
+    collapsed = box.text
+    if collapsed is None:
+        # Reached only when intrinsic sizing runs on a tree that has not
+        # been through `layout.inline.process_text` -- a unit test sizing a
+        # hand-built box, in practice. Collapsed here as a lone context,
+        # which trims its leading and trailing white space; a real page
+        # never takes this path and the counter says so.
+        metrics["intrinsic_text_collapsed_on_demand"] += 1
+        source = box.node.data if box.node is not None else ""
+        collapsed = text_module.collapse(source, style.white_space, metrics).text
+    for kind, piece in text_module.tokenize(collapsed, style.white_space):
+        if kind == text_module.FORCED_BREAK:
+            accumulator.forced_break()
+        elif kind == text_module.BREAK_SPACE:
+            accumulator.soft_break(
+                text_module.measure(piece, style, metrics=metrics)
+            )
+        else:
+            width = text_module.measure(piece, style, metrics=metrics)
+            accumulator.content(width, width)

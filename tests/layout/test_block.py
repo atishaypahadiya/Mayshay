@@ -791,7 +791,12 @@ def test_an_out_of_flow_sibling_never_joins_the_collapsing_group():
         assert boxes(root)["x"].geometry is None
         assert metrics[counter] == 1
         assert metrics["margin_collapse_blocked_out_of_flow"] == 1
-        assert metrics["widths_deferred_shrink_to_fit"] == 1
+        # Task D1 resolves the *width* of an out-of-flow box and still
+        # refuses to place it, which is why the geometry above is None
+        # while this counter has moved out of the deferred bucket.
+        assert metrics["widths_shrink_to_fit_resolved"] == 1
+        assert metrics["widths_deferred_shrink_to_fit"] == 0
+        assert boxes(root)["x"].shrink_to_fit_width is not None
 
 
 def test_an_in_flow_sibling_with_the_same_margin_does_join_it():
@@ -879,6 +884,42 @@ def test_line_boxes_block_collapse_through_and_whitespace_does_not():
     assert metrics_filled["heights_deferred_inline_content"] >= 1
 
 
+def test_a_nbsp_only_child_produces_a_line_box_and_blocks_collapse_through():
+    """Task D1. The same fixture as the test above with U+00A0 in place of
+    the three spaces, and the opposite answer.
+
+    `str.strip()` calls a run of NBSP blank, so the box reads as empty, it
+    collapses through, and the gap comes out 40 instead of 100 -- a
+    slightly-too-tight page and nothing else. CSS Text 3 does not treat
+    U+00A0 as white space: it is content, it produces a line box, and the
+    box is not empty.
+
+    Measured against Chrome 151 on the same three fixtures rather than
+    asserted -- and the first draft of this docstring had the number wrong,
+    which is why it was measured. Chrome's gap between the two siblings:
+
+        three spaces     40   collapsed through, box height 0
+        &nbsp;           96   40 + a 16px line box + 40
+        the letter x     96   identical to &nbsp;
+
+    The point is the second and third rows being the same and the first
+    being different. Our 40 and 80 differ from Chrome's 40 and 96 by
+    exactly the 16px line box, which is `heights_deferred_inline_content`
+    and Task D2's -- the same known deviation the `x` test above carries.
+
+    Zero corpus occurrences -- 707 calls to `_is_blank_text_box` across the
+    three pages, no disagreement. A `docs/synthetic-only-coverage.md` row.
+    """
+    nbsp = "\u00a0"
+    root, metrics = laid_out(
+        between(f'<div id=m style="margin:40px 0">{nbsp}</div>')
+    )
+    assert metrics["margins_collapsed_through_empty"] == 0
+    assert metrics["margin_collapse_blocked_line_box"] == 1
+    assert top(root, "m") == 60.0
+    assert top(root, "b") == 100.0
+
+
 def test_an_atomic_inline_child_blocks_collapse_through_too():
     """An `inline-block` inside the middle box is inline content, so the box
     has a line box and cannot collapse through. Chrome 151 agrees; the same
@@ -898,7 +939,13 @@ def test_an_atomic_inline_child_blocks_collapse_through_too():
     assert metrics["margins_collapsed_through_empty"] == 0
     assert metrics["margin_collapse_blocked_line_box"] == 1
     assert boxes(root)["ib"].geometry is None
-    assert metrics["widths_deferred_shrink_to_fit"] == 1
+    assert metrics["widths_shrink_to_fit_resolved"] == 1
+    assert metrics["widths_deferred_shrink_to_fit"] == 0
+    # `width: 10px` is specified, so shrink-to-fit does not run: the
+    # formula is what `width: auto` means on these boxes, not what they
+    # always do.
+    assert boxes(root)["ib"].shrink_to_fit_width == 10.0
+    assert metrics["widths_shrink_to_fit_specified"] == 1
 
 
 def test_a_table_internal_box_keeps_the_barrier_and_records_the_deviation():
@@ -1064,6 +1111,7 @@ def test_every_box_is_laid_out_or_deferred_for_exactly_one_named_reason():
     )
     parts = (
         metrics["widths_resolved"]
+        + metrics["widths_shrink_to_fit_resolved"]
         + metrics["widths_deferred_shrink_to_fit"]
         + metrics["widths_not_applicable_inline_level"]
         + metrics["widths_deferred_other"]
@@ -1075,7 +1123,8 @@ def test_every_box_is_laid_out_or_deferred_for_exactly_one_named_reason():
     # categories lands. It is a measurement, not a judgement, and it should
     # read zero.
     assert metrics["widths_deferred_other"] == 0
-    assert metrics["widths_deferred_shrink_to_fit"] == 3  # float, abs, inline-block
+    assert metrics["widths_shrink_to_fit_resolved"] == 3  # float, abs, inline-block
+    assert metrics["widths_deferred_shrink_to_fit"] == 0
 
 
 def test_the_geometry_records_whether_a_box_collapsed_through():

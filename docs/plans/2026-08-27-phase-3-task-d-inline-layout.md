@@ -19,6 +19,18 @@ Task C resolved 1,395 widths. Task D determines the geometry of roughly
 eight times as many boxes, and every block's `height: auto` depends on it —
 687 boxes currently have height 0 pending this task.
 
+**That is a workload claim, and it survives scrutiny; a richness claim would
+not.** Of the 5,829 elements computing `display: inline`, only 1,120 (19.2%)
+are because author CSS said so — 4,696 (80.6%) are our own UA stylesheet's
+default and 13 are the initial value. Every one of those boxes still needs
+inline layout, so the size of the task is real. What is *not* real is any
+implication that the corpus exercises inline styling variously: it exercises
+the common path 5,829 times and the varied paths barely at all. See
+`docs/measurement-hazards.md` on defaults counted as usage, and note that
+`flex`, `grid`, `inline-block` and `inline-flex` are 100% author-declared —
+the values a page had to ask for are exactly the ones a UA sheet never
+supplies.
+
 ## Split into two dispatches
 
 The seam is clean and it is **not** where a naive split would put it.
