@@ -570,6 +570,7 @@ def _layout_block(
     cb_height: float | None,
     metrics: Counter[str],
     groups: list[MarginGroup],
+    fragment_counts: dict[int, int],
     is_root: bool = False,
     override_content_width: float | None = None,
     already_counted: bool = False,
@@ -700,6 +701,7 @@ def _layout_block(
             box,
             metrics,
             groups=groups,
+            fragment_counts=fragment_counts,
             cb_width=horizontal.content_width,
         )
         collapsed_through = False
@@ -718,6 +720,7 @@ def _layout_block(
             box,
             metrics=metrics,
             groups=groups,
+            fragment_counts=fragment_counts,
             cb_width=horizontal.content_width,
             cb_height=height,
             top_group=top_group if top_open else None,
@@ -843,6 +846,7 @@ def _layout_inline_content(
     metrics: Counter[str],
     *,
     groups: list[MarginGroup],
+    fragment_counts: dict[int, int],
     cb_width: float,
 ) -> tuple[float, MarginGroup | None]:
     """Lay out an inline formatting context and return its height.
@@ -868,13 +872,17 @@ def _layout_inline_content(
         _account_inline_box(child, metrics, cb_width=cb_width)
 
     def layout_atomic(atomic: Box) -> tuple[float, float | None]:
-        return _layout_atomic(atomic, metrics=metrics, groups=groups)
+        return _layout_atomic(
+            atomic, metrics=metrics, groups=groups,
+            fragment_counts=fragment_counts,
+        )
 
     height, lines = linebox_module.layout_inline_content(
         box,
         available_width=cb_width,
         metrics=metrics,
         layout_atomic=layout_atomic,
+        fragment_counts=fragment_counts,
     )
     box.line_boxes = lines
     metrics["heights_from_line_boxes"] += 1
@@ -882,7 +890,11 @@ def _layout_inline_content(
 
 
 def _layout_atomic(
-    box: Box, *, metrics: Counter[str], groups: list[MarginGroup]
+    box: Box,
+    *,
+    metrics: Counter[str],
+    groups: list[MarginGroup],
+    fragment_counts: dict[int, int],
 ) -> tuple[float, float | None]:
     """Lay out one atomic inline's contents. `(border height, baseline)`.
 
@@ -915,6 +927,7 @@ def _layout_atomic(
         cb_height=None,
         metrics=metrics,
         groups=groups,
+        fragment_counts=fragment_counts,
         override_content_width=width,
         already_counted=True,
     )
@@ -988,6 +1001,7 @@ def _layout_children(
     *,
     metrics: Counter[str],
     groups: list[MarginGroup],
+    fragment_counts: dict[int, int],
     cb_width: float,
     cb_height: float | None,
     top_group: MarginGroup | None,
@@ -1063,6 +1077,7 @@ def _layout_children(
             cb_height=cb_height,
             metrics=metrics,
             groups=groups,
+            fragment_counts=fragment_counts,
         )
         _merge_and_count(collector, result.top, metrics)
 
@@ -1478,12 +1493,22 @@ def layout_document(
 
     viewport = viewport if viewport is not None else Viewport()
     groups: list[MarginGroup] = []
+    # One fragment counter for the whole document, keyed by DOM node, and
+    # for the same reason `groups` is one list: an inline that Task B split
+    # around a block-level child contributes boxes to **two** inline
+    # formatting contexts, and Chrome answers `getContentQuads` for the node
+    # with one quad per fragment across the whole split. A per-context
+    # counter restarts at 0 in the second half and produces two fragments
+    # numbered 0 for one node -- which no comparison can tell from one
+    # fragment measured twice.
+    fragment_counts: dict[int, int] = {}
     result = _layout_block(
         root,
         cb_width=float(viewport.width_px),
         cb_height=float(viewport.height_px),
         metrics=metrics,
         groups=groups,
+        fragment_counts=fragment_counts,
         is_root=True,
     )
     _partition_margin_edges(groups, metrics)

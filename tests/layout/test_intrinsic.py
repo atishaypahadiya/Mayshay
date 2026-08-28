@@ -443,3 +443,61 @@ def test_measure_is_reached_through_the_single_seam():
         T.measure = original
     assert after == pytest.approx(2 * before, abs=1e-9)
     assert I.max_content_width(box, metrics=metrics) == before
+
+
+# --------------------------------------------------------------------------
+# UAX #14 inside a run -- a Task D1 defect, found and fixed in Task D2
+# --------------------------------------------------------------------------
+
+
+MIN_CONTENT_AGAINST_CHROME = [
+    # text, our min-content, our max-content, Chrome's min-content
+    ("alpha beta", 39.1484375, 74.734375, 39.1563),
+    ("alpha-beta", 44.4765625, 75.6171875, 44.4844),
+    ("alpha/beta", 74.734375, 74.734375, 74.7344),
+    ("alpha\u00a0beta", 74.734375, 74.734375, 74.7344),
+    ("alpha?beta", 48.046875, 79.1875, 48.0469),
+    ("alpha\u2014beta", 39.1484375, 86.2890625, 39.1563),
+]
+
+
+@pytest.mark.parametrize(
+    "text,minimum,maximum,chrome",
+    MIN_CONTENT_AGAINST_CHROME,
+    ids=[repr(row[0]) for row in MIN_CONTENT_AGAINST_CHROME],
+)
+def test_min_content_breaks_where_uax14_says_and_not_only_at_spaces(
+    text, minimum, maximum, chrome
+):
+    """Task D1 split text on white space alone, so `alpha-beta` measured as
+    one unbreakable unit at 75.6250 where Chrome gives **44.4844**.
+
+    That is `docs/measurement-hazards.md` instance fourteen for the second
+    time and with the same cause: CSS Text 3 does not define where a line
+    may break, and "split on spaces" is what reading the citing layer gets
+    you. UAX #14 breaks after a hyphen (`HY`), after an em dash on both
+    sides (`B2`) and after `?`; it does not break after `/` in Chrome's
+    tailoring, and never beside U+00A0 (`GL`).
+
+    The rows that stay whole are as load-bearing as the rows that break: a
+    fix that broke everywhere would pass half this table and be worse than
+    the defect.
+
+    Chrome measured with `width: min-content` on a `<div>` in a 900px
+    container. Every row agrees within one LayoutUnit (1/64px).
+    """
+    document = parse(
+        "<style>html,body{margin:0}html,body{font-family:Arial;"
+        f"font-size:16px}}</style><div id=d>{text}</div>"
+    )
+    style_document(document, [], viewport=VIEWPORT)
+    root, _ = build_box_tree(document)
+    div = next(
+        box
+        for box in root.walk()
+        if box.origin == "element" and getattr(box.node, "tag_name", None) == "div"
+    )
+    sizes = I.intrinsic_sizes(div)
+    assert sizes.min_content == pytest.approx(minimum, abs=1e-6)
+    assert sizes.max_content == pytest.approx(maximum, abs=1e-6)
+    assert sizes.min_content == pytest.approx(chrome, abs=1 / 64)

@@ -67,6 +67,7 @@ from dataclasses import dataclass
 
 from mayshay.cssparse.cascade import ComputedStyle
 from mayshay.cssparse.values import AUTO, Percent
+from mayshay.layout import linebreak as linebreak_module
 from mayshay.layout import text as text_module
 from mayshay.layout.boxtree import ATOMIC_INLINE_DISPLAYS, Box
 from mayshay.layout.used import px, px_or_zero, style_of, text_style_of
@@ -78,6 +79,7 @@ COUNTER_NAMES: tuple[str, ...] = (
     "intrinsic_text_collapsed_on_demand",
     "intrinsic_specified_width_used",
     "intrinsic_atomic_inline_break_opportunity",
+    "intrinsic_uax14_break_inside_a_run",
 )
 
 
@@ -356,5 +358,57 @@ def _measure_text(
                 text_module.measure(piece, style, metrics=metrics)
             )
         else:
-            width = text_module.measure(piece, style, metrics=metrics)
-            accumulator.content(width, width)
+            _measure_run(piece, style, accumulator, metrics)
+
+
+def _measure_run(
+    piece: str,
+    style: ComputedStyle,
+    accumulator: _InlineAccumulator,
+    metrics: Counter[str],
+) -> None:
+    """One unbreakable-looking run, broken at UAX #14's opportunities.
+
+    **A Task D1 defect, found by Task D2 and measured against Chrome.**
+    D1 split text on white space alone, so `alpha-beta` was one unbreakable
+    unit and its min-content width was the whole string. Chrome 151 in a
+    `width: min-content` box gives 44.4844 for `alpha-beta` -- it breaks
+    after the hyphen -- against D1's 75.6250, and 48.0469 for `alpha?beta`
+    against 79.1875.
+
+    This is the same shape as `docs/measurement-hazards.md` instance
+    fourteen and it has the same cause: CSS Text 3 does not define where a
+    line may break, so a min-content width built on "split on spaces" is
+    reading the citing layer. `alpha/beta` and `alpha` + NBSP + `beta` stay
+    whole in both engines, which is what makes this a fix rather than a
+    change of taste.
+
+    The opportunities are computed **within** the run rather than across
+    the whole formatting context, so a break at a run boundary --
+    `<span>alpha-</span><span>beta</span>` -- is still missed. Counted, not
+    hidden: the line breaker does it properly and this is intrinsic sizing,
+    which by construction has no line to be on.
+    """
+    if not text_module.behaviour_of(style.white_space).wraps:
+        # `nowrap` and `pre` have no soft wrap opportunity **anywhere**, so
+        # the run is the run. Without this test the UAX #14 pass would break
+        # a `nowrap` run at its own spaces -- which are inside the run
+        # precisely because nothing may break there -- and a `nowrap` box's
+        # min-content would stop equalling its max-content. Caught by
+        # `test_nowrap_makes_the_two_sizes_equal`, which is what that test
+        # is for.
+        width = text_module.measure(piece, style, metrics=metrics)
+        accumulator.content(width, width)
+        return
+    flags = linebreak_module.break_opportunities(piece, metrics=metrics)
+    start = 0
+    for index in range(1, len(piece)):
+        if not flags[index]:
+            continue
+        metrics["intrinsic_uax14_break_inside_a_run"] += 1
+        width = text_module.measure(piece[start:index], style, metrics=metrics)
+        accumulator.content(width, width)
+        accumulator.soft_break(0.0)
+        start = index
+    width = text_module.measure(piece[start:], style, metrics=metrics)
+    accumulator.content(width, width)

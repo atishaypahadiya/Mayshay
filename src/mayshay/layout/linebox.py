@@ -187,6 +187,7 @@ COUNTER_NAMES: tuple[str, ...] = (
     "vertical_align_boxes_aligned",
     "vertical_align_percent_resolved_in_layout",
     "vertical_align_top_bottom_extended_line",
+    "vertical_align_text_edge_against_empty_parent",
     "vertical_align_atomic_baseline_from_last_line",
     "vertical_align_atomic_baseline_from_margin_edge",
     "line_height_unit_unresolved",
@@ -370,12 +371,19 @@ def layout_inline_content(
     available_width: float,
     metrics: Counter[str],
     layout_atomic,
+    fragment_counts: dict[int, int],
 ) -> tuple[float, list[LineBox]]:
     """Lay out the inline formatting context established by `root`.
 
     Returns `(content_height, line_boxes)`. The height is the sum of the
     line box heights, which is CSS 2.1 section 10.6.3's `height: auto` for
     a block container with inline content -- Task C's 687 deferrals.
+
+    `fragment_counts` is the **document's** fragment counter, not this
+    context's. An inline that Task B split around a block-level child has
+    boxes in two different contexts and Chrome numbers its quads across
+    both, so a counter created here would restart at 0 halfway through a
+    node.
 
     `layout_atomic(box, available)` is a callback into block layout, passed
     in rather than imported: an atomic inline is a block container on the
@@ -397,7 +405,6 @@ def layout_inline_content(
     root_style = style_of(root)
     y = 0.0
     out: list[LineBox] = []
-    fragment_counts: dict[int, int] = {}
     for index, (line_units, used_width) in enumerate(lines):
         line = _place_line(
             line_units,
@@ -834,6 +841,11 @@ class _Aligned:
     children: list["_Aligned"] = field(default_factory=list)
     is_atomic: bool = False
     offset: float = 0.0
+    #: True when this box put nothing on the line and its extent was zeroed
+    #: -- see `_suppress_empty_boxes`. Kept as a flag rather than inferred
+    #: from `ascent == 0`, because a real inline box can legitimately have a
+    #: zero extent (`line-height: 0`) and must still be alignable against.
+    suppressed: bool = False
 
 
 def _subtree_extent(node: _Aligned, metrics: Counter[str]) -> tuple[float, float]:
@@ -903,11 +915,21 @@ def _shift_of(
         return (
             (child.ascent - child.descent) / 2.0 - parent.metrics_.x_height / 2.0
         )
-    if keyword == "text-top":
-        ascent, _ = _subtree_extent(child, metrics)
-        return ascent - parent.metrics_.ascent
-    if keyword == "text-bottom":
-        _, descent = _subtree_extent(child, metrics)
+    if keyword in ("text-top", "text-bottom"):
+        if parent.suppressed:
+            # There is no parent content area on this line to align an edge
+            # with -- the parent put nothing here, so its metrics are not on
+            # the line either. Chrome leaves the child on the baseline;
+            # measured with `base <span style="vertical-align:text-bottom;
+            # font-size:8px">tb</span> base` wrapped so the span was alone
+            # on its line, where Chrome puts it at the line top and using
+            # the parent's font descent puts it 425px lower.
+            if count:
+                metrics["vertical_align_text_edge_against_empty_parent"] += 1
+            return 0.0
+        ascent, descent = _subtree_extent(child, metrics)
+        if keyword == "text-top":
+            return ascent - parent.metrics_.ascent
         return parent.metrics_.descent - descent
     # `top` and `bottom` are aligned against the line box itself, which is
     # not known until every other box has been placed. Zero here, corrected
@@ -1109,12 +1131,25 @@ def _suppress_empty_boxes(
     from CSS 2.1 is a number rather than a paragraph.
     """
     contributes: set[int] = set()
+    trimmable = _last_trimmable_text_piece(pieces)
     for piece in pieces:
         item = piece.item
-        if item.kind == _TEXT and not piece.text:
-            continue
         if item.kind not in (_TEXT, _BREAK):
             continue
+        if item.kind == _TEXT:
+            body = piece.text
+            if piece is trimmable:
+                # White space that is trimmed off the end of the line is
+                # not on the line, so it cannot be what puts the block
+                # container's font metrics there. Measured: `base <span
+                # style="vertical-align:sub">sub</span> base` wrapped at
+                # 2048px put our span 410.6px below Chrome's, because the
+                # space in front of `base` had landed on the span's line
+                # and dragged a 2048px strut with it.
+                tail = _trailing_white_space(piece)
+                body = body[: len(body) - len(tail)] if tail else body
+            if not body:
+                continue
         owner = item.ancestors[-1] if item.ancestors else None
         contributes.add(id(owner) if owner is not None else id(root_node))
     for node in [root_node, *_descendants(root_node)]:
@@ -1124,6 +1159,7 @@ def _suppress_empty_boxes(
         if key in contributes or _has_edges(node.style):
             continue
         metrics["line_strut_suppressed_no_direct_text"] += 1
+        node.suppressed = True
         node.ascent = 0.0
         node.descent = 0.0
 
