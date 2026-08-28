@@ -45,6 +45,34 @@ box, viewport 1280x1024, `@media` evaluated, external sheets applied.
 | one-sided `auto` margin | **0** | block boxes with an `auto` margin; 9 are `margin: 0 auto` | Task C |
 | `grid` / `inline-grid` | 2 | element boxes | Task B |
 | `list-item` | 2 | element boxes | Task B |
+| NBSP-only run reaching the blank-text predicate | **0** | calls to `_is_blank_text` (832) and `_is_blank_text_box` (707) | Task D1 |
+| whitespace-only box preserved as a forced break | **0** | white-space-only text boxes (1,287) | Task D1 |
+| collapsible spaces removed around a preserved break | **0** | characters in text boxes (80,580) | Task D1 |
+| preserved tab measured at `tab-size` | **0** | same | Task D1 |
+| CR or CRLF normalised to LF | **0** | same | Task D1 |
+| percentage margin or padding in an intrinsic contribution | **0** | intrinsic size computations (45) | Task D1 |
+| percentage `width` treated as `auto` for an intrinsic size | 1 | same | Task D1 |
+| definite `width` short-circuiting shrink-to-fit | 5 | boxes whose width is shrink-to-fit (50) | Task D1 |
+| atomic inline nested inside another atomic inline | 3 | atomic inline boxes (51) | Task D1 |
+
+### Why three of those rows are zero for the same reason
+
+`preserved_break`, "spaces removed around a preserved break" and
+"preserved tab" are all **downstream of `white-space: pre` and `pre-line`**,
+which the three rows above them already record at zero. They are listed
+separately anyway, because they are separate code paths and a later corpus
+that gains one `pre-line` element would light some of them and not others.
+A single row saying "`pre-line` is 0" would hide that.
+
+The NBSP row is a different shape and the more interesting one. There **are**
+36 NBSP-only text boxes on the corpus and 65 boxes containing an NBSP; what
+is zero is the number of times one of them reaches a predicate that would
+get it wrong. Task B's `_is_blank_text` and Task C's `_is_blank_text_box`
+both used `str.strip()`, which calls a run of U+00A0 blank; CSS Text 3 does
+not. Both were fixed in Task D1 and **no corpus number moved**, because all
+36 sit inside inline formatting contexts where neither predicate is
+consulted. The defect was real, latent, and invisible to the corpus -- which
+is precisely what this register is for.
 
 ## Tagged for Task D2, before it runs
 
@@ -92,3 +120,73 @@ boxes.
 The corpus is three pages and 90% Wikipedia, so this is a fact about those
 pages rather than about the web. Widening the corpus is what would turn it
 into a claim, and it is exactly the kind of claim Phase 6 exists to make.
+
+### The same distribution over the population that white-space actually acts on
+
+The figures above count **element boxes with a computed `white-space`**.
+Task D1's collapser runs over **text boxes**, which is a different and
+smaller denominator, and the shape is the same but the numbers are not
+interchangeable:
+
+    population: 6,194 text boxes surviving pruning and blank-run discarding
+
+    normal          4,332
+    nowrap          1,594   (25.7% of text boxes)
+    pre-wrap          268
+    pre                 0
+    pre-line            0
+    break-spaces        0
+
+Recorded beside the element-box figures rather than replacing them, per
+`docs/measurement-hazards.md` on the unstated denominator: both are correct
+and a reader cannot tell which one a bare "1,909 nowrap" meant.
+
+## The whitespace disposition, Task D1 -- a Phase 6 number
+
+Phase 1 measured whitespace-only text and nothing resolved it until D1
+collapsed it. **There are at least three correct denominators** and they
+differ by a factor of two, so each is named:
+
+| population | total | whitespace-only | share |
+|---|---:|---:|---:|
+| DOM text nodes | 7,985 | 2,781 | 34.8% |
+| ...the same, under CSS Text 3 rather than `str.strip()` | 7,985 | 2,737 | 34.3% |
+| text BOXES after pruning and blank-run discarding | 6,194 | 1,323 | 21.4% |
+| ...the same, under CSS Text 3 rather than `str.strip()` | 6,194 | **1,287** | 20.8% |
+
+1,458 of the 2,781 never reach a box: `display: none` prunes some and Task
+B's blank-run rule discards 810 more. **Task D1 decided the fate of 1,287,
+not of 2,781** -- and the 36-box gap between 1,323 and 1,287 is the NBSP
+row above, boxes that are blank to Python and content to CSS.
+
+Of those 1,287:
+
+| disposition | boxes | share |
+|---|---:|---:|
+| collapsed away entirely | 169 | 13.1% |
+| preserved as one separating space | **1,065** | 82.8% |
+| preserved verbatim under a preserving `white-space` (all `pre-wrap`) | 53 | 4.1% |
+| preserved as a forced break | 0 | 0% |
+| none of the above (the residual bucket) | 0 | 0% |
+
+**The Task D plan's expectation was the opposite of the measurement.** It
+says "Most collapse away entirely"; 82.8% survive as word separators. The
+reason is that the collapsing-away case had already been taken: Task B
+discards a blank run *between block siblings* before layout runs, and that
+is where most source whitespace lives. What is left in the box tree is
+mostly whitespace between inline elements, which is exactly the whitespace
+that must not collapse away.
+
+Derived twice, per CLAUDE.md. The second derivation never calls the
+collapser: it walks each inline formatting context and asks only whether
+content exists before and after each whitespace-only box. It agrees on all
+three buckets exactly.
+
+A fourth population, characters rather than boxes: **80,580 characters in
+text boxes**, of which 79,270 pass through unchanged, 971 are rewritten
+(tab or newline to space) and 339 are removed -- 224 trimmed at the start
+of a formatting context, 76 at the end, and 39 collapsed into a preceding
+space. Note that the Phase 1 figure quoted as "117,378 characters, 5,671
+whitespace (4.8%)" is not a whitespace-character count: 5,671 is the
+number of characters *inside whitespace-only nodes*. The whitespace
+character count over the same 117,378 is **17,426 (14.8%)**.

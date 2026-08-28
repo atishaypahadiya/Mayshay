@@ -50,6 +50,41 @@ DejaVu installed; and it ships OS/2 version 1 with no `sxHeight`, which
 would put a glyph-bounding-box fallback under every `ex` unit permanently
 (see below).
 
+### The metric-compatibility claim, actually tested (Task D1)
+
+Everything above rests on "Liberation Sans is metric-compatible with
+Arial", which had been asserted here since the font was chosen and never
+measured. Task D1 measured it: Chrome 151 headless, macOS, a page whose
+only font declaration is `font: 16px/1 Arial`, each string in its own
+`inline-block` with `white-space: pre`, widths read from
+`getBoundingClientRect()`.
+
+| string | ours (`hmtx`) | Chrome 151 | delta |
+|---|---:|---:|---:|
+| `Hello world` | 79.1406 | 79.1406 | 0 |
+| `Wikipedia` | 69.3594 | 69.3594 | 0 |
+| `x` | 8.0000 | 8.0000 | 0 |
+| `M` | 13.3281 | 13.3281 | 0 |
+| `0` | 8.8984 | 8.9063 | +1/128 |
+| space | 4.4453 | 4.4531 | +1/128 |
+| U+00A0 | 4.4453 | 4.4531 | +1/128 |
+| `AV` | 21.3438 | 20.1563 | **-1.1875, kerning** |
+
+**Chrome quantises layout to 1/64 px** -- its `LayoutUnit` -- **per
+separately shaped text run**, so exact equality is not the criterion and
+its absence is not a finding. Every row above is either exact (where the
+true value already lands on a 1/64 boundary) or one LayoutUnit away, except
+`AV`, which is the kerning divergence measured in the next section: our
+unkerned 21.3438 against the 20.1562 recorded there, and Chrome's 20.1563
+is that same number quantised.
+
+The practical consequence for any future comparison harness: the tolerance
+is `runs / 64` px, where `runs` is the number of separately shaped text
+runs, and it is **not** a round number chosen to make a test pass.
+`<i>a</i> <i>b</i>` is three runs and legitimately differs by three
+LayoutUnits; `<div>alpha beta gamma</div>` is one and agrees to the last
+bit.
+
 ## Where metrics come from
 
 **Advances are read from the font's `hmtx` table via `fontTools`, not from
@@ -233,3 +268,19 @@ Liberation Sans Regular. `font-weight: bold` therefore changes no advance,
 which will make bold text measurably narrow against Chrome. Counted, not
 silently ignored; adding the other three faces is a later task, and they
 are in the same release tarball.
+
+### No font fallback, measured (Task D1)
+
+"No font fallback" has a number now. Over the corpus, after white-space
+collapsing, **198 characters in 143 distinct code points have no glyph in
+Liberation Sans 2.1.5** -- Arabic, Devanagari, Burmese and CJK, essentially
+all on the Wikipedia page. Population: 80,580 characters in 6,194 text
+boxes at 1280x1024.
+
+They are measured at the `.notdef` advance, 1536 units, 12.0px at a 16px
+font size, and counted in `text_missing_glyph`. **Not zero**, which is the
+point: a missing glyph that costs nothing makes a line look like it fits,
+so the error would be invisible in exactly the direction that moves a break
+point. Chrome falls back to a font that has the glyph, so this is a
+per-character divergence rather than a rounding one, and on any string
+containing one it is a far larger error than kerning.
