@@ -177,9 +177,25 @@ The three instances above were **wrong measurements**. There is a fourth
 shape where every measurement is *correct* and the reader still cannot use
 the number, because the population it counts is unnamed.
 
-Asked "how many custom properties does Wikipedia declare, and how many
-declarations consume them?", this project has produced three answers. All
-three reproduce on demand; all three are right:
+**The cleanest example is `boxes_inline_split`.** One counter reported
+**34**, then **2**, then **0** for the same three pages, and every reading
+was arithmetically correct for the population it was measuring:
+
+| reading | population |
+|---:|---|
+| 34 | inline boxes with any block-level child |
+| 2 | of those, the ones that actually produced fragments |
+| 0 | of those, the ones that were `display: inline` rather than an atomic inline-level box |
+
+No arithmetic error at any step, no ambiguity about what was intended, and
+no way to tell from the number which of the three it was. That is the shape
+in its purest form: each narrowing was a genuine correction, and each
+correction changed the population without changing the name.
+
+The var() case is the same shape with more noise. Asked "how many custom
+properties does Wikipedia declare, and how many declarations consume them?",
+this project produced three answers. All three reproduce on demand; all
+three are right:
 
 | population | custom | consuming |
 |---|---:|---:|

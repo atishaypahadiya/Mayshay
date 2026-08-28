@@ -518,6 +518,52 @@ browser endpoint and calls `Target.createTarget` rather than expecting a
 tab in `/json`. Both cost a debugging round in the probe; recorded so they
 do not cost another.
 
+## Partial implementations of out-of-scope features
+
+**An out-of-scope feature must not get a partial implementation that is
+wrong in the direction we can reach.** Found in Task C, and it will recur in
+every remaining task.
+
+The case: CSS 2.1 lists `clear` among the things that prevent margin
+collapsing, and the Task C plan copied that. Measured against Chrome 151
+with no float present, a `clear: both` sibling collapses its margins exactly
+like an uncleared one -- `margin-bottom: 30px` above `margin-top: 10px`
+gives 30, not 40. What actually moves a box is **clearance**, which is
+generated only when there is a float to clear.
+
+Floats are out of scope, so this engine never generates clearance. Treating
+`clear` as an unconditional barrier would therefore have made it **disagree
+with a browser on every case it can reach**, in order to agree on a case it
+cannot reach at all. Strictly worse than not implementing it.
+
+The general rule:
+
+> When feature X is out of scope and feature Y's behaviour depends on X,
+> implement Y for the world where X is absent -- which is the world this
+> engine is in -- and count the divergence. Do not implement Y as though X
+> were present.
+
+Where this recurs:
+
+* **Task D** — `float` affects line box geometry (shortening lines that run
+  beside a float). With no floats laid out, lines must be full width. A
+  line-shortening implementation with nothing to shorten against is the
+  same trap.
+* **Task D / E** — `vertical-align` percentages against a `line-height` of
+  `normal`, already handled this way: resolved where the input exists,
+  counted where it does not.
+* **Anywhere** — `position: absolute` affects the static position of
+  siblings only through being *removed* from flow, which Task C does
+  correctly. Its own geometry stays unimplemented rather than approximated.
+* **Phase 4** — `z-index` and stacking contexts. Painting in document order
+  is correct for the subset we build; a partial stacking implementation
+  would reorder cases we handle in order to half-handle cases we do not.
+
+The counter is what makes this honest rather than a shortcut:
+`layout_float_skipped`, `layout_absolute_skipped` and their kin say how
+often the divergence is reachable, so "we do not implement X" is a number
+rather than an absence.
+
 ## Deferred, with counters
 
 Named here so each is a number rather than an absence: `grid`,
