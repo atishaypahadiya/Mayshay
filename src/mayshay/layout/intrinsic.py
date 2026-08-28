@@ -106,8 +106,6 @@ class IntrinsicSizes:
         )
 
 
-_EMPTY = IntrinsicSizes(0.0, 0.0)
-
 
 def intrinsic_sizes(box: Box, *, metrics: Counter[str] | None = None) -> IntrinsicSizes:
     """Both intrinsic sizes of `box`'s contents, in one walk.
