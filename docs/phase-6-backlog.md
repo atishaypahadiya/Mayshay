@@ -43,31 +43,72 @@ By class, which is where the *purpose* becomes visible:
 | 3 | `.noexcerpt` | content-variant suppression |
 | 2 each | `.vector-pinnable-header-pin-button`, `.vector-dropdown`, … | UI state |
 
-Even on one page the categories separate cleanly: **accessibility text,
-responsive alternates, collapsed navigation, UI state**. Notably *absent*
-from this sample: tracking pixels and analytics markup, which the
-hypothesis expected.
+**The primary method is mechanical, not class-name archaeology.** `@media`
+evaluation already works, so a page can be styled at several viewports and
+its hidden elements classified by *whether they are ever visible*:
 
-**The question.** Across a real corpus: what fraction of shipped markup is
-authored-hidden, how is it distributed across those categories, and does
-the distribution differ by site type? A page that ships 12% hidden markup
-for accessibility is a different finding from one that ships 12% for
-responsive alternates it will never show at any viewport this user has.
+* **permanently hidden** — `display: none` at every viewport tested
+* **conditionally hidden** — hidden at some, shown at others
 
-**Why this project can answer it.** The engine already computes the
-cascade, evaluates `@media`, and distinguishes author from UA origin —
-which is exactly what separates "hidden by the browser's defaults" from
-"hidden on purpose". A crawler with a regex cannot make that distinction,
-and a headless browser can but will not tell you *which origin* won.
+That separates accessibility text and empty-element suppression from
+responsive alternates without reading a single class name. Run over the
+corpus at six widths (320, 640, 1000, 1280, 1680, 1920):
 
-**What it needs.** A wider corpus (Phase 5), and a purpose taxonomy that is
-more than class-name archaeology — probably `aria-hidden`, `role`, and
-whether the element becomes visible at any of a set of viewports, since
-`@media` evaluation makes that last one directly measurable.
+| page | permanently hidden | of those, author | conditionally hidden |
+|---|---:|---:|---:|
+| example.com | 5 | 0 | 0 |
+| news.ycombinator.com | 8 | 0 | 0 |
+| en.wikipedia.org | 494 | 251 | **19** |
 
-**Caveat that must travel with it.** Three pages, 90% Wikipedia, and one
-site's design system dominates the class histogram completely.
-`.mw-linkback-text` alone is 115 of 202. This is a seed, not a finding.
+**The surprise is how small the conditional bucket is: 19 of 513, about
+3.7%.** Responsive alternates are the explanation one reaches for first,
+and on these pages they are almost all of what hiding is *not*. Hacker News
+has twelve `@media` blocks and zero conditionally hidden elements — its
+responsive CSS changes `display` to `block`, never to `none`.
+
+The 19 are exactly what the hypothesis predicted, and they name themselves:
+
+    li    hidden at 320          .vector-menu-item--collapsible   (x6)
+    li    hidden at 640..1920    .vector-menu-item--collapsible   (x7)
+    div   hidden at 320..1000    .vector-typeahead-search-container
+    span  hidden at 640..1920    .cdx-button__icon                (x3)
+    div   hidden at 640..1920    .emptyPortlet .mw-portlet-cactions
+    a     hidden at 1280..1920   .cdx-button--fake-button
+
+Collapsible navigation, a search container swapped below 1280, and icon
+variants of buttons. **The mechanical classification and the class names
+agree**, which is what licenses using class names as a *fallback* taxonomy
+for the permanently-hidden bucket — where no viewport sweep can help,
+because nothing ever reveals them.
+
+### The tracking-markup absence is a corrected hypothesis, not a null result
+
+The seed expected tracking pixels and analytics markup among the hidden
+elements. None appeared, and the reason is structural rather than a
+property of this sample:
+
+1. **Wikipedia runs no third-party analytics.** It is close to the
+   least representative page on the web for this particular question.
+2. **Tracking markup does not use `display: none`.** A `display: none`
+   element does not load its image — which defeats the entire purpose of a
+   tracking pixel. The idiom is a 1x1 box, or off-screen absolute
+   positioning (`left: -9999px`), or `visibility: hidden`, all of which
+   keep the resource load.
+
+So the Phase 5 crawler should look for **off-screen positioning, 1px
+dimensions, and `visibility: hidden`** as a *separate category*, not expect
+them under `display: none`. Measuring the `none` bucket alone would have
+reported "the web ships almost no tracking markup", which would be an
+artifact of the measurement and a conspicuously wrong claim.
+
+Note that this engine does not implement `visibility` or `position:
+absolute` geometry, so two of the three signals are currently unreachable.
+That is a Phase 5 dependency worth knowing before the crawler is designed.
+
+**Caveat that must travel with all of it.** Three pages, 90% Wikipedia, and
+one site's design system dominates the class histogram completely.
+`.mw-linkback-text` alone is 115 of 202 author-hidden roots. A seed, not a
+finding.
 
 ---
 
