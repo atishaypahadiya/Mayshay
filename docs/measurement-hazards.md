@@ -337,6 +337,58 @@ trusting that the edit ran. That is what worked here, and it is the same
 move as the tree-hash check on the branch rewrite, which caught two
 truncations that every intermediate command had reported as fine.
 
+### A third shape: a default masquerading as a measurement
+
+Distinct from the two above. Not a wrong measurement, and not a false
+green: a count that is arithmetically correct, whose population is even
+stated, and which still does not mean what its size suggests.
+
+**Any count of a property's values includes elements that never set it.**
+The initial value's count measures *absence*, not usage — and because the
+initial value is the one most elements have, it is usually the largest
+number in the table. A big number that looks like heavy coverage.
+
+`vertical-align: baseline` at 7,533 is the clean case: `baseline` is the
+initial value, so that count is mostly a census of boxes that never touched
+the property. It is not evidence that baseline alignment is exercised.
+
+The one that had already been used for a decision is `display: inline` at
+67.8% of boxes, which was cited to justify Task D's scope. Split by the
+origin of the winning declaration, over all 8,593 styled elements:
+
+| computed `display` | author | UA sheet | initial |
+|---|---:|---:|---:|
+| inline | 1,120 | 4,696 | 13 |
+| block | 80 | 1,162 | 0 |
+| none | 263 | 256 | 0 |
+| flex | 205 | 0 | 0 |
+| inline-block | 90 | 0 | 0 |
+| inline-flex | 28 | 0 | 0 |
+| grid | 2 | 0 | 0 |
+| **total** | **1,797** | **6,783** | **13** |
+
+Of the 5,829 elements computing `inline`, **19.2% are because author CSS
+said so and 80.6% are our own UA stylesheet's default.**
+
+**What this does and does not change.** It does not overturn Task D's
+scope: 5,829 boxes need inline layout whether an author asked for it or an
+`<a>` simply is inline, and the workload claim survives intact. What it
+overturns is any claim about *richness* — the corpus exercises the common
+inline path heavily and the varied one barely, which is the same story
+`vertical-align` (almost all `baseline`) and `white-space` (`nowrap` and
+nothing else interesting) already told from two other directions. Three
+independent measurements agreeing is worth more than any of them alone.
+
+Note also which rows are 100% author: `flex`, `grid`, `inline-block`,
+`inline-flex`. The values a page had to ask for are exactly the ones a UA
+sheet never supplies, so **an author-declared count is the better measure
+of what a page actually does**, and a UA-inclusive count is the better
+measure of how much work the engine has to do. Neither is wrong; they
+answer different questions, and the property name does not say which.
+
+The mitigation is the same as for the unstated denominator, one level
+deeper: name the population *and* say whether defaults are in it.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -350,6 +402,7 @@ Every instance in this document was caught by **measurement**:
 | 10 `boxes_inline_split` | noticing 34 splits produced 2 fragments, and looking |
 | 11 zero-margin collapse-through | probing Chrome before writing the claim into a brief |
 | 12 literal NBSP, and a silent no-op edit | printing the remaining non-ASCII set, not the edit's success |
+| 13 defaults counted as usage | splitting `display` counts by the origin of the winning declaration |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced
