@@ -384,6 +384,68 @@ LINE_HEADLINE = (
     ("line_height_unit_unresolved", "vw/vh line-height the cascade left symbolic"),
 )
 
+# Task F. Three populations again, and the first two are the ones a reader
+# will confuse -- the same shape as the table block above:
+#
+#   flex elements       233 across the corpus compute `flex` or
+#                       `inline-flex`; 201 of them produce a box. Neither
+#                       number is here, because neither is a layout figure.
+#   flex_containers_laid_out
+#                       29 -- the boxes that reached this algorithm. The
+#                       other 172 sit inside a float or absolutely
+#                       positioned subtree that is never laid out.
+#   flex_items_placed   44 items inside those 29, which is the population
+#                       every per-item row below counts against.
+#
+# Fifteen of the 29 hold a single item, so **14 containers on this corpus
+# can discriminate anything about the main axis** -- see
+# `docs/synthetic-only-coverage.md`, which carries a row per rule.
+FLEX_HEADLINE = (
+    ("flex_containers_laid_out", "FLEX CONTAINERS laid out (a population)"),
+    ("flex_containers_row", "...row direction"),
+    ("flex_containers_column", "...column direction"),
+    ("flex_lines", "flex lines"),
+    ("flex_lines_wrapped", "...line breaks under flex-wrap: wrap"),
+    ("flex_items_placed", "FLEX ITEMS placed (a second population)"),
+    ("flex_items_blockified", "...inline-level children blockified (Display 3)"),
+    ("flex_anonymous_items", "anonymous items for a text run (section 4)"),
+    ("flex_blank_runs_not_rendered", "...blank runs producing no item"),
+    ("flex_basis_from_content", "base size from the content (intrinsic.py)"),
+    ("flex_basis_from_main_size_property", "...from the width/height property"),
+    ("flex_basis_definite", "...from a definite flex-basis"),
+    ("flex_basis_content_keyword", "...from flex-basis: content"),
+    ("flex_items_grown", "items grown by section 9.7"),
+    ("flex_items_shrunk", "...shrunk"),
+    ("flex_items_frozen_inflexible", "...frozen before the loop"),
+    ("flex_items_clamped_to_min_content", "...stopped at their min-content (4.5)"),
+    ("flex_free_space_positive", "lines with free space to distribute"),
+    ("flex_free_space_negative", "...with items overflowing"),
+    ("flex_free_space_exhausted", "...ending with none left"),
+    ("flex_items_stretched", "items stretched to the line's cross size"),
+    ("flex_items_aligned_baseline", "...aligned by baseline"),
+    ("flex_items_baseline_synthesized", "......with a synthesized baseline"),
+    ("flex_main_gap_applied", "gaps applied on the main axis"),
+    ("flex_cross_gap_applied", "...between lines"),
+    ("flex_percentage_gap_as_zero", "% gaps against an indefinite size"),
+    # A count of *computations*, not of boxes: intrinsic sizing is asked
+    # for repeatedly as it recurses, so 700 over 29 containers is 700
+    # calls. Named here rather than left to look like a box census --
+    # the unstated-denominator hazard, in the row most likely to be
+    # read as one.
+    ("intrinsic_flex_row_summed",
+     "row containers summed for an intrinsic size (CALLS, not boxes)"),
+    # Counted, not implemented. Every one of these is 0 on this corpus,
+    # which is the point of printing them: the divergence is a number.
+    ("flex_order_ignored", "order ignored: items in document order"),
+    ("flex_align_content_ignored", "align-content ignored where it could act"),
+    ("flex_direction_reverse_as_forward", "row/column-reverse laid out forwards"),
+    ("flex_wrap_reverse_as_wrap", "wrap-reverse stacked forwards"),
+    ("flex_wrap_without_definite_main_size", "wrap with no definite main size"),
+    ("flex_item_auto_margin_zeroed", "auto margins on an item, taken as 0 (9.6)"),
+    ("flex_item_float_ignored", "float ignored on an item, which IS an item"),
+    ("flex_baseline_in_column_as_start", "baseline in a column, as flex-start"),
+)
+
 CENSUS = (
     ("census_sibling_pairs", "adjacent in-flow block sibling PAIRS"),
     ("census_sibling_pairs_both_margins_nonzero", "...with both margins non-zero"),
@@ -451,6 +513,9 @@ def main(argv: list[str] | None = None) -> int:
         print("  tables")
         for key, population in TABLE_HEADLINE:
             print(f"    {counters.get(key, 0):>7}  {population}")
+        print("  flex")
+        for key, population in FLEX_HEADLINE:
+            print(f"    {counters.get(key, 0):>7}  {population}")
         print("  margin-collapsing census")
         for key, population in CENSUS:
             print(f"    {counters.get(key, 0):>7}  {population}")
@@ -468,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     print("all pages")
     for key, population in (
         HEADLINE + LAYOUT_HEADLINE + TEXT_HEADLINE + LINE_HEADLINE
-        + TABLE_HEADLINE + CENSUS
+        + TABLE_HEADLINE + FLEX_HEADLINE + CENSUS
     ):
         print(f"    {totals.get(key, 0):>7}  {population}")
     print(f"    {100 * totals['boxes_pruned_total'] / totals['dom_elements']:>6.1f}%  "
