@@ -29,6 +29,10 @@ things the analysis half of this project can say.
 Corpus at 2026-08-27: three pages, 8,593 DOM elements, 7,639 producing a
 box, viewport 1280x1024, `@media` evaluated, external sheets applied.
 
+Task E's rows are in a section of their own below, because they need three
+populations of their own and mixing them into this table would put four
+different denominators under one heading.
+
 | feature | corpus count | population | added |
 |---|---:|---|---|
 | `vertical-align: <percentage>` | **0** | element boxes with a computed `vertical-align` | Task A2 / C |
@@ -76,6 +80,87 @@ box, viewport 1280x1024, `@media` evaluated, external sheets applied.
 | U+00AD soft hyphen, where this engine and Chrome differ | **0** | characters in text boxes (80,580) | Task D2 |
 | U+200B ZWSP and U+2060 WORD JOINER | **0** | same | Task D2 |
 | a viewport-unit `line-height` reaching layout | **0** | line boxes (985) | Task D2 |
+
+### Task E: CSS 2.1 chapter 17
+
+Population for the fixup rows: `fix_up_tables` over the three pages at
+1280x1024 with external sheets applied. Population for everything else: the
+**27 table boxes that are laid out** -- of the 32 in the tree, 5 sit inside
+float or absolutely positioned subtrees this engine declines to lay out --
+and the **351 cells** inside them, of 401 in the display census.
+
+| feature | corpus count | population | added |
+|---|---:|---|---|
+| 17.2.1 remove: a `table-column`'s children | **0** | fixup sites | Task E |
+| 17.2.1 remove: a non-column in a `table-column-group` | **0** | same | Task E |
+| 17.2.1 remove: white space between two table boxes | **0** | same; Task B's blank-run rule discards it first | Task E |
+| 17.2.1 wrap: an anonymous row inside a `table` | 3 | same; all three are Wikipedia `<figure>`s | Task E |
+| 17.2.1 wrap: an anonymous row inside a row group | **0** | same; all 24 corpus row groups contain only rows | Task E |
+| 17.2.1 wrap: an anonymous cell inside a row | 4 | same | Task E |
+| 17.2.1 parent: an anonymous row for an orphan cell | **0** | same; all 401 cells already have a `table-row` parent | Task E |
+| 17.2.1 parent: an anonymous table for a misparented row | 1 | same | Task E |
+| 17.2.1 parent: ...for a misparented `table-column` | **0** | same | Task E |
+| 17.2.1 parent: ...for a misparented row group | 2 | same | Task E |
+| 17.2.1 parent: ...for a misparented `table-column-group` | **0** | same | Task E |
+| 17.2.1 parent: ...for a misparented `table-caption` | **0** | same | Task E |
+| 17.2.1 parent: ...as an `inline-table` | **0** | same; Task B dissolves the inline parent first | Task E |
+| `table-layout: fixed` | **0** | tables laid out (27) | Task E |
+| `border-spacing` other than `0 0` | **0** | same | Task E |
+| a `<col>` or `<colgroup>` in a laid-out table | **0** | same; zero column boxes reach the grid | Task E |
+| a table with a caption **above** it | 1 | same | Task E |
+| `caption-side: bottom` | 3 | same | Task E |
+| `rowspan > 1` | **0** | cells placed (351); zero across all 401 | Task E |
+| `colspan` > 2 | **0** | same; all 52 spanning cells are `colspan=2` | Task E |
+| `vertical-align: top` on a laid-out cell | **0** | same; 30 cells compute it and every one is inside a float | Task E |
+| `vertical-align: middle` or `bottom` on a cell | **0** | same; zero across all 401 | Task E |
+| a non-zero margin on a table-internal box | **0** | same; the 2 that declare one declare `0` | Task E |
+| an overlapping grid slot (17.5 leaves it undefined) | **0** | same | Task E |
+| `padding` on a `table` box (separated model) | 1 | tables laid out (27) | Task E |
+| `border-collapse: collapse`, counted and not implemented | 1 | same | Task E |
+
+Four of these deserve a sentence each, because "0" means something
+different in each case.
+
+**The fixup rules are all small, and the brief that commissioned this task
+said otherwise.** It listed "row whose parent is a `table` -- needs an
+anonymous row-group: **96**, genuinely covered" as the one rule with real
+coverage. Section 17.2.1 contains no such rule: "A 'table-row' is
+misparented if its parent is neither a row group box nor a 'table' or
+'inline-table' box", so a row inside a table is correct and generating a
+row group around it would add 96 boxes no browser has. The 96 are counted
+as `table_rows_directly_in_a_table` (101 including Wikipedia's), and that
+is a **denominator**, not a rule. Every actual rule of 17.2.1 is at four or
+below.
+
+**Two rules are unreachable rather than merely unexercised**, which is a
+stronger statement and was executed rather than inferred. Section 17.2.1's
+rules 3 and 4 delete collapsible white space between table boxes; Task B's
+blank-run rule (9.2.1.1) already discarded it -- five runs discarded there
+and zero here, on the same fixture. The `inline-table` clause needs an
+internal table box whose parent box is an `inline`, and Task B's 9.2.1.1
+splitting dissolves that parent first. Both are tested from hand-built box
+trees, so the rule is tested rather than Task B's ordering.
+
+**The `inline-table` case is also a measured divergence from Chrome.** For
+`<span><span style="display:table-cell">x</span></span>` Chrome 151 keeps
+the outer `<span>` as an inline box 8x17 and generates an anonymous
+inline-table inside it; this engine dissolves the span and generates a
+block-level `table`, so the cell leaves the line. Zero corpus occurrences,
+and the fix belongs in Task B's splitting rule rather than here.
+
+**`vertical-align: top` on a cell is the `text-bottom` story again.** 30
+cells compute it -- and every one is inside a float, which this engine does
+not lay out, so the rule fires zero times. This register's own warning that
+a small count is one bug fix away from zero, arriving for the second time
+by the same route.
+
+**A `border` on a table box is NOT on this list, and nearly was.** The row
+was drafted as "a `table` box with a border or padding: 0" from the fact
+that `border-spacing` and `<col>` are both zero, and measured before it was
+committed: **4** of the 27 laid-out tables carry a border and 1 carries
+padding. The border case is genuinely exercised; only the padding is not.
+Two adjacent facts about the same element, one true and one false, and the
+grep that settled them took one line.
 
 The East Asian row is the only one of the nine that is **not
 implemented**. CSS Text 3 section 4.1.2 removes a collapsible segment break

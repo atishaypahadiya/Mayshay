@@ -184,9 +184,79 @@ LAYOUT_HEADLINE = (
     ("layout_float_skipped", "floats: not implemented"),
     ("layout_absolute_skipped", "absolute/fixed: not implemented"),
     ("layout_position_relative_unoffset", "relative: laid out unoffset"),
-    ("layout_inner_fallback_block", "flex/table laid out as block flow"),
-    ("layout_table_box_margins_applied", "margins a browser drops (17.6)"),
+    ("layout_inner_fallback_block", "flex laid out as block flow"),
     ("layout_viewport_unit_unresolved", "vw/vh the cascade left symbolic"),
+)
+
+# Task E. Three populations again, and the first two are the ones a reader
+# will confuse:
+#
+#   table_wrapper_boxes    every `display: table` box in the tree, INCLUDING
+#                          the anonymous tables section 17.2.1 generates
+#   tables_laid_out        of those, the ones that reached the width
+#                          algorithm -- the rest are inside float or
+#                          absolutely positioned subtrees this engine
+#                          declines to lay out
+#   table_cells_placed     cells inside those, which is smaller than the
+#                          `table-cell` display census for the same reason
+#
+# The fixup block below is the one worth reading closely. Every rule of
+# section 17.2.1 is at four or below on this corpus; the structure it has
+# in bulk is `table_rows_directly_in_a_table`, which needs NO fixup at all
+# and is listed here as the denominator those rules are small against.
+TABLE_HEADLINE = (
+    ("table_wrapper_boxes", "TABLE BOXES in the tree, anonymous ones included"),
+    ("tables_laid_out", "...of those, laid out (the population below)"),
+    ("table_columns", "columns across those tables"),
+    ("table_cells_placed", "CELLS placed in a grid (a second population)"),
+    ("table_cells_spanning_columns", "...with colspan > 1"),
+    ("table_cells_spanning_rows", "...with rowspan > 1"),
+    ("table_colspan_excess_distributed", "......that widened their columns"),
+    ("table_colspan_absorbed_without_widening", "......that did not"),
+    ("table_rows_laid_out", "rows"),
+    ("table_row_groups_laid_out", "row groups"),
+    ("table_captions_before", "captions above the table box (17.4)"),
+    ("table_captions_after", "...and below it"),
+    ("table_layout_automatic", "tables under 17.5.2.2's automatic algorithm"),
+    ("table_layout_fixed", "...under 17.5.2.1's fixed algorithm"),
+    ("table_layout_fixed_fallback_auto_width", "...fixed, but width: auto"),
+    ("table_width_specified", "tables with a non-auto width"),
+    ("table_width_percentage_of_containing_block", "...of those, a percentage"),
+    ("table_width_auto_shrink_to_fit", "tables shrink-to-fit"),
+    ("table_width_raised_to_min_content", "...raised to their min-content"),
+    ("table_extra_width_distributed", "tables with extra width to share out"),
+    ("table_width_remainder_to_margin_right", "...remainder to margin-right"),
+    # Section 17.2.1, one row per rule, in the spec's own order.
+    ("table_rows_directly_in_a_table", "rows parented by a table: NO fixup (17.2.1)"),
+    ("table_fixup_removed_child_of_column", "removed: a column's children"),
+    ("table_fixup_removed_non_column_in_column_group",
+     "removed: a non-column in a column group"),
+    ("table_fixup_removed_white_space_between_table_boxes",
+     "removed: white space between table boxes (Task B takes it first)"),
+    ("table_fixup_anonymous_row_in_table", "anonymous row in a table"),
+    ("table_fixup_anonymous_row_in_row_group", "anonymous row in a row group"),
+    ("table_fixup_anonymous_cell_in_row", "anonymous cell in a row"),
+    ("table_fixup_anonymous_row_for_orphan_cell", "anonymous row for an orphan cell"),
+    ("table_fixup_anonymous_table_for_misparented_row",
+     "anonymous table for a misparented row"),
+    ("table_fixup_anonymous_table_for_misparented_column", "...a column"),
+    ("table_fixup_anonymous_table_for_misparented_row_group", "...a row group"),
+    ("table_fixup_anonymous_table_for_misparented_column_group",
+     "...a column group"),
+    ("table_fixup_anonymous_table_for_misparented_caption", "...a caption"),
+    ("table_fixup_anonymous_inline_table", "...as an inline-table"),
+    # Counted, not implemented.
+    ("table_border_collapse_requested", "border-collapse: collapse, not done"),
+    ("table_column_box_width_ignored", "<col> widths ignored"),
+    ("table_rowspan_height_not_distributed", "rowspan heights not distributed"),
+    ("table_cell_vertical_align_top", "cells aligned top: no divergence"),
+    ("table_cell_baseline_aligned_as_top", "...baseline, laid out as top"),
+    ("table_cell_vertical_align_other_as_top",
+     "...middle/bottom as top: must be 0"),
+    ("table_cell_percentage_width_as_auto", "% cell widths treated as auto"),
+    ("table_internal_margin_dropped", "non-zero margins dropped (17.5)"),
+    ("table_internal_margin_declared_zero", "...margins declared but zero"),
+    ("table_overlapping_grid_slot", "overlapping grid slots: undefined in 17.5"),
 )
 
 # Task D1. Three populations sit in this block and they are NOT the same
@@ -378,6 +448,9 @@ def main(argv: list[str] | None = None) -> int:
         print("  line boxes and inline layout")
         for key, population in LINE_HEADLINE:
             print(f"    {counters.get(key, 0):>7}  {population}")
+        print("  tables")
+        for key, population in TABLE_HEADLINE:
+            print(f"    {counters.get(key, 0):>7}  {population}")
         print("  margin-collapsing census")
         for key, population in CENSUS:
             print(f"    {counters.get(key, 0):>7}  {population}")
@@ -394,7 +467,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print("all pages")
     for key, population in (
-        HEADLINE + LAYOUT_HEADLINE + TEXT_HEADLINE + LINE_HEADLINE + CENSUS
+        HEADLINE + LAYOUT_HEADLINE + TEXT_HEADLINE + LINE_HEADLINE
+        + TABLE_HEADLINE + CENSUS
     ):
         print(f"    {totals.get(key, 0):>7}  {population}")
     print(f"    {100 * totals['boxes_pruned_total'] / totals['dom_elements']:>6.1f}%  "

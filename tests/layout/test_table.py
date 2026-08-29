@@ -1175,3 +1175,65 @@ def test_fixed_layout_takes_the_spacing_out_of_a_spanning_cells_share():
     ]
     assert abs(cells[0].width - 200.0) <= TOLERANCE
     assert abs(cells[1].width - 140.0) <= TOLERANCE
+
+
+# --------------------------------------------------------------------------
+# The corpus, as a smoke test and as a coverage number
+# --------------------------------------------------------------------------
+
+
+def test_every_corpus_page_lays_its_tables_out_and_the_columns_add_up():
+    """The corpus as a smoke test, which is nearly all it can be here.
+
+    `assert_table_constraints` runs inside `layout_document`, so this drives
+    the column equation over every real table on the three pages -- and over
+    the shapes a synthetic fixture would not think of, including a table
+    nested five deep inside another table's cell.
+
+    What it cannot do is exercise section 17.2.1: with in-document CSS only
+    the counters below read 3 anonymous rows, 4 anonymous cells and 1
+    anonymous table across 8,593 elements. Every rule is at four or below.
+    The number the corpus has in bulk is `table_rows_directly_in_a_table`,
+    which is the structure that needs *no* fixup at all.
+
+    In-document CSS only, for the same reason as `test_block.py`'s corpus
+    test: the external sheets need the manifest ordering `scripts/corpus.py`
+    owns, and a test that reached into `scripts/` for it would be measuring
+    the driver.
+    """
+    from pathlib import Path
+
+    from mayshay.layout.block import layout_document
+
+    corpus = Path(__file__).resolve().parents[2] / "data" / "corpus"
+    pages = sorted(corpus.glob("*/page.html"))
+    if not pages:  # pragma: no cover - the corpus is committed
+        pytest.skip("no collected corpus pages")
+
+    totals: Counter = Counter()
+    for page in pages:
+        document = parse(page.read_text(encoding="utf-8", errors="replace"))
+        style_document(document, [], viewport=VIEWPORT)
+        root, _ = build_box_tree(document)
+        metrics = layout_document(root, VIEWPORT)
+        totals.update(metrics)
+        for box in root.walk():
+            if box.table_plan is None:
+                continue
+            plan = box.table_plan
+            gaps = (len(plan.columns) + 1) * plan.spacing_x
+            assert abs(sum(plan.columns) + gaps - plan.content_width) < 1e-6, (
+                f"{page.parent.name}: columns do not add up"
+            )
+
+    assert totals["tables_laid_out"] > 0, "the corpus has tables"
+    # The residual buckets, which must read zero for the reason
+    # `docs/measurement-hazards.md` instance seventeen gives: a bucket that
+    # legitimately contains something can never be read as an alarm.
+    assert totals["table_cell_vertical_align_other_as_top"] == 0
+    assert totals["table_overlapping_grid_slot"] == 0
+    # ...and the section 17.5 margin rule, which on this corpus drops
+    # nothing: both boxes that declare a margin on a table-internal element
+    # declare it as zero.
+    assert totals["table_internal_margin_dropped"] == 0
+    assert totals["table_internal_margin_declared_zero"] > 0
