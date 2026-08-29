@@ -69,8 +69,18 @@ from dataclasses import dataclass, field, replace
 
 from mayshay.cssparse.cascade import ComputedStyle
 from mayshay.cssparse.values import AUTO, Length, Percent
+from mayshay.layout import intrinsic as intrinsic_module
 from mayshay.layout.boxtree import Box
+from mayshay.layout.geometry import EPSILON, BoxGeometry, Edges, Rect
 from mayshay.layout.text import is_white_space_only
+from mayshay.layout.used import px_or_zero, style_of
+
+# `layout.block` imports THIS module and not the other way round, which is
+# why none of these is a deferred import: `intrinsic`, `geometry`, `used`
+# and `text` all sit below `block` in the same way this module does, and the
+# one function this module needs from `block` -- laying a cell out -- comes
+# in as a callback rather than as an import. That is the same seam
+# `layout.linebox` uses for `layout_atomic`.
 
 # --------------------------------------------------------------------------
 # Section 17.2.1's vocabulary, stated once
@@ -838,8 +848,6 @@ def _cell_sizes(cell: _PlacedCell, metrics: Counter[str]) -> None:
     ordinary box a definite width simply *is* the contribution, and for a
     cell it is a floor under a content-driven one.
     """
-    from mayshay.layout import intrinsic as intrinsic_module
-    from mayshay.layout.used import style_of
 
     style = style_of(cell.box)
     sizes = intrinsic_module.outer_sizes(
@@ -980,8 +988,6 @@ def _fixed_columns(
     `docs/synthetic-only-coverage.md` row, and the rest of this module is
     where the corpus actually goes.
     """
-    from mayshay.layout.used import style_of
-
     widths: list[float | None] = [None] * grid.columns
     for index, column_box in enumerate(grid.column_boxes[: grid.columns]):
         specified = _definite_width(style_of(column_box), used_content)
@@ -1047,8 +1053,6 @@ def _caption_minimum(wrapper: Box, metrics: Counter[str]) -> float:
 
     Zero when there are no captions, which is 25 of the corpus's 29 tables.
     """
-    from mayshay.layout import intrinsic as intrinsic_module
-
     return max(
         (
             intrinsic_module.outer_sizes(child, metrics).min_content
@@ -1070,8 +1074,6 @@ def plan_table(
     block, not the table wrapper box itself", and the wrapper's width is
     about to be derived from the answer.
     """
-    from mayshay.layout.used import px_or_zero, style_of
-
     style = style_of(table)
     metrics["tables_laid_out"] += 1
     if style.border_collapse == "collapse":
@@ -1237,8 +1239,6 @@ def layout_table_contents(
     engine follows the browser here because the browser is what the
     comparison harness is.
     """
-    from mayshay.layout.geometry import BoxGeometry, Edges, Rect
-    from mayshay.layout.used import px_or_zero, style_of
 
     grid = plan.grid
     starts = _column_starts(plan)
@@ -1391,8 +1391,6 @@ def _rectangles(box: Box, x: float, y: float, width: float, height: float) -> No
     says so by leaving `used_border` at zero rather than by inventing an
     inset.
     """
-    from mayshay.layout.geometry import BoxGeometry, Edges, Rect
-
     rect = Rect(x, y, width, height)
     zero = Edges(0.0, 0.0, 0.0, 0.0)
     box.geometry = BoxGeometry(
@@ -1415,20 +1413,18 @@ def _stretch(geometry, x: float, y: float, border_height: float) -> None:
     means growing the **content** box downward and leaving the content
     itself where it is, which is `vertical-align: top`.
     """
-    from dataclasses import replace as _replace
-
     extra = border_height - geometry.border.height
-    geometry.border = _replace(geometry.border, x=x, y=y, height=border_height)
-    geometry.margin = _replace(
+    geometry.border = replace(geometry.border, x=x, y=y, height=border_height)
+    geometry.margin = replace(
         geometry.margin, x=x, y=y, height=border_height
     )
-    geometry.padding = _replace(
+    geometry.padding = replace(
         geometry.padding,
         x=x + geometry.used_border.left,
         y=y + geometry.used_border.top,
         height=geometry.padding.height + extra,
     )
-    geometry.content = _replace(
+    geometry.content = replace(
         geometry.content,
         x=geometry.padding.x + geometry.used_padding.left,
         y=geometry.padding.y + geometry.used_padding.top,
@@ -1458,8 +1454,6 @@ def assert_table_constraints(box: Box, plan: TablePlan) -> None:
     cell's excess over `colspan + 1` columns, and dropping the spacing term
     from `_spanned_width`, are each caught here and nowhere else.
     """
-    from mayshay.layout.geometry import EPSILON
-
     total = sum(plan.columns) + (len(plan.columns) + 1) * plan.spacing_x
     assert abs(total - plan.content_width) <= EPSILON * max(1.0, plan.content_width), (
         "the columns do not add up to the table's content width: "
