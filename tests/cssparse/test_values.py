@@ -311,7 +311,7 @@ def test_the_box_model_longhands_are_supported():
     for name, src in supported.items():
         assert val(name, src) is not None, name
 
-    assert len(SUPPORTED_PROPERTIES) == 53
+    assert len(SUPPORTED_PROPERTIES) == 68
     box_model = SUPPORTED_PROPERTIES - {
         "display", "width", "height", "font-size", "color",
         "background-color", "margin", "padding", "border",
@@ -326,6 +326,14 @@ def test_the_box_model_longhands_are_supported():
         # Task E's four: CSS 2.1 chapter 17's table properties, which are
         # not box-model longhands either.
         "table-layout", "border-collapse", "border-spacing", "caption-side",
+        # Task F's fifteen: twelve flex longhands and the three shorthands
+        # (`flex`, `flex-flow`, `gap`) that expand to them. Not box-model
+        # longhands either -- and `gap` is why the count is fifteen where
+        # the task brief says eleven properties.
+        "flex-direction", "flex-wrap", "justify-content", "align-items",
+        "align-self", "align-content", "flex-grow", "flex-shrink",
+        "flex-basis", "order", "row-gap", "column-gap",
+        "flex", "flex-flow", "gap",
     }
     assert len(box_model) == 27, sorted(box_model)
 
@@ -488,6 +496,14 @@ def test_the_property_table_and_its_derived_sets_agree():
         "clear": "both", "position": "absolute",
         "table-layout": "fixed", "border-collapse": "collapse",
         "border-spacing": "2px 4px", "caption-side": "bottom",
+        # Task F. Every sample here is a value the corpus actually writes,
+        # except `order` and `align-content`, which it never writes at all.
+        "flex-direction": "column", "flex-wrap": "wrap",
+        "justify-content": "space-between", "align-items": "center",
+        "align-self": "center", "align-content": "space-between",
+        "flex-grow": "1", "flex-shrink": "0", "flex-basis": "70%",
+        "order": "-1", "row-gap": "6px", "column-gap": "24px",
+        "flex": "1 1 100%", "flex-flow": "column wrap", "gap": "16px",
     })
     assert set(samples) == SUPPORTED_PROPERTIES, (
         "a property was added to the table without a sample here: "

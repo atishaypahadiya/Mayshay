@@ -875,7 +875,7 @@ def test_computed_style_has_one_field_per_longhand():
     """Injection: dropping a longhand from `LONGHANDS` while leaving the
     dataclass field, so the property silently never cascades. The module's
     own module-level assert catches the reverse."""
-    assert len(LONGHANDS) == 43
+    assert len(LONGHANDS) == 55
     for prop in LONGHANDS:
         # `_field_name`, not `replace("-", "_")`: `float`'s field is
         # `float_` because the plain name would shadow the builtin inside

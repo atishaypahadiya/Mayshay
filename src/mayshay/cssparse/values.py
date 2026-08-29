@@ -952,6 +952,52 @@ _TABLE_LAYOUT_KEYWORDS = frozenset({"auto", "fixed"})
 _BORDER_COLLAPSE_KEYWORDS = frozenset({"separate", "collapse"})
 _CAPTION_SIDE_KEYWORDS = frozenset({"top", "bottom"})
 
+# Phase 3 Task F, CSS Flexible Box Layout 1 and CSS Box Alignment 3.
+#
+# **Twelve longhands and three shorthands, not eleven properties.** The task
+# brief lists `gap` beside the eleven flex longhands; Box Alignment 3 makes
+# it the shorthand for `row-gap` and `column-gap`, and this corpus writes
+# the longhand directly -- `column-gap` appears 5 times against `gap`'s 5
+# (executed over the three pages' sheets and `<style>` blocks, at-rules
+# descended into). Modelling `gap` as a single property the way
+# `border-spacing` is modelled would mean dropping those five, so the pair
+# are the longhands and `gap` expands to them.
+#
+# The alignment keyword sets are Box Alignment 3's, not Flexbox 1's
+# original ones, because that is what a browser computes today: `justify-
+# content`'s and `align-items`' initial value is `normal`, not `flex-start`
+# and `stretch`. `normal` behaves as those two *in a flex container*, which
+# is a used-value fact and belongs in `layout.flex`, not here. The
+# positional keywords Box Alignment adds (`start`, `end`, `left`, `right`,
+# `self-start`, `self-end`) are accepted because the corpus writes one of
+# them -- `justify-content: end` once -- and dropping it would be dropping
+# real CSS this engine can act on.
+_FLEX_DIRECTION_KEYWORDS = frozenset({
+    "row", "row-reverse", "column", "column-reverse",
+})
+_FLEX_WRAP_KEYWORDS = frozenset({"nowrap", "wrap", "wrap-reverse"})
+_JUSTIFY_CONTENT_KEYWORDS = frozenset({
+    "normal", "flex-start", "flex-end", "center",
+    "space-between", "space-around", "space-evenly",
+    "start", "end", "left", "right", "stretch",
+})
+_ALIGN_ITEMS_KEYWORDS = frozenset({
+    "normal", "stretch", "center", "flex-start", "flex-end",
+    "start", "end", "self-start", "self-end", "baseline",
+})
+_ALIGN_SELF_KEYWORDS = _ALIGN_ITEMS_KEYWORDS | frozenset({"auto"})
+_ALIGN_CONTENT_KEYWORDS = frozenset({
+    "normal", "flex-start", "flex-end", "center",
+    "space-between", "space-around", "space-evenly", "stretch",
+    "start", "end", "baseline",
+})
+
+# The two-word and prefixed alignment forms -- `first baseline`, `last
+# baseline`, `safe center`, `unsafe end`. Valid CSS this module declines, so
+# they must classify as `unsupported-value` rather than `invalid`; see
+# `_KNOWN_UNSUPPORTED_KEYWORDS`, which is where the separation is drawn.
+_ALIGNMENT_MODIFIERS = frozenset({"first", "last", "safe", "unsafe"})
+
 # CSS Counter Styles 3's predefined counter styles, plus `none`. A closed
 # list, for the reason the colour table is closed: `list-style-type` also
 # accepts a `<custom-ident>` naming an `@counter-style` rule, and this engine
@@ -1097,6 +1143,199 @@ def _parse_border_spacing(tokens: list[CssToken]) -> tuple | None:
             return None
         lengths.append(length)
     return (lengths[0], lengths[-1])
+
+
+# --------------------------------------------------------------------------
+# Flexbox (Phase 3 Task F)
+# --------------------------------------------------------------------------
+
+
+def _parse_flex_factor(group: list[CssToken]) -> float | None:
+    """`<number [0,inf]>` -- a `flex-grow` or `flex-shrink` factor.
+
+    Negative is invalid rather than clamped, per Flexbox 1 section 7.2:
+    "Negative numbers are invalid."
+    """
+    if len(group) != 1 or not isinstance(group[0], Number):
+        return None
+    value = float(group[0].value)
+    return None if value < 0 else value
+
+
+def _parse_order(tokens: list[CssToken]) -> int | None:
+    """`<integer>`, and negative is legal -- `order: -1` is the idiom for
+    "first". A fractional number is invalid; `1.0` is not an `<integer>`
+    token in CSS even though it is an integral value."""
+    tok = _single_token(tokens)
+    if not isinstance(tok, Number):
+        return None
+    value = float(tok.value)
+    return int(value) if value == int(value) else None
+
+
+def _parse_flex_basis_component(group: list[CssToken]) -> object | None:
+    """`content | <length-percentage [0,inf]> | auto`.
+
+    `auto` becomes the same `AUTO` sentinel `width` uses, because it means
+    the same thing here -- defer to the box's own main size property -- and
+    a second spelling of `auto` would be a second thing for layout to
+    check. `content` stays a `Keyword`: it is the "size me from my
+    contents" value, which is a *different* deferral, and collapsing the
+    two would lose the distinction Flexbox 1 section 7.2.3 draws.
+    """
+    if len(group) != 1:
+        return None
+    tok = group[0]
+    if isinstance(tok, Ident):
+        keyword = _ascii_lower(tok.value)
+        if keyword == "auto":
+            return AUTO
+        if keyword == "content":
+            return Keyword("content")
+        return None
+    value = _parse_length_percentage(tok, allow_auto=False)
+    if value is None:
+        return None
+    return None if value.value < 0 else value
+
+
+def _parse_flex_basis(tokens: list[CssToken]) -> object | None:
+    groups = _split_top_level(tokens)
+    if len(groups) != 1:
+        return None
+    return _parse_flex_basis_component(groups[0])
+
+
+def _parse_gap_component(group: list[CssToken]) -> object | None:
+    """`normal | <length-percentage [0,inf]>`.
+
+    `normal` is kept as a `Keyword` rather than resolved to zero here, for
+    the reason `line-height: normal` is: its used value is a fact about the
+    formatting context (zero in a flex container, the font's own spacing
+    for a multi-column one), and this module does not know which context the
+    box will be in.
+    """
+    if len(group) != 1:
+        return None
+    tok = group[0]
+    if isinstance(tok, Ident):
+        return Keyword("normal") if _ascii_lower(tok.value) == "normal" else None
+    value = _parse_length_percentage(tok, allow_auto=False)
+    if value is None:
+        return None
+    return None if value.value < 0 else value
+
+
+def _parse_gap(tokens: list[CssToken]) -> dict[str, object] | None:
+    """`<'row-gap'> <'column-gap'>?` -- **row first**, then column.
+
+    The order is the one thing worth stating: `gap: 10px 20px` puts 10px
+    between rows and 20px between columns, which is the opposite of
+    `border-spacing: 10px 20px`'s horizontal-then-vertical. Both are two
+    lengths on a two-axis property and they read identically at a call
+    site; getting this backwards moves every item in a wrapping flex
+    container by the difference and nothing else disagrees.
+    """
+    groups = _split_top_level(tokens)
+    if not (1 <= len(groups) <= 2):
+        return None
+    values = [_parse_gap_component(group) for group in groups]
+    if any(value is None for value in values):
+        return None
+    return {"row-gap": values[0], "column-gap": values[-1]}
+
+
+def _parse_flex_flow(tokens: list[CssToken]) -> dict[str, object] | None:
+    """`<'flex-direction'> || <'flex-wrap'>` -- either, both, in any order.
+
+    The omitted one goes to its initial value, which `_reset_omitted_
+    longhands` in the cascade would also do. It is filled in *here* anyway,
+    so that this parser's result and `flex`'s have the same shape: `flex`
+    cannot rely on that reset (see `_parse_flex`), and one shorthand that
+    does and one that does not is exactly the asymmetry that gets edited
+    into a bug later.
+    """
+    groups = _split_top_level(tokens)
+    if not (1 <= len(groups) <= 2):
+        return None
+    direction = wrap = None
+    for group in groups:
+        if len(group) != 1 or not isinstance(group[0], Ident):
+            return None
+        keyword = _ascii_lower(group[0].value)
+        if keyword in _FLEX_DIRECTION_KEYWORDS and direction is None:
+            direction = Keyword(keyword)
+        elif keyword in _FLEX_WRAP_KEYWORDS and wrap is None:
+            wrap = Keyword(keyword)
+        else:
+            return None
+    return {
+        "flex-direction": direction if direction is not None else Keyword("row"),
+        "flex-wrap": wrap if wrap is not None else Keyword("nowrap"),
+    }
+
+
+def _parse_flex(tokens: list[CssToken]) -> dict[str, object] | None:
+    """`none | [ <'flex-grow'> <'flex-shrink'>? || <'flex-basis'> ]`.
+
+    **The defaults inside this shorthand are not the properties' initial
+    values, and that is the whole difficulty.** Flexbox 1 section 7.1.1:
+
+        flex: 1        ->  1 1 0%     NOT 1 1 auto
+        flex: auto     ->  1 1 auto
+        flex: none     ->  0 0 auto
+        flex: 30px     ->  1 1 30px
+        (initial)      ->  0 1 auto
+
+    An omitted `flex-basis` inside the shorthand is **0%**, while the
+    property's own initial value is `auto`. So this parser must return all
+    three longhands itself and can never lean on the cascade's
+    `_reset_omitted_longhands`, which fills omissions from
+    `INITIAL_SPECIFIED` and would hand back `auto` -- an item that sizes
+    itself from its content where the author asked for an equal share.
+    That is a plausible-looking layout with every item the wrong width, and
+    it is the single easiest thing to get wrong in this property.
+
+    The `||` in the grammar means the basis may come before the factors as
+    well as after (`flex: 30px 2` is `2 1 30px`), so the two orders are both
+    accepted rather than only the common one.
+    """
+    groups = _split_top_level(tokens)
+    if not (1 <= len(groups) <= 3):
+        return None
+    if len(groups) == 1 and len(groups[0]) == 1:
+        tok = groups[0][0]
+        if isinstance(tok, Ident) and _ascii_lower(tok.value) == "none":
+            return _flex_longhands(0.0, 0.0, AUTO)
+
+    factors: list[float] = []
+    basis: object | None = None
+    factors_done = False
+    for group in groups:
+        factor = _parse_flex_factor(group)
+        if factor is not None and not factors_done and len(factors) < 2:
+            # A unitless zero is both a `<number>` and a `<length>`, and the
+            # grammar resolves it as the number: `flex: 0` is `0 1 0%`, not
+            # `1 1 0px`. Trying the factor first is what implements that.
+            factors.append(factor)
+            continue
+        if factors:
+            factors_done = True
+        value = _parse_flex_basis_component(group)
+        if value is None or basis is not None:
+            return None
+        basis = value
+    if not factors and basis is None:
+        return None
+    grow = factors[0] if factors else 1.0
+    shrink = factors[1] if len(factors) > 1 else 1.0
+    return _flex_longhands(
+        grow, shrink, basis if basis is not None else Percent(0)
+    )
+
+
+def _flex_longhands(grow: float, shrink: float, basis: object) -> dict[str, object]:
+    return {"flex-grow": grow, "flex-shrink": shrink, "flex-basis": basis}
 
 
 def _parse_vertical_align(tokens: list[CssToken]) -> object | None:
@@ -1269,6 +1508,58 @@ _PROPERTY_PARSERS: dict[str, object] = {
     ),
     "border-spacing": _one("border-spacing", _parse_border_spacing),
     "caption-side": _one("caption-side", _keyword_parser(_CAPTION_SIDE_KEYWORDS)),
+    # Phase 3 Task F: CSS Flexible Box Layout 1 and CSS Box Alignment 3.
+    # Twelve longhands and three shorthands. `flex` is the one that cannot
+    # use the cascade's omitted-longhand reset -- see `_parse_flex`.
+    "flex-direction": _one(
+        "flex-direction", _keyword_parser(_FLEX_DIRECTION_KEYWORDS)
+    ),
+    "flex-wrap": _one("flex-wrap", _keyword_parser(_FLEX_WRAP_KEYWORDS)),
+    "justify-content": _one(
+        "justify-content", _keyword_parser(_JUSTIFY_CONTENT_KEYWORDS)
+    ),
+    "align-items": _one("align-items", _keyword_parser(_ALIGN_ITEMS_KEYWORDS)),
+    "align-self": _one("align-self", _keyword_parser(_ALIGN_SELF_KEYWORDS)),
+    "align-content": _one(
+        "align-content", _keyword_parser(_ALIGN_CONTENT_KEYWORDS)
+    ),
+    "flex-grow": _one(
+        "flex-grow",
+        lambda tokens: (
+            None
+            if len(groups := _split_top_level(tokens)) != 1
+            else _parse_flex_factor(groups[0])
+        ),
+    ),
+    "flex-shrink": _one(
+        "flex-shrink",
+        lambda tokens: (
+            None
+            if len(groups := _split_top_level(tokens)) != 1
+            else _parse_flex_factor(groups[0])
+        ),
+    ),
+    "flex-basis": _one("flex-basis", _parse_flex_basis),
+    "order": _one("order", _parse_order),
+    "row-gap": _one(
+        "row-gap",
+        lambda tokens: (
+            None
+            if len(groups := _split_top_level(tokens)) != 1
+            else _parse_gap_component(groups[0])
+        ),
+    ),
+    "column-gap": _one(
+        "column-gap",
+        lambda tokens: (
+            None
+            if len(groups := _split_top_level(tokens)) != 1
+            else _parse_gap_component(groups[0])
+        ),
+    ),
+    "flex": _parse_flex,
+    "flex-flow": _parse_flex_flow,
+    "gap": _parse_gap,
 }
 
 # Which longhands each supported property sets -- *all* of them, including
@@ -1335,8 +1626,20 @@ LONGHANDS_OF: dict[str, tuple[str, ...]] = {
             # write.
             "table-layout", "border-collapse", "border-spacing",
             "caption-side",
+            # Task F's twelve. `row-gap` and `column-gap` are two longhands
+            # and not one pair-valued property the way `border-spacing` is,
+            # because Box Alignment 3 defines them that way and this corpus
+            # writes `column-gap` on its own five times -- a pair-valued
+            # `gap` would have to drop those.
+            "flex-direction", "flex-wrap", "justify-content",
+            "align-items", "align-self", "align-content",
+            "flex-grow", "flex-shrink", "flex-basis", "order",
+            "row-gap", "column-gap",
         )
     },
+    "flex": ("flex-grow", "flex-shrink", "flex-basis"),
+    "flex-flow": ("flex-direction", "flex-wrap"),
+    "gap": ("row-gap", "column-gap"),
 }
 
 # Every property `parse_declaration_value` can accept. Derived, never
@@ -1456,6 +1759,18 @@ _KNOWN_UNSUPPORTED_KEYWORDS: dict[str, frozenset[str]] = {
             ("border", "border-width")
             + tuple(f"border-{side}" for side in _SIDES)
             + tuple(f"border-{side}-width" for side in _SIDES)
+        )
+    },
+    # Box Alignment 3's two-word and prefixed forms -- `first baseline`,
+    # `last baseline`, `safe center`, `unsafe flex-end`. Real CSS this
+    # module declines, so it is `unsupported-value` and not `invalid`, on
+    # the same argument the two-value `overflow` is. Zero occurrences on
+    # this corpus (executed over the three pages' sheets); the entry is
+    # here so the classification is decided rather than accidental.
+    **{
+        prop: _ALIGNMENT_MODIFIERS
+        for prop in (
+            "align-items", "align-self", "align-content", "justify-content",
         )
     },
 }

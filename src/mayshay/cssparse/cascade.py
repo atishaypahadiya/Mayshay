@@ -343,6 +343,25 @@ LONGHANDS: tuple[str, ...] = (
     "border-collapse",
     "border-spacing",
     "caption-side",
+    # Phase 3 Task F. CSS Flexible Box Layout 1 and CSS Box Alignment 3.
+    # **Twelve, where the task brief says eleven**: `gap` is Box Alignment
+    # 3's shorthand for `row-gap` and `column-gap`, and this corpus writes
+    # `column-gap` on its own five times, so the pair are the longhands and
+    # `gap` expands. Before this, every one of the 233 elements computing
+    # `display: flex` or `inline-flex` had a flex container's display and
+    # not one flex property.
+    "flex-direction",
+    "flex-wrap",
+    "justify-content",
+    "align-items",
+    "align-self",
+    "align-content",
+    "flex-grow",
+    "flex-shrink",
+    "flex-basis",
+    "order",
+    "row-gap",
+    "column-gap",
 )
 
 # The inherited properties, per the CSS property definitions. `display`, the
@@ -459,6 +478,29 @@ INITIAL_SPECIFIED: dict[str, object] = {
     # `cssparse/ua.py`, which does not carry that rule.
     "border-spacing": (_ZERO_LENGTH, _ZERO_LENGTH),
     "caption-side": Keyword("top"),
+    # Task F. Box Alignment 3's initial values, which are `normal` on the
+    # three alignment properties and `auto` on `align-self` -- **not**
+    # Flexbox 1's original `flex-start` and `stretch`. `normal` behaves as
+    # those two inside a flex container, which is a used-value fact and
+    # lives in `layout.flex`; a browser's computed value for an
+    # undeclared `align-items` is `normal`, and writing `stretch` here
+    # would make this table disagree with the reference the comparison
+    # harness uses.
+    "flex-direction": Keyword("row"),
+    "flex-wrap": Keyword("nowrap"),
+    "justify-content": Keyword("normal"),
+    "align-items": Keyword("normal"),
+    "align-self": Keyword("auto"),
+    "align-content": Keyword("normal"),
+    # The three whose initial values are famously *not* what the `flex`
+    # shorthand's omissions mean: `flex: 1` is `1 1 0%` and the initial
+    # value is `0 1 auto`. See `values._parse_flex`.
+    "flex-grow": 0.0,
+    "flex-shrink": 1.0,
+    "flex-basis": AUTO,
+    "order": 0,
+    "row-gap": Keyword("normal"),
+    "column-gap": Keyword("normal"),
 }
 
 # Which longhands each property governs -- *all* of them, not just the ones
@@ -616,6 +658,29 @@ class ComputedStyle:
     border_collapse: str = "separate"
     border_spacing: object = (_ZERO_LENGTH, _ZERO_LENGTH)
     caption_side: str = "top"
+
+    # Phase 3 Task F. `layout.flex` reads all twelve; `align_content` and
+    # `order` are read only to be counted, and `flex_direction`'s two
+    # reverse values are counted where they are laid out forwards.
+    #
+    # `flex_basis` is a union -- the `AUTO` sentinel, `Keyword("content")`,
+    # a `Length` or a `Percent` -- for the same reason `line_height` is one:
+    # three of the four cannot be resolved without a containing block or a
+    # content measurement, and collapsing them here would bake in a guess.
+    # The two gaps are the same shape, with `Keyword("normal")` standing
+    # for a used value of zero that only a flex container can supply.
+    flex_direction: str = "row"
+    flex_wrap: str = "nowrap"
+    justify_content: str = "normal"
+    align_items: str = "normal"
+    align_self: str = "auto"
+    align_content: str = "normal"
+    flex_grow: float = 0.0
+    flex_shrink: float = 1.0
+    flex_basis: object = AUTO
+    order: int = 0
+    row_gap: object = Keyword("normal")
+    column_gap: object = Keyword("normal")
 
     # This element's custom properties, name -> raw token tuple. Not a
     # longhand and deliberately exempted from the drift assert below: it is
@@ -832,6 +897,15 @@ _KEYWORD_VALUED = frozenset({
     "table-layout",
     "border-collapse",
     "caption-side",
+    # Task F's six keyword-valued flex properties. The other six are a
+    # number (`flex-grow`, `flex-shrink`), an integer (`order`) or a union
+    # that keeps its wrapper (`flex-basis`, `row-gap`, `column-gap`).
+    "flex-direction",
+    "flex-wrap",
+    "justify-content",
+    "align-items",
+    "align-self",
+    "align-content",
 }) | frozenset(_BORDER_STYLE_PROPS)
 
 # Properties whose computed value is a **pair** of lengths, each computed
@@ -848,7 +922,18 @@ _LENGTH_PAIR_VALUED = frozenset({"border-spacing"})
 # `"normal"` string would be indistinguishable from a font-family entry if
 # the two were ever confused. Keeping `Keyword("normal")` also makes the
 # "still symbolic" decision visible in a `repr` rather than inferable.
-_KEYWORD_PRESERVED = frozenset({"line-height"})
+_KEYWORD_PRESERVED = frozenset({
+    "line-height",
+    # Task F. Same argument, three more: `flex-basis: content` and a
+    # `normal` gap are members of unions whose other members are lengths
+    # and percentages, so their consumer type-checks the value anyway, and
+    # a bare `"content"` string would be indistinguishable from a
+    # `font-family` entry if the two were ever confused. `flex-basis: auto`
+    # is not here because it is the `AUTO` sentinel and never a `Keyword`.
+    "flex-basis",
+    "row-gap",
+    "column-gap",
+})
 
 
 # The percentages that resolve here rather than staying symbolic. The full
