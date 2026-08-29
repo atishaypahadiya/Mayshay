@@ -44,6 +44,7 @@ from mayshay.dom.node import Element
 from mayshay.htmlparse.treebuilder import parse
 from mayshay.layout.block import (
     COUNTER_NAMES,
+    Rect,
     COLLAPSE_BARRIERS,
     MarginGroup,
     layout_document,
@@ -854,17 +855,23 @@ def test_line_boxes_block_collapse_through_and_whitespace_does_not():
     """Section 8.3.1's collapse-through condition names *in-flow line
     boxes*, and white space that collapses away produces none.
 
-    Both halves measured against Chrome 151. The whitespace-only box
-    collapses through and the gap stays 40, with the box itself 0 tall. The
-    box with real text does not: Chrome puts it at 60, 20 tall, and the
-    following sibling at 120.
+    Written for Task C, when an inline formatting context had no measured
+    height and the middle box was 0 tall whatever was in it. **Task D2
+    measures it**, so the absolute numbers are now real and the deliberate
+    divergence this test used to carry is gone.
 
-    Deliberate divergence, and the only one in this fixture: this engine has
-    no measured line-box height until Task D, so the middle box is 0 tall
-    here and the following sibling lands at 100 rather than 120. The
-    *barrier* is what is being asserted -- the box did not collapse through,
-    so its two 40px margins stayed separate and the total is 40 + 0 + 40
-    rather than 40.
+    Re-measured against Chrome 151 on the same fixture with
+    `font: 16px/normal Arial` forced, so the two engines are looking at the
+    same font:
+
+        fixture         Chrome m.height / b.y      ours
+        three spaces          0  /  60             0        /  60
+        the letter x         18  / 118            18.3984   / 118.3984
+
+    The remaining gap is **Chrome's integer line-height** and nothing else:
+    it rounds `hhea`'s ascent, descent and line gap to whole pixels and
+    reports 18 where this font's own metrics give 18.398438. See
+    `docs/fonts.md`.
     """
     empty, metrics_empty = laid_out(
         between('<div id=m style="margin:40px 0">   </div>')
@@ -872,16 +879,19 @@ def test_line_boxes_block_collapse_through_and_whitespace_does_not():
     assert gap(empty, "a", "b") == 40.0
     assert geometry(empty, "m").border.height == 0.0
     assert metrics_empty["margins_collapsed_through_empty"] == 1
-    assert metrics_empty["margin_collapse_blocked_line_box"] == 0
 
     filled, metrics_filled = laid_out(
         between('<div id=m style="margin:40px 0">x</div>')
     )
     assert top(filled, "m") == 60.0
-    assert top(filled, "b") == 100.0
+    assert geometry(filled, "m").border.height == pytest.approx(18.3984375)
+    assert top(filled, "b") == pytest.approx(118.3984375)
     assert metrics_filled["margins_collapsed_through_empty"] == 0
     assert metrics_filled["margin_collapse_blocked_line_box"] == 1
-    assert metrics_filled["heights_deferred_inline_content"] >= 1
+    # Task C's deferral is gone: this height now comes from a line box
+    # rather than from a counter saying it could not.
+    assert metrics_filled["heights_deferred_inline_content"] == 0
+    assert metrics_filled["heights_from_line_boxes"] == 1
 
 
 def test_a_nbsp_only_child_produces_a_line_box_and_blocks_collapse_through():
@@ -889,23 +899,28 @@ def test_a_nbsp_only_child_produces_a_line_box_and_blocks_collapse_through():
     the three spaces, and the opposite answer.
 
     `str.strip()` calls a run of NBSP blank, so the box reads as empty, it
-    collapses through, and the gap comes out 40 instead of 100 -- a
-    slightly-too-tight page and nothing else. CSS Text 3 does not treat
-    U+00A0 as white space: it is content, it produces a line box, and the
-    box is not empty.
+    collapses through, and the gap comes out short -- a slightly-too-tight
+    page and nothing else. CSS Text 3 does not treat U+00A0 as white space:
+    it is content, it produces a line box, and the box is not empty.
 
-    Measured against Chrome 151 on the same three fixtures rather than
-    asserted -- and the first draft of this docstring had the number wrong,
-    which is why it was measured. Chrome's gap between the two siblings:
+    Measured against Chrome 151 on all three fixtures rather than asserted,
+    with Arial forced. The point is the second and third rows agreeing and
+    the first differing:
 
-        three spaces     40   collapsed through, box height 0
-        &nbsp;           96   40 + a 16px line box + 40
-        the letter x     96   identical to &nbsp;
+        three spaces     b at  60   collapsed through, box height 0
+        &nbsp;           b at 118   30 + 20 + 40 + an 18px line box + 40
+        the letter x     b at 118   identical to &nbsp;
 
-    The point is the second and third rows being the same and the first
-    being different. Our 40 and 80 differ from Chrome's 40 and 96 by
-    exactly the 16px line box, which is `heights_deferred_inline_content`
-    and Task D2's -- the same known deviation the `x` test above carries.
+    Ours is 118.3984, the same number with Chrome's integer line-height
+    rounding removed.
+
+    The first draft of this measurement said Chrome collapsed the NBSP box
+    through, which would have been a real finding and was not: the NBSP had
+    been typed as a literal into the probe and something between the
+    keyboard and the file turned it into U+0020. Written as `\\u00a0` it
+    behaves as this test says. That is `docs/measurement-hazards.md`
+    instance twelve happening again, inside the fixture for the defect that
+    instance is about.
 
     Zero corpus occurrences -- 707 calls to `_is_blank_text_box` across the
     three pages, no disagreement. A `docs/synthetic-only-coverage.md` row.
@@ -917,17 +932,29 @@ def test_a_nbsp_only_child_produces_a_line_box_and_blocks_collapse_through():
     assert metrics["margins_collapsed_through_empty"] == 0
     assert metrics["margin_collapse_blocked_line_box"] == 1
     assert top(root, "m") == 60.0
-    assert top(root, "b") == 100.0
+    assert geometry(root, "m").border.height == pytest.approx(18.3984375)
+    assert top(root, "b") == pytest.approx(118.3984375)
 
 
 def test_an_atomic_inline_child_blocks_collapse_through_too():
     """An `inline-block` inside the middle box is inline content, so the box
-    has a line box and cannot collapse through. Chrome 151 agrees; the same
-    Task D height caveat as above applies to the absolute numbers, and the
-    barrier is what is asserted.
+    has a line box and cannot collapse through.
 
-    The `inline-block`'s own width is shrink-to-fit and is deferred rather
-    than guessed -- `layout/intrinsic.py` names the seam.
+    Task D2 gives the `inline-block` real geometry. The line box carries
+    the block container's **strut** as CSS 2.1 section 10.8 says, so the
+    middle box is 18.4 tall and not 10: a 10px `inline-block` alone on a
+    line does not shrink it.
+
+    Chrome 151 on this exact fixture with Arial forced, in standards mode:
+    `m` height 18, `b` at 118, and the `inline-block` at `[0, 64, 10, 10]`.
+    Ours is 18.3984, 118.3984 and y 64.7461 -- Chrome's integer `hhea`
+    rounding and nothing else. The `inline-block` sits 4.75px below the
+    line top because its baseline is its bottom margin edge and the line's
+    baseline is 14.75px down.
+
+    An earlier draft of this test asserted 10, 110 and y 60, from a probe
+    page with no doctype that had Chrome in quirks mode. See
+    `docs/measurement-hazards.md` instance fifteen.
     """
     root, metrics = laid_out(
         between(
@@ -938,14 +965,22 @@ def test_an_atomic_inline_child_blocks_collapse_through_too():
     )
     assert metrics["margins_collapsed_through_empty"] == 0
     assert metrics["margin_collapse_blocked_line_box"] == 1
-    assert boxes(root)["ib"].geometry is None
+    assert geometry(root, "m").border.height == pytest.approx(18.3984375)
+    assert top(root, "b") == pytest.approx(118.3984375)
+
+    inline_block = boxes(root)["ib"]
     assert metrics["widths_shrink_to_fit_resolved"] == 1
     assert metrics["widths_deferred_shrink_to_fit"] == 0
     # `width: 10px` is specified, so shrink-to-fit does not run: the
     # formula is what `width: auto` means on these boxes, not what they
     # always do.
-    assert boxes(root)["ib"].shrink_to_fit_width == 10.0
+    assert inline_block.shrink_to_fit_width == 10.0
     assert metrics["widths_shrink_to_fit_specified"] == 1
+    # An atomic inline is one box on one line: geometry AND exactly one
+    # fragment, and they are the same rectangle.
+    assert len(inline_block.fragments) == 1
+    assert inline_block.fragments[0].geometry is inline_block.geometry
+    assert inline_block.geometry.border == Rect(0.0, 64.74609375, 10.0, 10.0)
 
 
 def test_a_table_internal_box_keeps_the_barrier_and_records_the_deviation():

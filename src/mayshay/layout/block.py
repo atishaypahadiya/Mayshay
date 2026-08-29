@@ -84,16 +84,13 @@ from mayshay.cssparse.media import Viewport
 from mayshay.cssparse.values import AUTO, Percent
 from mayshay.layout import inline as inline_module
 from mayshay.layout import intrinsic as intrinsic_module
+from mayshay.layout import linebox as linebox_module
 from mayshay.layout.boxtree import ATOMIC_INLINE_DISPLAYS, Box
+from mayshay.layout.geometry import EPSILON, BoxGeometry, Edges, Rect
 from mayshay.layout.text import is_white_space_only
 from mayshay.layout.used import px as _px
 from mayshay.layout.used import px_or_zero as _px_or_zero
 from mayshay.layout.used import style_of as _style_of
-
-# Floating-point slack for the constraint assertions. Every number here is a
-# sum of a handful of terms, so a real violation is orders of magnitude
-# larger than this and a rounding artefact is orders of magnitude smaller.
-EPSILON = 1e-6
 
 # The displays whose *inner* layout is block layout. Everything else that is
 # block-level -- flex, the table family -- has its own inner algorithm in
@@ -146,6 +143,7 @@ COUNTER_NAMES: tuple[str, ...] = (
     "heights_specified",
     "heights_from_children",
     "heights_deferred_inline_content",
+    "heights_from_line_boxes",
     "heights_percentage_fallback_auto",
     # section 10.3.3
     "width_auto_absorbed_remainder",
@@ -182,7 +180,7 @@ COUNTER_NAMES: tuple[str, ...] = (
     "layout_viewport_unit_unresolved",
     "layout_length_unit_unexpected",
     "layout_boxes_deferred_subtree",
-)
+) + linebox_module.COUNTER_NAMES
 
 # The computed initial value of every margin longhand, for the one place
 # that needs to know whether a margin was *declared* rather than what it
@@ -195,70 +193,11 @@ _ZERO = ComputedStyle().margin_top
 # --------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Rect:
-    """`x, y, width, height` in CSS pixels, per the Phase 3 comparison
-    contract. Not a quad: CDP's quads carry a transform capability this
-    engine does not implement, and converting between the two is one
-    function on the harness side."""
-
-    x: float
-    y: float
-    width: float
-    height: float
-
-    @property
-    def right(self) -> float:
-        return self.x + self.width
-
-    @property
-    def bottom(self) -> float:
-        return self.y + self.height
-
-
-@dataclass(frozen=True)
-class Edges:
-    top: float
-    right: float
-    bottom: float
-    left: float
-
-
-@dataclass
-class BoxGeometry:
-    """All four box edges, plus the used values they were built from.
-
-    The rectangles are relative to the containing block's content origin
-    while layout runs and absolute document coordinates afterwards, with the
-    origin at the document's top-left and y increasing downward -- the
-    Phase 3 contract's requirement, and what `DOM.getBoxModel` reports.
-
-    The **margin box uses the box's own used margins, not the collapsed
-    ones.** A collapsed margin is shared between two boxes, so it belongs to
-    neither margin box; the margin boxes of two vertically adjacent siblings
-    with collapsing margins genuinely overlap, which is what Chrome reports
-    too. `collapsed_margin_top` and `collapsed_margin_bottom` record what was
-    actually applied in the flow, because that is the number a margin-
-    collapsing test needs and it is not recoverable from the rectangles.
-    """
-
-    content: Rect
-    padding: Rect
-    border: Rect
-    margin: Rect
-    used_margin: Edges
-    used_padding: Edges
-    used_border: Edges
-    containing_block_width: float
-    collapsed_margin_top: float = 0.0
-    collapsed_margin_bottom: float = 0.0
-    # Whether this box's own top and bottom margins ended up adjoining --
-    # section 8.3.1's collapse-through. Recorded rather than inferred: a
-    # zero-height box with no children looks identical from the outside
-    # whether it collapsed through or was stopped by a line box or a new
-    # formatting context, and a census that guesses from the geometry counts
-    # 78 where the layout counted 58.
-    collapsed_through: bool = False
+# `Rect`, `Edges` and `BoxGeometry` live in `layout.geometry` since Task D2:
+# `layout.linebox` needs them and this module imports `linebox`, so they
+# cannot stay here. Re-exported under their old names because they are part
+# of this module's published surface -- `tests/layout/test_block.py` and
+# `scripts/layout_report.py` both name them.
 
 
 # --------------------------------------------------------------------------
@@ -480,7 +419,11 @@ class _Horizontal:
 
 
 def _resolve_width(
-    style: ComputedStyle, cb_width: float, metrics: Counter[str]
+    style: ComputedStyle,
+    cb_width: float,
+    metrics: Counter[str],
+    *,
+    override_content_width: float | None = None,
 ) -> _Horizontal:
     """The constraint equation for a block-level, non-replaced, in-flow box:
 
@@ -515,6 +458,22 @@ def _resolve_width(
 
     margin_left = _px(style.margin_left, basis=cb_width, metrics=metrics)
     margin_right = _px(style.margin_right, basis=cb_width, metrics=metrics)
+    if override_content_width is not None:
+        # An atomic inline. Its width is shrink-to-fit and was resolved
+        # before line breaking -- section 10.3.3's constraint equation does
+        # not apply to it at all, so it is bypassed rather than fed a
+        # containing block it does not have. `auto` margins on an atomic
+        # inline compute to zero (section 10.3.2), which is what `or 0.0`
+        # says here.
+        return _Horizontal(
+            margin_left=margin_left or 0.0,
+            margin_right=margin_right or 0.0,
+            border_left=border_left,
+            border_right=border_right,
+            padding_left=padding_left,
+            padding_right=padding_right,
+            content_width=override_content_width,
+        )
     left_auto = margin_left is None
     right_auto = margin_right is None
     margin_left = 0.0 if left_auto else margin_left
@@ -611,7 +570,10 @@ def _layout_block(
     cb_height: float | None,
     metrics: Counter[str],
     groups: list[MarginGroup],
+    fragment_counts: dict[int, int],
     is_root: bool = False,
+    override_content_width: float | None = None,
+    already_counted: bool = False,
 ) -> _Result:
     """Lay out one in-flow block-level box and everything under it.
 
@@ -622,8 +584,9 @@ def _layout_block(
     and shifting a box is O(1) precisely because its children's coordinates
     are relative to *it*.
     """
-    metrics["layout_boxes_seen"] += 1
-    metrics["widths_resolved"] += 1
+    if not already_counted:
+        metrics["layout_boxes_seen"] += 1
+        metrics["widths_resolved"] += 1
     style = _style_of(box)
     if box.display in _TABLE_INTERNAL_DISPLAYS and (
         style.margin_top is not _ZERO
@@ -645,7 +608,9 @@ def _layout_block(
         # in principle yet; counted so the gap is a number.
         metrics["layout_position_relative_unoffset"] += 1
 
-    horizontal = _resolve_width(style, cb_width, metrics)
+    horizontal = _resolve_width(
+        style, cb_width, metrics, override_content_width=override_content_width
+    )
 
     margin_top = _px_or_zero(style.margin_top, basis=cb_width, metrics=metrics)
     margin_bottom = _px_or_zero(style.margin_bottom, basis=cb_width, metrics=metrics)
@@ -732,8 +697,12 @@ def _layout_block(
         # An inline formatting context. Task D measures it; here the box is
         # known to be non-empty (line boxes block collapse-through) and its
         # auto height is deferred rather than guessed at zero silently.
-        content_height, trailing = _defer_inline_content(
-            box, metrics, cb_width=horizontal.content_width
+        content_height, trailing = _layout_inline_content(
+            box,
+            metrics,
+            groups=groups,
+            fragment_counts=fragment_counts,
+            cb_width=horizontal.content_width,
         )
         collapsed_through = False
     else:
@@ -751,6 +720,7 @@ def _layout_block(
             box,
             metrics=metrics,
             groups=groups,
+            fragment_counts=fragment_counts,
             cb_width=horizontal.content_width,
             cb_height=height,
             top_group=top_group if top_open else None,
@@ -871,19 +841,132 @@ def _resolve_shrink_to_fit(box: Box, *, cb_width: float, metrics: Counter[str]) 
     return box.shrink_to_fit_width
 
 
-def _defer_inline_content(
-    box: Box, metrics: Counter[str], *, cb_width: float
+def _layout_inline_content(
+    box: Box,
+    metrics: Counter[str],
+    *,
+    groups: list[MarginGroup],
+    fragment_counts: dict[int, int],
+    cb_width: float,
 ) -> tuple[float, MarginGroup | None]:
-    """Account for an inline formatting context without laying it out.
+    """Lay out an inline formatting context and return its height.
 
-    The height still waits on line boxes -- that is Task D2 -- but every
-    atomic inline inside gets its shrink-to-fit width here, because that
-    number does not need one.
+    Task C's largest deferral, and the reason `heights_deferred_inline_content`
+    read 687 on the corpus: a block container whose content is inline has a
+    `height: auto` equal to the sum of its line box heights, and there were
+    no line boxes. There are now.
+
+    Two passes, in this order and not the other, because the second needs
+    the first:
+
+    1. every atomic inline in the context gets its shrink-to-fit width,
+       from `intrinsic`, against this containing block;
+    2. the context is broken into lines, which needs those widths to know
+       what fits.
+
+    `None` comes back as the trailing margin group in every case: an inline
+    formatting context's line boxes are a collapse barrier, so nothing
+    escapes downward out of one.
     """
-    metrics["heights_deferred_inline_content"] += 1
     for child in box.children:
         _account_inline_box(child, metrics, cb_width=cb_width)
-    return 0.0, None
+
+    def layout_atomic(atomic: Box) -> tuple[float, float | None]:
+        return _layout_atomic(
+            atomic, metrics=metrics, groups=groups,
+            fragment_counts=fragment_counts,
+        )
+
+    height, lines = linebox_module.layout_inline_content(
+        box,
+        available_width=cb_width,
+        metrics=metrics,
+        layout_atomic=layout_atomic,
+        fragment_counts=fragment_counts,
+    )
+    box.line_boxes = lines
+    metrics["heights_from_line_boxes"] += 1
+    return height, None
+
+
+def _layout_atomic(
+    box: Box,
+    *,
+    metrics: Counter[str],
+    groups: list[MarginGroup],
+    fragment_counts: dict[int, int],
+) -> tuple[float, float | None]:
+    """Lay out one atomic inline's contents. `(border height, baseline)`.
+
+    The baseline is the offset of the **last line box's** baseline from the
+    box's top border edge, or `None` when there is none -- CSS 2.1 section
+    10.8.1 then uses the bottom margin edge, and `layout.linebox` counts the
+    two branches separately so "it had none" and "we did not look" stay
+    distinguishable.
+
+    `already_counted=True` because `_account_inline_box` has already put
+    this box in `widths_shrink_to_fit_resolved`; counting it again as
+    `widths_resolved` would break the box partition, which is exactly what
+    that partition is for.
+
+    The margin groups are the **same** registry as the surrounding layout's,
+    not a fresh one. An atomic inline establishes a new formatting context,
+    so `_establishes_formatting_context` closes both its edges and nothing
+    collapses across them anyway; giving it its own list would leave those
+    edges out of `_partition_margin_edges` and fail the edge partition for a
+    reason that has nothing to do with collapsing.
+    """
+    width = box.shrink_to_fit_width
+    assert width is not None, (
+        "an atomic inline reached line layout without a shrink-to-fit "
+        f"width: {box!r}"
+    )
+    result = _layout_block(
+        box,
+        cb_width=width,
+        cb_height=None,
+        metrics=metrics,
+        groups=groups,
+        fragment_counts=fragment_counts,
+        override_content_width=width,
+        already_counted=True,
+    )
+    style = _style_of(box)
+    baseline = None
+    if style.overflow == "visible":
+        baseline = _last_line_baseline(box)
+    return result.border_height, baseline
+
+
+def _last_line_baseline(box: Box) -> float | None:
+    """The last line box baseline inside `box`, from its top border edge.
+
+    Recursive, because CSS 2.1 says "the baseline of its last line box" and
+    that line box can be several block levels down -- an `inline-block`
+    containing a `<div>` containing a paragraph takes the paragraph's last
+    line. The **maximum** candidate is returned rather than the last one
+    found in tree order: with no floats and no out-of-flow boxes placed, the
+    two agree, and taking the maximum is the one that stays right when they
+    stop agreeing.
+    """
+    geometry = box.geometry
+    if geometry is None:
+        return None
+    content_offset = geometry.content.y - geometry.border.y
+    best: float | None = None
+    if box.line_boxes:
+        line = box.line_boxes[-1]
+        best = content_offset + line.y + line.baseline
+    for child in box.children:
+        child_geometry = child.geometry
+        if child_geometry is None:
+            continue
+        inner = _last_line_baseline(child)
+        if inner is None:
+            continue
+        candidate = content_offset + child_geometry.border.y + inner
+        best = candidate if best is None else max(best, candidate)
+    return best
 
 
 def _account_inline_box(box: Box, metrics: Counter[str], *, cb_width: float) -> None:
@@ -893,18 +976,51 @@ def _account_inline_box(box: Box, metrics: Counter[str], *, cb_width: float) -> 
     own content width is the containing block for anything nested inside
     it, so the shrink-to-fit basis changes as the walk descends. Flattening
     would size a nested `inline-block` against its grandparent.
+
+    An atomic inline is counted here and **not descended into**: it is a
+    block container on the inside, so its subtree is counted when
+    `_layout_atomic` lays it out. Descending here as well is how a box gets
+    counted twice, which the box partition would then report as a failure
+    with no obvious cause.
     """
     metrics["layout_boxes_seen"] += 1
-    inner_cb = cb_width
+    style = _style_of(box)
+    out_of_flow = _is_out_of_flow(style)
+    if out_of_flow is not None:
+        # A float or an absolutely positioned box **inside** an inline
+        # formatting context. Task C takes these out of the block flow and
+        # Task D2 has to take them out of the inline flow for the same
+        # reason: neither is laid out, and leaving one in the line would
+        # push every word after it along by a width Chrome does not put
+        # there. That is the `clear` trap from the other end -- disagreeing
+        # with a browser on the case we can reach in order to half-handle
+        # one we cannot.
+        #
+        # Found by the character-conservation check, not by reading: the
+        # float's text was reaching a fragment and the count of characters
+        # never laid out was 0 where it should have been the float's.
+        metrics[
+            "layout_float_skipped"
+            if out_of_flow == "float"
+            else "layout_absolute_skipped"
+        ] += 1
+        metrics["widths_shrink_to_fit_resolved"] += 1
+        _resolve_shrink_to_fit(box, cb_width=cb_width, metrics=metrics)
+        for child in box.children:
+            for descendant in child.walk():
+                metrics["layout_boxes_seen"] += 1
+                metrics["layout_boxes_deferred_subtree"] += 1
+        return
     if box.display in ATOMIC_INLINE_DISPLAYS:
         metrics["widths_shrink_to_fit_resolved"] += 1
-        inner_cb = _resolve_shrink_to_fit(box, cb_width=cb_width, metrics=metrics)
-    elif box.is_inline_level:
+        _resolve_shrink_to_fit(box, cb_width=cb_width, metrics=metrics)
+        return
+    if box.is_inline_level:
         metrics["widths_not_applicable_inline_level"] += 1
     else:
         metrics["layout_boxes_deferred_subtree"] += 1
     for child in box.children:
-        _account_inline_box(child, metrics, cb_width=inner_cb)
+        _account_inline_box(child, metrics, cb_width=cb_width)
 
 
 def _layout_children(
@@ -912,6 +1028,7 @@ def _layout_children(
     *,
     metrics: Counter[str],
     groups: list[MarginGroup],
+    fragment_counts: dict[int, int],
     cb_width: float,
     cb_height: float | None,
     top_group: MarginGroup | None,
@@ -987,6 +1104,7 @@ def _layout_children(
             cb_height=cb_height,
             metrics=metrics,
             groups=groups,
+            fragment_counts=fragment_counts,
         )
         _merge_and_count(collector, result.top, metrics)
 
@@ -1145,32 +1263,65 @@ def _shift(box: Box, dy: float) -> None:
 
 def _absolutize(box: Box, origin_x: float, origin_y: float) -> None:
     """Turn containing-block-relative coordinates into absolute document
-    ones, per the Phase 3 comparison contract."""
+    ones, per the Phase 3 comparison contract.
+
+    Three things move, not one. A block box moves its own rectangles and
+    then becomes the origin for its children. An **inline** box has no
+    rectangles of its own -- it has fragments, and they are relative to the
+    inline formatting context's block container, which is *not* this box --
+    so its fragments move by the origin it was handed and it passes that
+    same origin down unchanged. Getting that wrong nests the offsets and
+    puts every wrapped word a containing block too far right, which looks
+    like a text-measurement error.
+    """
     geometry = box.geometry
-    if geometry is None:
-        return
-    geometry.content = replace(
-        geometry.content,
-        x=geometry.content.x + origin_x,
-        y=geometry.content.y + origin_y,
-    )
-    geometry.padding = replace(
-        geometry.padding,
-        x=geometry.padding.x + origin_x,
-        y=geometry.padding.y + origin_y,
-    )
-    geometry.border = replace(
-        geometry.border,
-        x=geometry.border.x + origin_x,
-        y=geometry.border.y + origin_y,
-    )
-    geometry.margin = replace(
-        geometry.margin,
-        x=geometry.margin.x + origin_x,
-        y=geometry.margin.y + origin_y,
-    )
+    child_origin = (origin_x, origin_y)
+    if geometry is not None:
+        geometry.content = replace(
+            geometry.content,
+            x=geometry.content.x + origin_x,
+            y=geometry.content.y + origin_y,
+        )
+        geometry.padding = replace(
+            geometry.padding,
+            x=geometry.padding.x + origin_x,
+            y=geometry.padding.y + origin_y,
+        )
+        geometry.border = replace(
+            geometry.border,
+            x=geometry.border.x + origin_x,
+            y=geometry.border.y + origin_y,
+        )
+        geometry.margin = replace(
+            geometry.margin,
+            x=geometry.margin.x + origin_x,
+            y=geometry.margin.y + origin_y,
+        )
+        child_origin = (geometry.content.x, geometry.content.y)
+    for fragment in box.fragments:
+        if fragment.geometry is geometry:
+            # An atomic inline is one box with one rectangle that is also
+            # its single fragment, so the two names point at the same
+            # object and shifting it twice would put it a containing block
+            # too far down. Identity, not equality: two rectangles that
+            # happen to coincide are still two boxes.
+            continue
+        _absolutize_fragment(fragment, origin_x, origin_y)
+    if box.line_boxes:
+        for line in box.line_boxes:
+            line.x += child_origin[0]
+            line.y += child_origin[1]
     for child in box.children:
-        _absolutize(child, geometry.content.x, geometry.content.y)
+        _absolutize(child, *child_origin)
+
+
+def _absolutize_fragment(fragment, origin_x: float, origin_y: float) -> None:
+    geometry = fragment.geometry
+    for name in ("content", "padding", "border", "margin"):
+        rect = getattr(geometry, name)
+        setattr(
+            geometry, name, replace(rect, x=rect.x + origin_x, y=rect.y + origin_y)
+        )
 
 
 # --------------------------------------------------------------------------
@@ -1195,6 +1346,8 @@ def assert_layout_constraints(
     _assert_box_partition(metrics)
     _assert_margin_edge_partition(metrics)
     _assert_collapse_barrier_partition(metrics)
+    linebox_module.assert_line_partitions(metrics)
+    linebox_module.assert_text_conservation(root, metrics)
     _assert_geometry(root, cb_x=0.0, cb_width=initial_containing_block_width)
 
 
@@ -1246,25 +1399,43 @@ def _assert_margin_edge_partition(metrics: Counter[str]) -> None:
 
 
 def _assert_geometry(box: Box, *, cb_x: float, cb_width: float) -> None:
+    """Section 10.3.3 as a tiling, plus the edge relations, on every box.
+
+    Two exemptions, both stated rather than achieved by returning early:
+
+    * **A box with no geometry is not laid out**, but its descendants may
+      be. An inline box carries fragments and no rectangles, and everything
+      on its lines hangs below it, so the walk continues with the same
+      containing block instead of stopping. Task C could stop, because
+      nothing below an unlaid-out box had geometry either.
+    * **The tiling is a block-level rule.** Section 10.3.3 is stated for
+      "block-level, non-replaced elements in normal flow"; an atomic
+      inline's margin box is its shrink-to-fit width and spans nothing.
+      Its internal edge relations still hold and are still checked, which
+      is the half of this that would catch a wrong `box-sizing`.
+    """
     geometry = box.geometry
     if geometry is None:
+        for child in box.children:
+            _assert_geometry(child, cb_x=cb_x, cb_width=cb_width)
         return
     where = box.path or f"<{box.origin} {box.display}>"
 
-    # Section 10.3.3, stated as a tiling: the margin box exactly spans the
-    # containing block's content width, starting at its left edge.
-    _close(
-        geometry.margin.width,
-        cb_width,
-        f"{where}: margin box width {geometry.margin.width} != containing "
-        f"block width {cb_width} (CSS 2.1 section 10.3.3)",
-    )
-    _close(
-        geometry.margin.x,
-        cb_x,
-        f"{where}: margin box starts at {geometry.margin.x}, containing "
-        f"block content starts at {cb_x}",
-    )
+    if not box.is_inline_level:
+        # Section 10.3.3, stated as a tiling: the margin box exactly spans
+        # the containing block's content width, starting at its left edge.
+        _close(
+            geometry.margin.width,
+            cb_width,
+            f"{where}: margin box width {geometry.margin.width} != containing "
+            f"block width {cb_width} (CSS 2.1 section 10.3.3)",
+        )
+        _close(
+            geometry.margin.x,
+            cb_x,
+            f"{where}: margin box starts at {geometry.margin.x}, containing "
+            f"block content starts at {cb_x}",
+        )
 
     margin = geometry.used_margin
     padding = geometry.used_padding
@@ -1350,12 +1521,22 @@ def layout_document(
 
     viewport = viewport if viewport is not None else Viewport()
     groups: list[MarginGroup] = []
+    # One fragment counter for the whole document, keyed by DOM node, and
+    # for the same reason `groups` is one list: an inline that Task B split
+    # around a block-level child contributes boxes to **two** inline
+    # formatting contexts, and Chrome answers `getContentQuads` for the node
+    # with one quad per fragment across the whole split. A per-context
+    # counter restarts at 0 in the second half and produces two fragments
+    # numbered 0 for one node -- which no comparison can tell from one
+    # fragment measured twice.
+    fragment_counts: dict[int, int] = {}
     result = _layout_block(
         root,
         cb_width=float(viewport.width_px),
         cb_height=float(viewport.height_px),
         metrics=metrics,
         groups=groups,
+        fragment_counts=fragment_counts,
         is_root=True,
     )
     _partition_margin_edges(groups, metrics)

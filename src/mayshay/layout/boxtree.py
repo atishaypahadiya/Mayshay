@@ -113,6 +113,23 @@ class Box:
     # exactly that distinction.
     text: str | None = None
 
+    # Filled by Task D2 (`layout.linebox`) on an inline-level box: one
+    # `InlineFragment` per line box it appears on. Separate from `geometry`
+    # and not summarised into it, because the summary is a trap:
+    # `DOM.getBoxModel` answers a wrapping inline with the UNION of its
+    # fragments, which matches none of them, and a comparison built on that
+    # union would validate nothing while looking like it worked. See
+    # `docs/measurement-hazards.md` instance 3. A block-level box has
+    # `geometry` and no fragments; an inline box has fragments and no
+    # `geometry`; an atomic inline has `geometry` and exactly one fragment,
+    # because it is a block container that happens to sit on a line.
+    fragments: list = field(default_factory=list)
+
+    # Filled by Task D2 on a box that establishes an inline formatting
+    # context: its `LineBox`es in order. Untyped for the same reason
+    # `geometry` is -- `layout.linebox` imports this module.
+    line_boxes: list | None = None
+
     # Filled by Task D1 (`layout.block`) on a box whose width is
     # shrink-to-fit: `inline-block` and its two siblings, floats, and
     # absolutely positioned boxes. Separate from `geometry` because the

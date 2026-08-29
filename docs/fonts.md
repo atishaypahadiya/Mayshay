@@ -260,6 +260,66 @@ and 18.39% from our number. A line-height discrepancy of roughly 3%, 5% or
 18% is therefore diagnostic -- it names which table and which convention
 the other engine used.
 
+### A fifth answer, and it is not a fifth table (Task D2)
+
+The table above says a mismatch of 3%, 5% or 18% names which vertical
+metrics the other engine used. Task D2 measured Chrome 151 on macOS and
+found a mismatch of **2.2%** that is none of them: Chrome rounds each of
+`hhea`'s three numbers to a whole pixel before adding them.
+
+Measured by stacking ten `<br>`-separated lines in a `<div>` and dividing,
+at three font sizes chosen so that the rounding cannot cancel:
+
+| font-size | ours (exact) | Chrome 151 | ascent | descent | line gap |
+|---:|---:|---:|---:|---:|---:|
+| 16 | 18.3984 | **18** | 14.484 -> 14 | 3.391 -> 3 | 0.523 -> 1 |
+| 17 | 19.5483 | **20** | 15.392 -> 15 | 3.603 -> 4 | 0.556 -> 1 |
+| 32 | 36.7969 | **37** | 28.969 -> 29 | 6.781 -> 7 | 1.047 -> 1 |
+
+The rounded parts reproduce all three exactly and no other hypothesis does
+-- note that Chrome is *larger* at 17px and *smaller* at 16px, so it is not
+a floor, a ceiling or a different table.
+
+**Chrome also floors the half-leading.** CSS 2.1 section 10.8.1 puts half
+the leading above the content area and half below; with a 67-unit line gap
+that is 33.5 either side, and Chrome puts 33 above and 34 below. Every
+vertical-align comparison in `tests/layout/test_linebox.py` is off by
+exactly 0.5px for this reason and no other.
+
+This engine keeps the exact fractional metrics, because they are what the
+font says and because a rounding that is right for one platform is wrong
+for another -- Chrome on Linux does not round these. The practical
+consequence is that a line-position comparison against Chrome on macOS
+accumulates up to half a pixel per line, which is why Task D2's vertical
+fixtures are stated at `font-size: 2048px`, where ascent 1854, descent 434
+and line gap 67 are all whole pixels and there is nothing to round.
+
+### `ex` measured against Chrome, and they disagree (Task D2)
+
+`ex` is derived above from `OS/2.sxHeight` = 1082 units = 8.453125px at
+16px, which is what CSS Values 4 section 5.1.2 asks for: the font's own
+metric where one exists. It exists, and the `x` glyph's bounding box
+agrees with it to the unit (`glyf` yMax for `x` is 1082).
+
+**Chrome 151 on macOS reports `1ex` as 1062 units** -- 8.2969px at 16px and
+2124px at 4096px, so it scales and is a metric rather than a rounding.
+Measured directly by giving a `<div>` `width: 1ex` and reading its
+`getBoundingClientRect()`, at three font sizes. `1ch` agrees exactly (1139
+units, the advance of `0`), so this is specific to x-height and not a
+general disagreement about units.
+
+That is a **1.85% difference**, and the one place in this engine where it
+is visible is `vertical-align: middle`, which aligns a box's midpoint at
+the parent's baseline minus half the parent's x-height: 9px of divergence
+at `font-size: 2048px` and 0.07px at 16px. Recorded rather than tuned away
+-- the spec names the font's metric, this font has one, and matching a
+platform's own idea of x-height would make the number depend on which
+machine ran the comparison.
+
+This is the `CSS Values -> the font's own tables` row of
+`docs/measurement-hazards.md`'s deferral table producing a divergence for
+the second time.
+
 `hhea` matches `usWin` for ascent and descent here, differing only by the
 67-unit line gap, and is what Chrome uses on macOS and Linux for this font.
 A reader comparing line boxes against Chrome on Windows should expect the
@@ -267,8 +327,28 @@ A reader comparing line boxes against Chrome on Windows should expect the
 
 ### Baseline
 
-The baseline sits `ascent` below the line box top: 14.484375px at 16px.
+The baseline sits `ascent` below the **content area** top: 14.484375px at
+16px. Below the **line box** top it is `ascent + half the leading`, which
+is 14.746094px at 16px under `line-height: normal`.
 `vertical-align: baseline` aligns children on that line.
+
+### `sub` and `super` are not font metrics (Task D2)
+
+CSS 2.1 says only "the proper position for subscripts of the parent's box"
+and leaves the offset to the user agent, so this file cannot derive it and
+Task D2 measured it instead. Chrome 151:
+
+    sub      lower by  font-size / 5 + 1
+    super    raise by  font-size / 3 + 1
+
+Confirmed at two sizes, which is what rules it out as a font metric: 4.1875
+and 6.3281 at 16px, 410.5938 and 683.6563 at 2048px -- each `x/5 + 1` or
+`x/3 + 1` quantised to Chrome's 1/64px LayoutUnit. This font's
+`OS/2.ySubscriptYOffset` is 283 units (2.21px at 16px) and
+`ySuperscriptYOffset` is 977 (7.63px), and **neither is what Chrome uses**.
+So the OpenType subscript and superscript fields are recorded here as
+present and unused, which is a smaller claim than "we follow the font" and
+a true one.
 
 ## Sample advances
 

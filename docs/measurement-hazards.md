@@ -439,6 +439,104 @@ layers down from where a reader would stop.
 practical form: when a rule turns out to be delegated, read the delegate or
 measure — do not read the citing text more carefully.
 
+### Instance fifteen: seven fixtures, one harness, one missing doctype
+
+The largest single defect this project has produced, and the one that best
+justifies everything else in this file.
+
+Task D2 measured seven fixtures in Chrome 151 and concluded that Chrome does
+**not** implement CSS 2.1 section 10.8's *strut* — the zero-width inline box
+carrying the block container's own font and `line-height` that every line box
+is supposed to contain. On those measurements
+`<div><span style="font-size:8px">x</span></div>` was 9px where the spec says
+18.40. A deliberate divergence was written, documented as "the single largest
+behavioural decision in this module", and it suppressed the strut **2,114
+times on the corpus** — 2,114 line boxes too short, and every block height
+above them wrong.
+
+Re-measured by the coordinator with two independent methods
+(`getBoundingClientRect` via `--dump-dom`, and CDP `DOM.getBoxModel` on a
+fresh instance), Chrome gave **18.00** for every content-bearing fixture.
+
+Both parties measured correctly. **They measured different documents.**
+
+    no doctype    document.compatMode = BackCompat   ->  9.00
+    <!doctype html>   document.compatMode = CSS1Compat  -> 18.00
+
+The probe page had no doctype, so Chrome rendered it in **quirks mode**,
+where the line-height quirk really does suppress the strut. In standards mode
+Chrome agrees with CSS 2.1 on all seven rows.
+
+Three things make this the sharpest entry here.
+
+**Seven fixtures were not seven pieces of evidence.** They shared one probe
+harness, so they shared one defect. Seven agreeing measurements feel like
+overwhelming confirmation and were a single observation repeated — the
+"quiet sharing" criterion above, in its purest form: the shared path was the
+one that could be wrong, and its failure was silent.
+
+**The wrong number read as confirmation of the code it was checking.** The
+bad measurement gave 9 for the headline fixture. This engine's own output was
+9.2. A comparison harness built specifically to catch our errors produced a
+number that agreed with our error, and the agreement was the reason to trust
+it.
+
+**A whole explanatory theory was built on it.** The divergence was not
+recorded as a puzzle; it came with a rule that explained all seven rows and
+no other, and that rule was written into a docstring as settled. Coherence
+across seven data points was taken as evidence, when it was a property of
+the single defect generating them.
+
+`scripts/chrome_compare.py` now emits a doctype and asserts
+`document.compatMode` before reporting anything. That is the mechanical form,
+and it is the only form that would have caught this: no amount of care about
+the *rule* would have prompted anyone to check the *mode*.
+
+### Instance sixteen: the literal NBSP, again, in the fixture for itself
+
+Instance twelve recorded a literal U+00A0 typed into the sentence warning
+against literal non-ASCII. Task D2 did it again, in a Chrome probe written
+to check the behaviour of `&nbsp;` -- and this time the character silently
+became U+0020 somewhere between the keyboard and the file.
+
+The probe reported that Chrome **collapsed an NBSP-only box through**,
+contradicting an earlier measurement and reading as a genuine finding about
+Chrome. It was a finding about the probe. Written as `\u00a0` the same
+fixture gives the earlier answer.
+
+What makes it worth a second entry is that the failure mode changed. In
+instance twelve the tool reported success and did nothing. Here the tool
+reported a **plausible different measurement**, which is the more dangerous
+half of the same problem: an edit that silently does nothing leaves the
+old value, and a fixture that silently changes gives a new one. The check
+that caught it was the same one -- print the codepoints, not the string.
+
+### Instance seventeen: a counter that must read zero, reading 58
+
+`linebreak_class_fallback_other` was built to read zero: it counts
+characters that are neither a letter, a digit nor a combining mark and got
+line-break class `AL` from a general-category default, which is exactly
+where a missing entry in a hand-written class table would hide.
+
+It read **58**, and nothing was wrong. The 58 were Devanagari, Bengali,
+Burmese and Khmer combining marks, which the fallback classifies **correctly**
+as `CM` and which UAX #14's LB9 then resolves to whatever they attach to.
+They were in the residual bucket because the bucket's definition had two
+categories in it and its name claimed one.
+
+Splitting the marks into a bucket of their own put it back to zero. The
+generalisation belongs with the unstated-denominator family: a residual
+bucket is only useful if everything *correct* has somewhere else to go.
+A residual that legitimately contains something can never be read as an
+alarm, which makes it decorative -- the same verdict this file gives a
+diagnostic that shares the defective path.
+
+The same pass found the mirror image: `linebreak_opportunities` had begun
+counting the line breaker's opportunities *and* intrinsic sizing's, two
+populations under one name, on text they both walk. That is instance four's
+shape with the two counts summed instead of reported separately, which is
+strictly worse -- a disagreement is visible and a sum is not.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -454,6 +552,9 @@ Every instance in this document was caught by **measurement**:
 | 12 literal NBSP, and a silent no-op edit | printing the remaining non-ASCII set, not the edit's success |
 | 13 defaults counted as usage | splitting `display` counts by the origin of the winning declaration |
 | 14 atomic-inline min-content | Chrome disagreeing with a number CSS Text 3 appeared to endorse |
+| 15 the line box strut | re-measuring in a second harness, then diffing `document.compatMode` |
+| 16 the literal NBSP, again | printing the probe's codepoints after it produced a surprising result |
+| 17 a residual bucket reading 58 | the bucket being defined to read zero, and not reading zero |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced

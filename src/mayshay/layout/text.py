@@ -73,7 +73,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mayshay.cssparse.cascade import ComputedStyle
-from mayshay.cssparse.values import WHITE_SPACE_KEYWORDS
+from mayshay.cssparse.values import WHITE_SPACE_KEYWORDS, Length
 
 # --------------------------------------------------------------------------
 # The font
@@ -200,6 +200,127 @@ def measure(
     """
     return advance_units(text, metrics=metrics) * style.font_size_px / (
         font_metrics().units_per_em
+    )
+
+
+# --------------------------------------------------------------------------
+# Line metrics -- CSS 2.1 section 10.8, and the font tables under it
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LineMetrics:
+    """One inline box's vertical metrics, in CSS pixels.
+
+    `ascent` and `descent` are the **content area**: the font's own
+    ascender and descender at this font size, which is what an inline box's
+    `getClientRects()` rectangle covers -- measured, not assumed. A `<span>`
+    at `font-size: 2048px` reports a height of 2288px in Chrome 151, which
+    is `hhea.ascent 1854 + hhea.descent 434` exactly.
+
+    `leading` is `line-height - (ascent + descent)`, and half of it goes
+    above and half below (CSS 2.1 section 10.8.1). It is **signed**: a
+    `line-height` smaller than the content area gives negative leading and
+    an inline box shorter than its own text, which is legal and common.
+
+    `half_leading_top` is a separate field rather than `leading / 2` because
+    Chrome and the spec disagree about the odd case and the disagreement is
+    worth being able to see. See `half_leading_below`.
+    """
+
+    font_size: float
+    ascent: float
+    descent: float
+    line_height: float
+    x_height: float
+
+    @property
+    def content_height(self) -> float:
+        return self.ascent + self.descent
+
+    @property
+    def leading(self) -> float:
+        return self.line_height - self.content_height
+
+    @property
+    def half_leading_top(self) -> float:
+        return self.leading / 2.0
+
+    @property
+    def box_ascent(self) -> float:
+        """Above the baseline, including half the leading: the top of the
+        inline box, which is what line box height is computed from."""
+        return self.ascent + self.half_leading_top
+
+    @property
+    def box_descent(self) -> float:
+        """Below the baseline, including the rest of the leading. Computed
+        as `line_height - box_ascent` rather than `descent + leading/2` so
+        that the two always sum to the line-height exactly, whatever the
+        half is."""
+        return self.line_height - self.box_ascent
+
+
+def normal_line_height(font_size: float) -> float:
+    """`line-height: normal` from the font's own preferred spacing.
+
+    `(hhea.ascent - hhea.descent + hhea.lineGap) / unitsPerEm`, which is
+    1.1499023em -- 18.398438px at 16px. `docs/fonts.md` tabulates all four
+    candidate answers this font offers and what a mismatch against another
+    engine would mean; `hhea` is what Chrome uses on macOS and Linux for
+    this font.
+
+    **Chrome rounds these to whole pixels and this engine does not.**
+    Measured at three font sizes by stacking ten `<br>`-separated lines and
+    dividing: Chrome gives 18 at 16px (ours 18.3984), 37 at 32px (ours
+    36.7969) and 20 at 17px (ours 19.5483). Rounding each of ascent,
+    descent and line gap to an integer reproduces all three. That is a
+    fifth row for `docs/fonts.md`'s table -- not a different metric source,
+    the same source quantised -- and it is why a line-height comparison
+    against Chrome on macOS is off by up to half a pixel per line and
+    accumulates down the page.
+    """
+    font = font_metrics()
+    units = font.ascent - font.descent + font.line_gap
+    return units * font_size / font.units_per_em
+
+
+def line_metrics(style: ComputedStyle, *, metrics: Counter[str] | None = None) -> LineMetrics:
+    """The vertical metrics of the inline box `style` generates.
+
+    `line-height` is resolved **here**, at used-value time, and that is the
+    whole point of the property staying symbolic through the cascade. A
+    unitless `line-height` inherits as the number and multiplies by the
+    element's *own* font size, so a `1.5` on `<body>` gives 24px inside a
+    16px paragraph and 36px inside a 24px heading. Resolving it at cascade
+    time is a defect Task A2 deliberately avoided and Task C preserved; this
+    is the function that would undo it.
+    """
+    font = font_metrics()
+    size = style.font_size_px
+    scale = size / font.units_per_em
+    value = style.line_height
+    if isinstance(value, Length):
+        if value.unit == "px":
+            height = float(value.value)
+        else:
+            # A viewport-unit `line-height` the cascade left symbolic, for
+            # the same reason `layout.used.px` leaves a `vw` margin
+            # symbolic. Falls back to `normal` and says so.
+            if metrics is not None:
+                metrics["line_height_unit_unresolved"] += 1
+            height = normal_line_height(size)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        height = float(value) * size
+    else:
+        # `Keyword("normal")`, or anything the cascade could not resolve.
+        height = normal_line_height(size)
+    return LineMetrics(
+        font_size=size,
+        ascent=font.ascent * scale,
+        descent=-font.descent * scale,
+        line_height=height,
+        x_height=font.x_height * scale,
     )
 
 

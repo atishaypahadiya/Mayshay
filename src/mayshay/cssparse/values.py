@@ -887,10 +887,15 @@ _TEXT_ALIGN_KEYWORDS = frozenset({
     "justify-all", "match-parent",
 })
 
-_VERTICAL_ALIGN_KEYWORDS = frozenset({
+# Public for the same reason `WHITE_SPACE_KEYWORDS` is: `layout.linebox`
+# asserts its own alignment rule table against this set at import time, so a
+# ninth keyword added here and forgotten there fails the moment the module
+# loads rather than on the first page that uses it.
+VERTICAL_ALIGN_KEYWORDS = frozenset({
     "baseline", "sub", "super", "text-top", "text-bottom",
     "middle", "top", "bottom",
 })
+_VERTICAL_ALIGN_KEYWORDS = VERTICAL_ALIGN_KEYWORDS
 
 _BOX_SIZING_KEYWORDS = frozenset({"content-box", "border-box"})
 
