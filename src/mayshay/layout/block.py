@@ -85,6 +85,7 @@ from mayshay.cssparse.values import AUTO, Percent
 from mayshay.layout import inline as inline_module
 from mayshay.layout import intrinsic as intrinsic_module
 from mayshay.layout import linebox as linebox_module
+from mayshay.layout import table as table_module
 from mayshay.layout.boxtree import ATOMIC_INLINE_DISPLAYS, Box
 from mayshay.layout.geometry import EPSILON, BoxGeometry, Edges, Rect
 from mayshay.layout.text import is_white_space_only
@@ -350,6 +351,15 @@ def _establishes_formatting_context(box: Box, style: ComputedStyle) -> str | Non
     collapse" and "we never tried" are different facts.
     """
     if style.overflow != "visible":
+        return "new_formatting_context"
+    if box.table_wrapper:
+        # CSS 2.1 section 17.4's table wrapper box. Its display is `block`,
+        # so none of the tests below sees it, and without this line a
+        # caption's margin collapses out through the wrapper's top edge and
+        # moves the whole table. The flag rather than the display, because
+        # the display is deliberately indistinguishable from any other
+        # block's -- that is what makes the wrapper transparent to the rest
+        # of block layout.
         return "new_formatting_context"
     if box.display in ATOMIC_INLINE_DISPLAYS:
         return "new_formatting_context"
@@ -1507,8 +1517,16 @@ def layout_document(
     metrics: Counter[str] = Counter()
     for name in COUNTER_NAMES + inline_module.COUNTER_NAMES + (
         intrinsic_module.COUNTER_NAMES
-    ):
+    ) + table_module.COUNTER_NAMES:
         metrics[name] = 0
+
+    # CSS 2.1 section 17.2.1's anonymous table objects and 17.4's wrapper
+    # box, **before** white-space processing. The fixup changes which boxes
+    # sit in which inline formatting context -- a run of text inside a
+    # `display: table` gains an anonymous row and cell around it -- and
+    # collapsing text first would decide those contexts against a tree that
+    # is about to change.
+    table_module.fix_up_tables(root, metrics)
 
     # White-space processing first, over the whole tree. Intrinsic sizing
     # reads `Box.text` and Task D2's line breaking will too; collapsing it

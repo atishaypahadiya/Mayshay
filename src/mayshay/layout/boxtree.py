@@ -130,6 +130,25 @@ class Box:
     # `geometry` is -- `layout.linebox` imports this module.
     line_boxes: list | None = None
 
+    # Filled by Task E (`layout.table`) on the two boxes it invents that
+    # cannot take their style from a DOM node.
+    #
+    # `style` overrides what `layout.used.style_of` would read. It is needed
+    # because CSS 2.1 section 17.4 **splits one element's style across two
+    # boxes**: a table generates a table WRAPPER box carrying the element's
+    # `margin-*`, `position` and `float`, and a table box inside it carrying
+    # everything else -- the borders, the padding, the width. One
+    # `computed_style` cannot serve both, and applying the margins twice
+    # would indent every table by double its own margin.
+    #
+    # `table_wrapper` marks the outer of that pair. It is a discriminator
+    # rather than something inferred from "a block box with one table
+    # child", for the reason `origin` is: the inference is right until an
+    # author writes a `display: table` element inside a plain `<div>` with
+    # nothing else in it, and then it is silently wrong.
+    style: object | None = None
+    table_wrapper: bool = False
+
     # Filled by Task D1 (`layout.block`) on a box whose width is
     # shrink-to-fit: `inline-block` and its two siblings, floats, and
     # absolutely positioned boxes. Separate from `geometry` because the

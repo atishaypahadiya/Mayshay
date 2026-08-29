@@ -1000,7 +1000,14 @@ def test_a_table_internal_box_keeps_the_barrier_and_records_the_deviation():
     )
     assert geometry(root, "p").border.height == 60.0, "the margin did not escape"
     assert top(root, "c") == 50.0
-    assert metrics["margin_collapse_blocked_new_formatting_context"] == 2
+    # Eight edges, not two. Task E's section 17.2.1 fixup gives this orphan
+    # cell the anonymous row, anonymous table and wrapper box it needs, and
+    # all four of those boxes are formatting-context barriers. The number
+    # moved because the tree did, which is why it is asserted rather than
+    # tolerated.
+    assert metrics["margin_collapse_blocked_new_formatting_context"] == 8
+    assert metrics["table_fixup_anonymous_row_for_orphan_cell"] == 1
+    assert metrics["table_fixup_anonymous_table_for_misparented_row"] == 1
     assert metrics["layout_table_box_margins_applied"] == 1
     assert top(root, "p") == 10.0  # Chrome: 0. See the docstring.
 
