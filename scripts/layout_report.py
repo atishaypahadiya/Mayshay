@@ -398,9 +398,11 @@ LINE_HEADLINE = (
 #   flex_items_placed   44 items inside those 29, which is the population
 #                       every per-item row below counts against.
 #
-# Fifteen of the 29 hold a single item, so **14 containers on this corpus
-# can discriminate anything about the main axis** -- see
-# `docs/synthetic-only-coverage.md`, which carries a row per rule.
+# The items-per-container histogram over that third population is
+# `1 -> 16, 2 -> 11, 3 -> 2`, which sums to the 44 above. **Sixteen of the
+# 29 hold a single item, so 13 containers on this corpus can discriminate
+# anything about the main axis** -- see `docs/synthetic-only-coverage.md`,
+# which carries a row per rule.
 FLEX_HEADLINE = (
     ("flex_containers_laid_out", "FLEX CONTAINERS laid out (a population)"),
     ("flex_containers_row", "...row direction"),
