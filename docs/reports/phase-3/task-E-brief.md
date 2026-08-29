@@ -48,6 +48,14 @@ right**, and the halves matter:
 | CSS 2.1 §17.2.1 fixup | corpus occurrences |
 |---|---:|
 | row whose parent is a `table` — needs an anonymous row-group | **96** |
+
+**Correction, made after Task E fetched the spec text: the first row of that
+table is not a §17.2.1 rule at all.** The spec says a `table-row` is
+misparented only when its parent is *neither* a row group *nor* a `table` or
+`inline-table`. A row inside a table is a proper table child and needs no
+fixup. The 96 are a denominator, not coverage — and with that row removed,
+**every actual rule occurs four times or fewer**, which is the opposite of
+what this brief told the implementer.
 | row-group whose parent is a `block` — needs an anonymous table | 2 |
 | row whose parent is a `table-row` — mis-nested | 2 |
 | cell whose parent is not a row — needs an anonymous row | **0** |
@@ -87,8 +95,7 @@ CSS 2.1 §17.5.2.2's automatic layout. The parts that go wrong quietly:
 
 `border-collapse: collapse` (counted), `rowspan` beyond simple spanning,
 `<col>`/`<colgroup>` width contributions, vertical alignment within a cell
-beyond `top`/`middle`, and table margins on internal boxes — CSS 2.1 §17.6
-says a browser drops those, and Task C currently applies them, counted in
+beyond `top`/`middle`, and table margins on internal boxes — CSS 2.1 §17.5 says a browser drops those, and Task C currently applies them, counted in
 `layout_table_box_margins_applied` (2 on the corpus). Fixing that is yours.
 
 ## The harness

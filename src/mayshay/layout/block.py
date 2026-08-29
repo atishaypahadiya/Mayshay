@@ -102,8 +102,9 @@ BLOCK_CONTAINER_DISPLAYS: frozenset[str] = frozenset({"block", "list-item"})
 # Block-level, but with a non-block inner formatting context. Each
 # establishes a new formatting context, which is what makes it a
 # margin-collapsing barrier.
-# The table-internal displays, which CSS 2.1 section 17.6 says the margin
-# properties do not apply to. Task E's rule; named here so the deviation is
+# The table-internal displays, which CSS 2.1 section 17.5 says the margin
+# properties do not apply to (17.6 is the border models and says nothing
+# about margins -- the miscitation Task E corrected). Task E's rule; named here so the deviation is
 # a counter rather than a surprise.
 _TABLE_INTERNAL_DISPLAYS: frozenset[str] = frozenset({
     "table-row",
