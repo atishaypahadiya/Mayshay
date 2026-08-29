@@ -941,25 +941,34 @@ def test_flex_containers_nest_three_deep():
     assert metrics["flex_containers_laid_out"] == 3
 
 
-def test_a_flex_container_is_not_counted_as_a_block_flow_fallback():
-    """`layout_inner_fallback_block` means "a box with a non-block inner
-    layout that nothing implements, laid out as block flow". Flex is
-    implemented now, so it must leave that counter alone -- otherwise the
-    number that is supposed to say what is *missing* keeps counting what is
-    present, and `display: grid` disappears into it."""
+def test_nothing_is_counted_as_a_block_flow_fallback_any_more():
+    """`layout_inner_fallback_block` means "a box whose inner layout this
+    engine does not implement, laid out as block flow instead". It read
+    **156 on the corpus** before this task, and not one of those was that:
+    48 were flex boxes and **108 were table cells**, whose inner layout is
+    block flow by CSS 2.1 section 17.5.3 rather than by fallback.
+
+    It is a residual bucket now, and the only useful kind is one that must
+    read zero -- `docs/measurement-hazards.md` instance seventeen, where a
+    residual that legitimately contained something could never be read as
+    an alarm. `grid` is remapped by `boxtree` and counted there.
+    """
+    for markup in (
+        '<div id=f style="display:flex">'
+        '<div id=a style="width:10px;height:10px"></div></div>',
+        '<div id=f style="display:grid">'
+        '<div id=a style="width:10px;height:10px"></div></div>',
+        '<table id=f><tr><td id=a>cell</td></tr></table>',
+        '<div id=f style="display:inline-block"><div id=a>x</div></div>',
+    ):
+        _, metrics = laid_out(markup)
+        assert metrics["layout_inner_fallback_block"] == 0, markup
+
     root, metrics = laid_out(
         '<div id=f style="display:flex">'
         '<div id=a style="width:10px;height:10px"></div></div>'
     )
     assert metrics["flex_containers_laid_out"] == 1
-    assert metrics["layout_inner_fallback_block"] == 0
-
-    grid, grid_metrics = laid_out(
-        '<div id=f style="display:grid">'
-        '<div id=a style="width:10px;height:10px"></div></div>'
-    )
-    assert grid_metrics["layout_inner_fallback_block"] == 0  # boxtree maps it
-    assert grid_metrics["flex_containers_laid_out"] == 0
 
 
 # --------------------------------------------------------------------------

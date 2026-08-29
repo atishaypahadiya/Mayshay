@@ -100,6 +100,20 @@ from mayshay.layout.used import style_of as _style_of
 # it, exactly as Task B counts `display: grid` falling back to `block`.
 BLOCK_CONTAINER_DISPLAYS: frozenset[str] = frozenset({"block", "list-item"})
 
+# Displays whose inner layout **is** block flow even though their outer
+# display is not `block`. A table cell establishes a block formatting
+# context (CSS 2.1 section 17.5.3), a caption "is a block-level box" (17.4),
+# and an `inline-block` is a block container that happens to sit on a line
+# -- so none of the three is laid out here as a fallback for something
+# unimplemented. They are, though, all outside `BLOCK_CONTAINER_DISPLAYS`,
+# which is what made `layout_inner_fallback_block` read 156 on the corpus
+# before Task F: 48 flex boxes and **108 table cells**, in a counter whose
+# report line says "flex laid out as block flow". Measured, not inferred --
+# every one of the 108 is a `table-cell`.
+BLOCK_FLOW_INNER_DISPLAYS: frozenset[str] = frozenset({
+    "table-cell", "table-caption", "inline-block",
+})
+
 # Block-level, but with a non-block inner formatting context. Each
 # establishes a new formatting context, which is what makes it a
 # margin-collapsing barrier.
@@ -768,21 +782,27 @@ def _layout_block(
     else:
         if (
             box.display not in BLOCK_CONTAINER_DISPLAYS
+            and box.display not in BLOCK_FLOW_INNER_DISPLAYS
+            and box.display not in _TABLE_INTERNAL_DISPLAYS
             and box.display not in table_module.TABLE_DISPLAYS
             and box.display not in flex_module.FLEX_DISPLAYS
             and box.children
             and not is_root
         ):
-            # A block-level box with a non-block inner layout that no
-            # module owns: `grid`, and the table-internal displays that
-            # reach here outside a table. Laid out as block flow and
-            # counted, in the shape of Task B's `boxes_grid_fallback` -- a
-            # fallback that misplaces rather than crashes, and says so.
+            # A box whose inner layout this engine does **not** implement,
+            # laid out as block flow instead -- in the shape of Task B's
+            # `boxes_grid_fallback`: a fallback that misplaces rather than
+            # crashes, and says so.
             #
-            # Task E and Task F removed the two largest populations from
-            # this counter by implementing them, which is why the test that
-            # pins it moved rather than the counter being deleted: what is
-            # left is what nothing implements.
+            # **This is now a residual bucket that must read zero**, which
+            # is the only kind worth having (`docs/measurement-hazards.md`
+            # instance seventeen: a residual that legitimately contains
+            # something can never be read as an alarm). `grid` and
+            # `inline-grid` are remapped to `block` and `inline-block` by
+            # `boxtree` and counted there, and every other display in the
+            # tree now has an inner layout some module owns. It read 156
+            # before Task F and every one of those was either a flex box or
+            # a table cell -- neither of which was a fallback for anything.
             metrics["layout_inner_fallback_block"] += 1
         if box.display in table_module.TABLE_DISPLAYS:
             content_height = _layout_table_contents(

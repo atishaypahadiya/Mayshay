@@ -184,7 +184,8 @@ LAYOUT_HEADLINE = (
     ("layout_float_skipped", "floats: not implemented"),
     ("layout_absolute_skipped", "absolute/fixed: not implemented"),
     ("layout_position_relative_unoffset", "relative: laid out unoffset"),
-    ("layout_inner_fallback_block", "flex laid out as block flow"),
+    ("layout_inner_fallback_block",
+     "unimplemented inner layout, as block flow: must be 0"),
     ("layout_viewport_unit_unresolved", "vw/vh the cascade left symbolic"),
 )
 
