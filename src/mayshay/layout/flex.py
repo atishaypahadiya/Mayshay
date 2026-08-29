@@ -66,11 +66,15 @@ hold one item and 33 hold more; both figures are over the DOM elements
 rather than over the boxes that reach layout, and neither is reproducible
 -- see `docs/synthetic-only-coverage.md`.)
 
-Three things the corpus does reach and the Phase 3 plan did not schedule:
-`flex-wrap: wrap` on 3 laid-out containers, a non-`normal` `column-gap` on
-7 and `row-gap` on 5, and `align-items: baseline` on 2. All three are
-implemented rather than counted, because a partial implementation of them
-would be wrong on cases this engine can reach.
+Three things the corpus reaches that the Phase 3 plan did not schedule:
+`flex-wrap: wrap` on 2 laid-out containers, a non-`normal` `column-gap` on
+7 of them and `row-gap` on 6, and `align-items: baseline` on 2. Gap and
+baseline alignment move real boxes -- removing gap moves 15 rectangles and
+treating `baseline` as `flex-start` moves 1 -- while **wrapping moves
+none**, because neither `wrap` container overflows its line. Wrapping is
+implemented anyway, because the alternative is a rule that is wrong
+wherever the corpus grows a container that does overflow, and it is
+recorded as synthetic-only coverage.
 
 ## The mechanical check
 
