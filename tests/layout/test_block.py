@@ -940,17 +940,21 @@ def test_an_atomic_inline_child_blocks_collapse_through_too():
     """An `inline-block` inside the middle box is inline content, so the box
     has a line box and cannot collapse through.
 
-    Task D2 gives the `inline-block` real geometry, and the interesting
-    number is the middle box's **height: 10, not 18.4**. A line box holding
-    only an atomic inline and no text does not get the block container's
-    strut -- measured, and against CSS 2.1 section 10.8, which says it
-    should. Chrome 151 on this exact fixture with Arial forced: `m` height
-    10, `b` at 110, and the `inline-block` at `[0, 60, 10, 10]`. Ours
-    agrees on **all three exactly**, because with no text on the line there
-    is no line-height for Chrome to round.
+    Task D2 gives the `inline-block` real geometry. The line box carries
+    the block container's **strut** as CSS 2.1 section 10.8 says, so the
+    middle box is 18.4 tall and not 10: a 10px `inline-block` alone on a
+    line does not shrink it.
 
-    See `layout.linebox._suppress_empty_boxes` for the six other shapes
-    that were measured before that rule was written down.
+    Chrome 151 on this exact fixture with Arial forced, in standards mode:
+    `m` height 18, `b` at 118, and the `inline-block` at `[0, 64, 10, 10]`.
+    Ours is 18.3984, 118.3984 and y 64.7461 -- Chrome's integer `hhea`
+    rounding and nothing else. The `inline-block` sits 4.75px below the
+    line top because its baseline is its bottom margin edge and the line's
+    baseline is 14.75px down.
+
+    An earlier draft of this test asserted 10, 110 and y 60, from a probe
+    page with no doctype that had Chrome in quirks mode. See
+    `docs/measurement-hazards.md` instance fifteen.
     """
     root, metrics = laid_out(
         between(
@@ -961,8 +965,8 @@ def test_an_atomic_inline_child_blocks_collapse_through_too():
     )
     assert metrics["margins_collapsed_through_empty"] == 0
     assert metrics["margin_collapse_blocked_line_box"] == 1
-    assert geometry(root, "m").border.height == 10.0
-    assert top(root, "b") == 110.0
+    assert geometry(root, "m").border.height == pytest.approx(18.3984375)
+    assert top(root, "b") == pytest.approx(118.3984375)
 
     inline_block = boxes(root)["ib"]
     assert metrics["widths_shrink_to_fit_resolved"] == 1
@@ -976,7 +980,7 @@ def test_an_atomic_inline_child_blocks_collapse_through_too():
     # fragment, and they are the same rectangle.
     assert len(inline_block.fragments) == 1
     assert inline_block.fragments[0].geometry is inline_block.geometry
-    assert inline_block.geometry.border == Rect(0.0, 60.0, 10.0, 10.0)
+    assert inline_block.geometry.border == Rect(0.0, 64.74609375, 10.0, 10.0)
 
 
 def test_a_table_internal_box_keeps_the_barrier_and_records_the_deviation():

@@ -51,8 +51,32 @@ which are `16/5+1` and `16/3+1` quantised to Chrome's 1/64 LayoutUnit).
 difference between two x-heights: Chrome reports `1ex` as 8.2969px at 16px
 (1062 font units) where this font's `OS/2.sxHeight` is 8.453125px (1082
 units), and `docs/fonts.md` takes the font's own metric because CSS Values
-4 section 5.1.2 says to. That is a 0.078px disagreement per middle-aligned
+4 section 5.1.2 says to. That is a 0.074px disagreement per middle-aligned
 box at 16px, and it is recorded rather than tuned away.
+
+## The strut is present, and the one time it is not
+
+CSS 2.1 section 10.8's **strut** -- a zero-width inline box carrying the
+block container's own font and `line-height`, present on every line box --
+is implemented as written. The only suppression is section 9.4.2's
+zero-height empty line box, in `_line_is_empty`.
+
+An earlier draft of this module did the opposite, on a measurement that was
+wrong. Seven fixtures appeared to show Chrome omitting the strut whenever a
+line held no text of the block's own, and the rule built on them fired
+2,114 times on the corpus. **Every one of those seven came from the same
+probe page, and that page had no doctype**, so Chrome rendered it in quirks
+mode, where the line-height quirk really does suppress the strut. In
+standards mode Chrome agrees with the spec on all seven.
+
+The failure is `docs/measurement-hazards.md`'s "quiet sharing" criterion
+exactly: seven fixtures, one shared harness defect, and a failure mode that
+produced plausible numbers instead of an obvious break. It was worse than
+that -- the number the wrong measurement produced for
+`<div><span style="font-size:8px">x</span></div>` was 9, and this engine's
+own answer was 9.2, so the probe read as *confirmation* of the code it was
+supposed to be checking. `scripts/chrome_compare.py` now emits a doctype
+and asserts `document.compatMode` before it reports anything.
 
 ## The mechanical checks
 
@@ -176,7 +200,6 @@ COUNTER_NAMES: tuple[str, ...] = (
     "line_chars_not_laid_out",
     "line_subtrees_not_laid_out",
     "line_boxes_empty_zero_height",
-    "line_strut_suppressed_no_direct_text",
     "line_ifc_contexts_laid_out",
     "line_breaks_soft",
     "line_breaks_forced_segment",
@@ -202,7 +225,6 @@ COUNTER_NAMES: tuple[str, ...] = (
     "vertical_align_boxes_aligned",
     "vertical_align_percent_resolved_in_layout",
     "vertical_align_top_bottom_extended_line",
-    "vertical_align_text_edge_against_empty_parent",
     "vertical_align_atomic_baseline_from_last_line",
     "vertical_align_atomic_baseline_from_margin_edge",
     "line_height_unit_unresolved",
@@ -867,11 +889,6 @@ class _Aligned:
     children: list["_Aligned"] = field(default_factory=list)
     is_atomic: bool = False
     offset: float = 0.0
-    #: True when this box put nothing on the line and its extent was zeroed
-    #: -- see `_suppress_empty_boxes`. Kept as a flag rather than inferred
-    #: from `ascent == 0`, because a real inline box can legitimately have a
-    #: zero extent (`line-height: 0`) and must still be alignable against.
-    suppressed: bool = False
 
 
 def _subtree_extent(node: _Aligned, metrics: Counter[str]) -> tuple[float, float]:
@@ -942,17 +959,10 @@ def _shift_of(
             (child.ascent - child.descent) / 2.0 - parent.metrics_.x_height / 2.0
         )
     if keyword in ("text-top", "text-bottom"):
-        if parent.suppressed:
-            # There is no parent content area on this line to align an edge
-            # with -- the parent put nothing here, so its metrics are not on
-            # the line either. Chrome leaves the child on the baseline;
-            # measured with `base <span style="vertical-align:text-bottom;
-            # font-size:8px">tb</span> base` wrapped so the span was alone
-            # on its line, where Chrome puts it at the line top and using
-            # the parent's font descent puts it 425px lower.
-            if count:
-                metrics["vertical_align_text_edge_against_empty_parent"] += 1
-            return 0.0
+        # The parent's **content area**, not its inline box: at 2048px the
+        # content area top is 1854 above the baseline and the inline box top
+        # is 1887.5, and the 33.5 between them is exactly what this rule
+        # moves an equally-sized child by.
         ascent, descent = _subtree_extent(child, metrics)
         if keyword == "text-top":
             return ascent - parent.metrics_.ascent
@@ -1068,7 +1078,6 @@ def _place_line(
                 nodes[id(box)] = node
                 parent.children.append(node)
 
-    _suppress_empty_boxes(pieces, nodes, root_node, metrics)
     _assign_offsets(root_node, metrics)
     ascent, descent = _subtree_extent(root_node, metrics)
     top_extent, bottom_extent = -ascent, descent
@@ -1078,13 +1087,14 @@ def _place_line(
 
     height = bottom_extent - top_extent
     baseline = -top_extent
-    if height == 0.0:
-        # CSS 2.1 section 9.4.2's empty line box, arrived at rather than
-        # special-cased: every box on it contributed nothing, so the extent
-        # is nothing. That matters for Task C's
-        # `margin_collapse_blocked_line_box` -- a `<div><span></span></div>`
-        # must still collapse through.
+    if _line_is_empty(pieces, nodes):
+        # CSS 2.1 section 9.4.2. The **only** thing on a line box that this
+        # engine suppresses: everywhere else the block container's strut is
+        # present exactly as section 10.8 says, which is what Chrome does
+        # too in standards mode.
         metrics["line_boxes_empty_zero_height"] += 1
+        height = 0.0
+        baseline = 0.0
 
     line = LineBox(
         index=index,
@@ -1113,81 +1123,6 @@ def _place_line(
         fragment_counts=fragment_counts,
     )
     return line
-
-
-def _suppress_empty_boxes(
-    pieces: list[_Piece],
-    nodes: dict[int, _Aligned],
-    root_node: _Aligned,
-    metrics: Counter[str],
-) -> None:
-    """Zero the extent of every inline box with nothing of its own here.
-
-    **This is a deliberate divergence from CSS 2.1 section 10.8**, measured
-    rather than assumed, and it is the single largest behavioural decision
-    in this module.
-
-    The spec says a line box always contains a *strut* -- a zero-width
-    inline box with the block container's font and line height -- so
-    `<div><span style="font-size:8px">x</span></div>` should be 18.40px
-    tall at a 16px block font. Chrome 151 makes it **9**. Measured at
-    several shapes, all in a 100px `<div>` with `font: 16px/normal Arial`
-    on the body:
-
-        <span style="font-size:8px">x</span>                     9
-        <span style="font-size:8px;line-height:8px">x</span>     8
-        x                                                       18
-        <span style="display:inline-block;width:10px;
-              height:10px"></span>                              10
-        <span style="line-height:60px"><ib 10px></span>         10
-        <span style="padding:0 2px"><ib 10px></span>            45  (40px font)
-        <br>                                                    18
-        <span></span>                                            0
-
-    Every row is explained by one rule and no other: **an inline box
-    contributes its font metrics to a line box only when it directly
-    contains text or a forced break on that line, or has edges of its
-    own.** The root inline box is not exempt -- row 1 is the proof, and it
-    is the row a reading of the spec gets wrong.
-
-    Implementing the spec instead would make this engine disagree with the
-    reference renderer on every line whose text sits inside a smaller-font
-    inline box, which on a real page is most of the small print. Counted in
-    `line_strut_suppressed_no_direct_text` so the size of the divergence
-    from CSS 2.1 is a number rather than a paragraph.
-    """
-    contributes: set[int] = set()
-    trimmable = _last_trimmable_text_piece(pieces)
-    for piece in pieces:
-        item = piece.item
-        if item.kind not in (_TEXT, _BREAK):
-            continue
-        if item.kind == _TEXT:
-            body = piece.text
-            if piece is trimmable:
-                # White space that is trimmed off the end of the line is
-                # not on the line, so it cannot be what puts the block
-                # container's font metrics there. Measured: `base <span
-                # style="vertical-align:sub">sub</span> base` wrapped at
-                # 2048px put our span 410.6px below Chrome's, because the
-                # space in front of `base` had landed on the span's line
-                # and dragged a 2048px strut with it.
-                tail = _trailing_white_space(piece)
-                body = body[: len(body) - len(tail)] if tail else body
-            if not body:
-                continue
-        owner = item.ancestors[-1] if item.ancestors else None
-        contributes.add(id(owner) if owner is not None else id(root_node))
-    for node in [root_node, *_descendants(root_node)]:
-        if node.is_atomic:
-            continue
-        key = id(node.box) if node.box is not None else id(root_node)
-        if key in contributes or _has_edges(node.style):
-            continue
-        metrics["line_strut_suppressed_no_direct_text"] += 1
-        node.suppressed = True
-        node.ascent = 0.0
-        node.descent = 0.0
 
 
 def _coalesce(pieces: list[_Piece]) -> list[_Piece]:
@@ -1247,10 +1182,16 @@ def _atomic_node(
     """An atomic inline's own extent, and where its baseline is.
 
     CSS 2.1 section 10.8.1: the baseline of an `inline-block` is the
-    baseline of its **last line box**, unless it has no in-flow line boxes,
-    in which case it is the bottom margin edge. Both branches are counted,
-    because "it had no line boxes" and "we did not look" are different
-    facts and only the split says which happened.
+    baseline of its **last line box**, unless it has no in-flow line boxes
+    or its `overflow` is not `visible`, in which case it is the bottom
+    margin edge. Both branches are counted, because "it had no line boxes"
+    and "we did not look" are different facts and only the split says which
+    happened.
+
+    Measured: a 20px-wide `inline-block` containing text is 18 tall and sits
+    on the outer baseline, so the line box stays 18; the same box with
+    `overflow: hidden` hangs its whole margin box above the baseline and the
+    line box becomes 22.
     """
     height, last_baseline = layout_atomic(box)
     zero: Counter[str] = Counter()
@@ -1275,7 +1216,48 @@ def _atomic_node(
     )
 
 
-def _has_edges(style: ComputedStyle) -> bool:
+def _line_is_empty(pieces: list[_Piece], nodes: dict[int, _Aligned]) -> bool:
+    """CSS 2.1 section 9.4.2: is this line box treated as zero-height?
+
+    "Line boxes that contain no text, no preserved white space, no inline
+    elements with non-zero margins, padding, or borders ... must be treated
+    as zero-height line boxes."
+
+    **Horizontal edges only**, which the spec does not say and Chrome does.
+    Measured, one fixture per page, in standards mode:
+
+        <span></span>                              0
+        <span style="padding:5px 0"></span>        0    vertical padding
+        <span style="padding:0 5px"></span>       18    horizontal padding
+        <span style="border-left:1px solid"></span>  18
+        <span style="margin:0 5px"></span>        18
+        <span style="line-height:40px"></span>     0    line-height is not content
+        <span><span></span></span>                 0
+        <br>                                      18    a forced break IS content
+        <img>                                     18
+        &#xa0;                                    18    NBSP is content
+        (three spaces)                             0    they collapse away
+
+    A vertical padding on an empty inline does not make the line non-empty
+    because it never affected the line box's height in the first place --
+    CSS 2.1 section 10.8 says vertical padding and borders on an inline box
+    do not contribute to line height. Testing all four sides here would
+    make the vertical row 18 and disagree with the browser.
+
+    This rule is load-bearing for Task C rather than cosmetic: a line box is
+    a margin-collapsing barrier, so an empty one claiming a height would
+    stop a collapse that Chrome allows.
+    """
+    for piece in pieces:
+        kind = piece.item.kind
+        if kind == _BREAK or kind == _ATOMIC:
+            return False
+        if kind == _TEXT and piece.text:
+            return False
+    return not any(_has_horizontal_edges(node.style) for node in nodes.values())
+
+
+def _has_horizontal_edges(style: ComputedStyle) -> bool:
     zero: Counter[str] = Counter()
     return any(
         px_or_zero(value, basis=0.0, metrics=zero) != 0.0
@@ -1283,8 +1265,6 @@ def _has_edges(style: ComputedStyle) -> bool:
             style.margin_left, style.margin_right,
             style.padding_left, style.padding_right,
             style.border_left_width, style.border_right_width,
-            style.padding_top, style.padding_bottom,
-            style.border_top_width, style.border_bottom_width,
         )
     )
 

@@ -38,6 +38,20 @@ returns their union, which matches none of them. See
 rectangle at each `<br>`, which is the break and not a fragment, so those
 are dropped.
 
+## Standards mode, asserted
+
+Every page this script writes begins `<!doctype html>`, and every result
+carries `document.compatMode` back with it and is rejected unless it says
+`CSS1Compat`.
+
+That is not a formality. An earlier harness omitted the doctype, Chrome
+rendered in quirks mode, and the line-height quirk suppressed the block
+container's strut -- which produced seven plausible measurements, all
+wrong in the same direction, and a behavioural decision in this engine
+that fired 2,114 times on the corpus. The assertion is the mechanical
+countermeasure: a check that fails a run rather than a rule someone has to
+remember. `docs/measurement-hazards.md` instance fifteen.
+
 ## The startup assertion
 
 Before anything is compared, a fixture with known geometry is measured and
@@ -183,6 +197,46 @@ HORIZONTAL: dict[str, str] = {
     'style="display:inline-block;width:40px;height:10px"></span>b</div>',
 }
 
+#: Block-container heights, which is where the strut lives.
+#:
+#: This family exists because the harness **did not have it** when the
+#: strut rule was got wrong, and would not have caught the mistake: every
+#: other fixture here puts the block's own text on the line, so the strut
+#: is present either way and the two readings agree. A comparison that
+#: cannot discriminate the rule under test is not evidence about it.
+#:
+#: Compared at 16px against Chrome's integer `hhea` rounding, so the
+#: tolerance is 1.0px and the interesting rows differ from each other by 8
+#: to 26px.
+HEIGHTS: dict[str, str] = {
+    "strut-small-child": '<div data-h="fx" data-m="s" style="width:300px">'
+    '<span style="font-size:8px">x</span></div>',
+    "strut-small-lh": '<div data-h="fx" data-m="s" style="width:300px">'
+    '<span style="font-size:8px;line-height:8px">x</span></div>',
+    "strut-atomic-only": '<div data-h="fx" data-m="s" style="width:300px">'
+    '<span style="display:inline-block;width:10px;height:10px"></span></div>',
+    "strut-atomic-tall": '<div data-h="fx" data-m="s" style="width:300px">'
+    '<span style="display:inline-block;width:10px;height:40px"></span></div>',
+    "strut-br": '<div data-h="fx" data-m="s" style="width:300px"><br></div>',
+    "strut-nbsp": '<div data-h="fx" data-m="s" style="width:300px">&#xa0;</div>',
+    "strut-big-child": '<div data-h="fx" data-m="s" style="width:300px">'
+    '<span style="font-size:32px">Big</span></div>',
+    "empty-span": '<div data-h="fx" data-m="s" style="width:300px">'
+    "<span></span></div>",
+    "empty-nested": '<div data-h="fx" data-m="s" style="width:300px">'
+    "<span><span></span></span></div>",
+    "empty-vertical-padding": '<div data-h="fx" data-m="s" style="width:300px">'
+    '<span style="padding:5px 0"></span></div>',
+    "empty-horizontal-padding": '<div data-h="fx" data-m="s" style="width:300px">'
+    '<span style="padding:0 5px"></span></div>',
+    "empty-border": '<div data-h="fx" data-m="s" style="width:300px">'
+    '<span style="border-left:1px solid"></span></div>',
+    "empty-line-height": '<div data-h="fx" data-m="s" style="width:300px">'
+    '<span style="line-height:40px"></span></div>',
+    "collapsed-spaces": '<div data-h="fx" data-m="s" style="width:300px">'
+    "   </div>",
+}
+
 VERTICAL: dict[str, str] = {
     "baseline": f'<div {WIDE}>base <span data-m="s">mid</span> base</div>',
     "sub": f'<div {WIDE}>base <span data-m="s" style="vertical-align:sub">sub'
@@ -280,7 +334,8 @@ function ordinal(el) {
   for (const n of document.querySelectorAll('*')) { if (n === el) return i; i++; }
   return -1;
 }
-document.title = 'RESULT' + JSON.stringify(out) + 'ENDRESULT';
+document.title = 'RESULT' + JSON.stringify(out) + '|' + document.compatMode +
+                 'ENDRESULT';
 """
 
 
@@ -292,8 +347,15 @@ def measure_in_chrome(fixtures: dict[str, str], size: int) -> dict:
     items = "".join(
         f'<div data-fx="{name}">{body}</div>' for name, body in fixtures.items()
     )
+    # `<!doctype html>` is **not** decoration. Without it Chrome renders in
+    # quirks mode, where the line-height quirk suppresses the block
+    # container's strut -- and the numbers that come back are plausible,
+    # in the right range, and wrong. That mistake produced a 2,114-site
+    # behavioural decision in this engine before the coordinator
+    # re-measured it. `document.compatMode` is asserted below so the page
+    # cannot silently slip back.
     html = (
-        f'<meta charset="utf-8"><style>{stylesheet(size)}</style>'
+        f'<!doctype html><meta charset="utf-8"><style>{stylesheet(size)}</style>'
         f"{items}<script>{_PAGE_SCRIPT}</script>"
     )
     with tempfile.NamedTemporaryFile(
@@ -317,7 +379,15 @@ def measure_in_chrome(fixtures: dict[str, str], size: int) -> dict:
         print(result.stdout[:2000], file=sys.stderr)
         print(result.stderr[:2000], file=sys.stderr)
         raise SystemExit("Chrome produced no result -- is it the pinned build?")
-    return json.loads(match.group(1))
+    payload, mode = match.group(1).rsplit("|", 1)
+    if mode != "CSS1Compat":
+        raise SystemExit(
+            f"Chrome rendered this page in {mode}, not standards mode. Every "
+            "number from a quirks-mode page is wrong in ways that look "
+            "right -- the line-height quirk alone suppresses the strut. "
+            "See docs/measurement-hazards.md instance fifteen."
+        )
+    return json.loads(payload)
 
 
 # --------------------------------------------------------------------------
@@ -474,8 +544,8 @@ Three fixtures disagree and all three are accounted for:
               lines in the same places; we do not give the hung run a
               fragment of its own. A difference in what a fragment is.
   middle      Chrome's x-height for this font is 1062 units and
-              OS/2.sxHeight says 1082, so a middle-aligned box lands 9px
-              apart at 2048px and 0.07px at 16px. CSS Values 4 section
+              OS/2.sxHeight says 1082, so a middle-aligned box lands 9.5px
+              apart at 2048px and 0.074px at 16px. CSS Values 4 section
               5.1.2 says to use the font's metric, and we do.
 
 A fourth would be a finding.
@@ -492,6 +562,8 @@ def main(argv: list[str] | None = None) -> int:
     if arguments.list:
         for name in HORIZONTAL:
             print(f"horizontal  {name}")
+        for name in HEIGHTS:
+            print(f"heights     {name}")
         for name in VERTICAL:
             print(f"vertical    {name}")
         return 0
@@ -503,10 +575,12 @@ def main(argv: list[str] | None = None) -> int:
 
     horizontal = HORIZONTAL
     vertical = VERTICAL
+    heights = HEIGHTS
     if arguments.only:
         wanted = set(arguments.only)
         horizontal = {k: v for k, v in HORIZONTAL.items() if k in wanted}
         vertical = {k: v for k, v in VERTICAL.items() if k in wanted}
+        heights = {k: v for k, v in HEIGHTS.items() if k in wanted}
 
     assert_box_model(16)
     total_agree = total = 0
@@ -514,6 +588,16 @@ def main(argv: list[str] | None = None) -> int:
         agree, count = run(
             horizontal, 16, "xw", HORIZONTAL_TOLERANCE,
             "line breaking and fragment extents",
+        )
+        total_agree += agree
+        total += count
+    if heights:
+        # 1.0px: Chrome rounds this font's hhea metrics to whole pixels, so
+        # 18.3984 comes back as 18. The rows differ from each other by 8 to
+        # 26px, so the tolerance cannot hide the rule under test.
+        agree, count = run(
+            heights, 16, "h", 1.0,
+            "the strut and the empty line box (CSS 2.1 10.8 and 9.4.2)",
         )
         total_agree += agree
         total += count

@@ -649,60 +649,98 @@ def test_a_unitless_line_height_multiplies_by_the_childs_own_font_size():
     assert marked(root)["d"].geometry.content.height == pytest.approx(48.0, **APPROX)
 
 
-def test_the_strut_is_suppressed_on_a_line_with_no_direct_text():
-    """A deliberate divergence from CSS 2.1 section 10.8, measured.
+STRUT_FIXTURES = [
+    # inner HTML, Chrome 151 height, our height
+    ('<span style="font-size:8px">x</span>', 18, 18.3984375),
+    ('<span style="font-size:8px;line-height:8px">x</span>', 18, 18.3984375),
+    ("x", 18, 18.3984375),
+    ('<span style="display:inline-block;width:10px;height:10px"></span>',
+     18, 18.3984375),
+    ('<span style="display:inline-block;width:10px;height:40px"></span>',
+     44, 43.65234375),
+    ("<br>", 18, 18.3984375),
+    ('<span style="font-size:32px">Big</span>', 37, 36.796875),
+    ('<span style="line-height:40px">x</span>', 40, 40.0),
+    (NBSP, 18, 18.3984375),
+]
 
-    The spec says a line box always carries the block container's font
-    metrics, so `<div><span style="font-size:8px">x</span></div>` should be
-    18.40 tall at a 16px block font. **Chrome 151 makes it 9.** Seven
-    shapes were measured before this rule was written down and one rule
-    explains all seven; see `layout.linebox._suppress_empty_boxes`.
 
-    Implementing the spec instead would put this engine at odds with the
-    reference renderer on every line whose text sits inside a smaller-font
-    inline box.
+@pytest.mark.parametrize(
+    "inner,chrome,expected",
+    STRUT_FIXTURES,
+    ids=[repr(row[0])[:34] for row in STRUT_FIXTURES],
+)
+def test_the_strut_is_on_every_line_box(inner, chrome, expected):
+    """CSS 2.1 section 10.8's strut, implemented as written.
+
+    A line box always carries the block container's own font and
+    `line-height`, so `<div style="font-size:16px"><span style="font-size:
+    8px">x</span></div>` is 18.40px tall and not 9.20 -- the 8px child does
+    not shrink the line, and neither does a 10px `inline-block` alone on it.
+
+    **An earlier version of this file asserted the opposite**, on a
+    measurement that was wrong. Seven fixtures appeared to show Chrome
+    omitting the strut, and all seven came from one probe page that had no
+    doctype, so Chrome rendered it in quirks mode -- where the line-height
+    quirk really does suppress it. Re-measured with `<!doctype html>`, one
+    fixture per page, and cross-checked by the coordinator over CDP,
+    Chrome agrees with the spec on every row above.
+
+    The residual is Chrome's integer rounding of this font's `hhea`
+    metrics, which `docs/fonts.md` derives: 18 against 18.3984, 44 against
+    43.6523, 37 against 36.7969. `line-height: 40px` is exact in both,
+    because there is no font metric left in it to round.
     """
-    nested, metrics = laid_out(
-        '<div id=d style="width:400px"><span style="font-size:8px">x</span></div>'
+    root, metrics = laid_out(f'<div id=d style="width:300px">{inner}</div>')
+    assert marked(root)["d"].geometry.content.height == pytest.approx(
+        expected, **APPROX
     )
-    direct, _ = laid_out('<div id=d style="width:400px">x</div>')
-    assert marked(nested)["d"].geometry.content.height == pytest.approx(
-        9.19921875, **APPROX
-    )
-    assert marked(direct)["d"].geometry.content.height == pytest.approx(
-        18.3984375, **APPROX
-    )
-    assert metrics["line_strut_suppressed_no_direct_text"] == 1
+    assert abs(expected - chrome) < 1.0
+    assert metrics["line_boxes_empty_zero_height"] == 0
 
 
-def test_a_line_holding_only_an_atomic_inline_gets_no_strut_either():
-    """Chrome: `<div><span style="display:inline-block;width:10px;
-    height:10px"></span></div>` is **10** tall, not 18.4. The same rule as
-    above, reached from the other direction."""
-    root, _ = laid_out(
-        '<div id=d style="width:400px"><span style="display:inline-block;'
-        'width:10px;height:10px"></span></div>'
-    )
-    assert marked(root)["d"].geometry.content.height == 10.0
+EMPTY_LINE_FIXTURES = [
+    # inner HTML, Chrome 151 height, ours
+    ("<span></span>", 0, 0.0),
+    ("<span></span><span></span>", 0, 0.0),
+    ("<span><span></span></span>", 0, 0.0),
+    ('<span style="line-height:40px"></span>', 0, 0.0),
+    # Vertical padding on an inline box never affected line height in the
+    # first place (section 10.8), so it does not make the line non-empty.
+    ('<span style="padding:5px 0"></span>', 0, 0.0),
+    ('<span style="padding:0 5px"></span>', 18, 18.3984375),
+    ('<span style="border-left:1px solid"></span>', 18, 18.3984375),
+    ('<span style="margin:0 5px"></span>', 18, 18.3984375),
+]
 
 
-def test_an_empty_inline_box_makes_a_zero_height_line_box():
-    """CSS 2.1 section 9.4.2. Chrome: `<div><span></span></div>` is 0 tall
-    and `<div><span style="padding:0 5px"></span></div>` is 18.
+@pytest.mark.parametrize(
+    "inner,chrome,expected",
+    EMPTY_LINE_FIXTURES,
+    ids=[repr(row[0])[:34] for row in EMPTY_LINE_FIXTURES],
+)
+def test_an_empty_line_box_is_zero_height(inner, chrome, expected):
+    """CSS 2.1 section 9.4.2, and the **only** thing this engine suppresses
+    on a line box.
 
-    This is load-bearing for Task C rather than cosmetic: a line box is a
-    margin-collapsing barrier, so an empty one that claimed a height would
-    stop a collapse that Chrome allows.
+    "Line boxes that contain no text, no preserved white space, no inline
+    elements with non-zero margins, padding, or borders ... must be treated
+    as zero-height."
+
+    The horizontal/vertical split is the interesting half and the spec does
+    not state it: `padding: 5px 0` leaves the line empty and `padding: 0
+    5px` does not. Measured, one fixture per page, in standards mode.
+
+    Load-bearing for Task C rather than cosmetic: a line box is a
+    margin-collapsing barrier, so an empty one claiming a height would stop
+    a collapse Chrome allows.
     """
-    empty, metrics = laid_out('<div id=d style="width:400px"><span></span></div>')
-    padded, _ = laid_out(
-        '<div id=d style="width:400px"><span style="padding:0 5px"></span></div>'
+    root, metrics = laid_out(f'<div id=d style="width:300px">{inner}</div>')
+    assert marked(root)["d"].geometry.content.height == pytest.approx(
+        expected, **APPROX
     )
-    assert marked(empty)["d"].geometry.content.height == 0.0
-    assert metrics["line_boxes_empty_zero_height"] == 1
-    assert marked(padded)["d"].geometry.content.height == pytest.approx(
-        18.3984375, **APPROX
-    )
+    assert abs(expected - chrome) < 1.0
+    assert metrics["line_boxes_empty_zero_height"] == (1 if chrome == 0 else 0)
 
 
 # --------------------------------------------------------------------------
