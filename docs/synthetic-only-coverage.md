@@ -249,6 +249,58 @@ the same task.
 
 A reader of the first table would have counted three of these as covered.
 
+## Tagged for Task F, before it runs
+
+Flex is the last layout task and has the least corpus coverage relative to
+its complexity. Measured before dispatch, so a green suite is read correctly
+when it arrives.
+
+**233 flex containers — and 193 of them hold exactly one item.**
+
+    items per container:   0 -> 7    1 -> 193    2 -> 31    3 -> 2
+
+A single-item flex container is nearly indistinguishable from a block
+container. `justify-content` has nothing to distribute, `flex-grow` and
+`flex-shrink` have no competitor to divide the free space with, and
+`order` cannot reorder anything. **Only 33 containers can discriminate any
+of it**, and 2 of those are the only ones with a third item.
+
+`align-items` is the exception: it acts on the cross axis and works with one
+item, which is presumably why it is also the most declared (19 of 79 flex
+declarations are `align-items: center`).
+
+211 of the 233 sit inside another flex container, so nesting is the one axis
+the corpus does cover well.
+
+What the stylesheets actually declare, 79 declarations across 36 distinct
+values:
+
+    align-items 22   justify-content 12   flex 7   flex-flow 7
+    flex-shrink 6    flex-wrap 6          gap 5    flex-grow 5
+    column-gap 5     flex-direction 2     flex-basis 1   align-self 1
+
+Two of those were **outside the planned scope** and should not be, or should
+be recorded as known divergences rather than discovered ones:
+
+* **`flex-wrap: wrap` occurs 5 times.** The Phase 3 plan defers wrapping and
+  lays wrapped containers out as `nowrap`, which misplaces rather than
+  crashes — but on five real containers, not zero.
+* **`gap` and `column-gap` occur 10 times between them.** Not mentioned in
+  the plan at all. Gap is straightforward and its absence moves every item
+  in those containers.
+
+Rows to expect in the register after Task F, all currently at zero corpus
+occurrences: `order`, `align-content`, `flex-direction: row-reverse` /
+`column-reverse`, `align-items: stretch` as an explicit declaration,
+`flex-basis` in any unit other than the one occurrence, and every
+justify-content value beyond `center`, `flex-end` and `flex-start`.
+
+**None of the eleven flex properties is currently in `ComputedStyle`.** Task
+F adds them, as Task C added `overflow`/`float`/`clear`/`position` and Task E
+added chapter 17's four. Until it does, every flex container on the corpus
+computes `display: flex` and nothing else, so the 205 `flex` boxes in the
+display census have never had a flex property applied to them.
+
 ## Tagged for Task D2, before it runs
 
 `vertical-align` is what baseline alignment is steered by, and the corpus
