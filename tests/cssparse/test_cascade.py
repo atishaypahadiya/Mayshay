@@ -2368,3 +2368,181 @@ def test_an_invalid_border_spacing_is_dropped_rather_than_half_applied():
             f"table {{ border-spacing: 5px }} table {{ border-spacing: {bad} }}",
         )
         assert style.border_spacing == (Length(5, "px"), Length(5, "px")), bad
+
+
+# --------------------------------------------------------------------------
+# Phase 3 Task F: CSS Flexible Box Layout 1 and CSS Box Alignment 3
+# --------------------------------------------------------------------------
+
+FLEX_HTML = (
+    "<!DOCTYPE html><body><div id=f><section><p>x</p></section></div></body>"
+)
+
+FLEX_PROPERTIES = (
+    "flex-direction", "flex-wrap", "justify-content", "align-items",
+    "align-self", "align-content", "flex-grow", "flex-shrink", "flex-basis",
+    "order", "row-gap", "column-gap",
+)
+
+
+def test_the_flex_properties_cascade_onto_the_container():
+    """Twelve longhands, all of them read by `layout.flex`. Before this task
+    every one of the corpus's 233 `display: flex` elements had a flex
+    container's display and not one flex property, so this is the change
+    that makes the other twelve numbers in the layout report possible."""
+    style = style_of(
+        FLEX_HTML, "div",
+        "div { display: flex; flex-direction: column; flex-wrap: wrap;"
+        " justify-content: space-between; align-items: center;"
+        " align-content: space-around; row-gap: 6px; column-gap: 24px }",
+    )
+    assert style.display == "flex"
+    assert style.flex_direction == "column"
+    assert style.flex_wrap == "wrap"
+    assert style.justify_content == "space-between"
+    assert style.align_items == "center"
+    assert style.align_content == "space-around"
+    assert style.row_gap == Length(6, "px")
+    assert style.column_gap == Length(24, "px")
+
+
+def test_the_item_properties_cascade_onto_the_item():
+    style = style_of(
+        FLEX_HTML, "section",
+        "section { flex-grow: 2; flex-shrink: 0; flex-basis: 70%;"
+        " order: -1; align-self: flex-end }",
+    )
+    assert style.flex_grow == 2.0
+    assert style.flex_shrink == 0.0
+    assert style.flex_basis == Percent(70)
+    assert style.order == -1
+    assert style.align_self == "flex-end"
+
+
+def test_no_flex_property_inherits():
+    """None of the twelve is inherited, and a flex container's child is
+    exactly where that would be invisible: a `justify-content` that
+    inherited would produce a plausible page with every nested container
+    justified like its ancestor. Asserted on a grandchild so a one-level
+    fixture cannot pass by accident."""
+    doc = styled(
+        FLEX_HTML,
+        "div { display: flex; flex-direction: column; flex-wrap: wrap;"
+        " justify-content: center; align-items: center;"
+        " align-content: center; row-gap: 5px; column-gap: 5px;"
+        " flex-grow: 3; flex-shrink: 0; flex-basis: 10px; order: 2;"
+        " align-self: center }",
+    )
+    initial = ComputedStyle()
+    for tag in ("section", "p"):
+        style = find(doc, tag).computed_style
+        for prop in FLEX_PROPERTIES:
+            assert style.get(prop) == initial.get(prop), (tag, prop)
+
+
+def test_the_initial_values_are_box_alignment_threes():
+    """`normal`, not Flexbox 1's original `flex-start` and `stretch`.
+
+    A browser's computed value for an undeclared `align-items` is `normal`,
+    and the comparison harness is a browser -- so storing `stretch` here
+    would make this table disagree with the reference. What `normal`
+    *behaves* as is a used-value fact and lives in `layout.flex`.
+    """
+    style = ComputedStyle()
+    assert style.flex_direction == "row"
+    assert style.flex_wrap == "nowrap"
+    assert style.justify_content == "normal"
+    assert style.align_items == "normal"
+    assert style.align_self == "auto"
+    assert style.align_content == "normal"
+    assert style.flex_grow == 0.0
+    assert style.flex_shrink == 1.0
+    assert style.flex_basis is AUTO
+    assert style.order == 0
+    assert style.row_gap == Keyword("normal")
+    assert style.column_gap == Keyword("normal")
+
+
+def test_the_flex_shorthand_uses_its_own_defaults_not_the_initial_values():
+    """The trap this property is famous for, asserted through the cascade
+    rather than the parser so a shorthand-reset bug would show up too.
+
+    `flex: 1` is `1 1 0%` and the initial value is `0 1 auto`, so
+    `_reset_omitted_longhands` -- which fills omissions from
+    `INITIAL_SPECIFIED` -- would hand back `auto` and every item would size
+    itself from its content where the author asked for an equal share.
+    Measured in Chrome: two `flex: 1` items with widths 300 and 100 in a
+    400px container come out 200 and 200, and under `1 1 auto` they would
+    be 300 and 100.
+    """
+    one = style_of(FLEX_HTML, "section", "section { flex: 1 }")
+    assert (one.flex_grow, one.flex_shrink, one.flex_basis) == (
+        1.0, 1.0, Percent(0),
+    )
+    for src, expected in [
+        ("flex: none", (0.0, 0.0, AUTO)),
+        ("flex: auto", (1.0, 1.0, AUTO)),
+        ("flex: 0", (0.0, 1.0, Percent(0))),
+        ("flex: 1 0", (1.0, 0.0, Percent(0))),
+        ("flex: 1 1 100%", (1.0, 1.0, Percent(100))),
+        ("flex: 30px 2", (2.0, 1.0, Length(30, "px"))),
+    ]:
+        style = style_of(FLEX_HTML, "section", f"section {{ {src} }}")
+        assert (style.flex_grow, style.flex_shrink, style.flex_basis) == expected, src
+
+
+def test_a_later_flex_shorthand_resets_the_longhands_it_omits():
+    """`flex-basis: 70px` then `flex: 2` leaves the basis at **0%**, not at
+    70px: a shorthand sets every longhand it governs. The reverse order is
+    asserted too, because a merge rather than a reset passes one of the two
+    and this file has seen exactly that defect on `border`."""
+    later = style_of(
+        FLEX_HTML, "section",
+        "section { flex-basis: 70px } section { flex: 2 }",
+    )
+    assert later.flex_basis == Percent(0)
+    assert later.flex_grow == 2.0
+
+    earlier = style_of(
+        FLEX_HTML, "section",
+        "section { flex: 2 } section { flex-basis: 70px }",
+    )
+    assert earlier.flex_basis == Length(70, "px")
+    assert earlier.flex_grow == 2.0
+
+
+def test_flex_flow_and_gap_expand_to_both_longhands():
+    """`flex-flow` is `<direction> || <wrap>` in either order, and `gap` is
+    **row then column** -- the reverse of `border-spacing`'s
+    horizontal-then-vertical, one module away in the same phase."""
+    flow = style_of(FLEX_HTML, "div", "div { flex-flow: wrap column }")
+    assert (flow.flex_direction, flow.flex_wrap) == ("column", "wrap")
+
+    partial = style_of(FLEX_HTML, "div", "div { flex-flow: column }")
+    assert (partial.flex_direction, partial.flex_wrap) == ("column", "nowrap")
+
+    gap = style_of(FLEX_HTML, "div", "div { gap: 10px 20px }")
+    assert gap.row_gap == Length(10, "px")
+    assert gap.column_gap == Length(20, "px")
+
+    one = style_of(FLEX_HTML, "div", "div { font-size: 20px; gap: 1.5em }")
+    assert one.row_gap == one.column_gap == Length(30, "px")
+
+
+def test_an_invalid_flex_value_is_dropped_rather_than_half_applied():
+    """Asserted against a declared good value on the same element, so this
+    cannot pass by the property never cascading at all."""
+    for prop, good, bad in [
+        ("flex-grow", "2", "-1"),
+        ("flex-shrink", "2", "-1"),
+        ("order", "2", "1.5"),
+        ("column-gap", "5px", "-1px"),
+        ("flex-basis", "5px", "-5px"),
+        ("flex-direction", "column", "sideways"),
+        ("align-items", "center", "safe center"),
+    ]:
+        style = style_of(
+            FLEX_HTML, "section",
+            f"section {{ {prop}: {good} }} section {{ {prop}: {bad} }}",
+        )
+        assert style.get(prop) != ComputedStyle().get(prop), (prop, bad)
