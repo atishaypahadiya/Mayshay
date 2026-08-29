@@ -311,7 +311,7 @@ def test_the_box_model_longhands_are_supported():
     for name, src in supported.items():
         assert val(name, src) is not None, name
 
-    assert len(SUPPORTED_PROPERTIES) == 53
+    assert len(SUPPORTED_PROPERTIES) == 68
     box_model = SUPPORTED_PROPERTIES - {
         "display", "width", "height", "font-size", "color",
         "background-color", "margin", "padding", "border",
@@ -326,6 +326,14 @@ def test_the_box_model_longhands_are_supported():
         # Task E's four: CSS 2.1 chapter 17's table properties, which are
         # not box-model longhands either.
         "table-layout", "border-collapse", "border-spacing", "caption-side",
+        # Task F's fifteen: twelve flex longhands and the three shorthands
+        # (`flex`, `flex-flow`, `gap`) that expand to them. Not box-model
+        # longhands either -- and `gap` is why the count is fifteen where
+        # the task brief says eleven properties.
+        "flex-direction", "flex-wrap", "justify-content", "align-items",
+        "align-self", "align-content", "flex-grow", "flex-shrink",
+        "flex-basis", "order", "row-gap", "column-gap",
+        "flex", "flex-flow", "gap",
     }
     assert len(box_model) == 27, sorted(box_model)
 
@@ -488,6 +496,14 @@ def test_the_property_table_and_its_derived_sets_agree():
         "clear": "both", "position": "absolute",
         "table-layout": "fixed", "border-collapse": "collapse",
         "border-spacing": "2px 4px", "caption-side": "bottom",
+        # Task F. Every sample here is a value the corpus actually writes,
+        # except `order` and `align-content`, which it never writes at all.
+        "flex-direction": "column", "flex-wrap": "wrap",
+        "justify-content": "space-between", "align-items": "center",
+        "align-self": "center", "align-content": "space-between",
+        "flex-grow": "1", "flex-shrink": "0", "flex-basis": "70%",
+        "order": "-1", "row-gap": "6px", "column-gap": "24px",
+        "flex": "1 1 100%", "flex-flow": "column wrap", "gap": "16px",
     })
     assert set(samples) == SUPPORTED_PROPERTIES, (
         "a property was added to the table without a sample here: "
@@ -836,3 +852,88 @@ def test_custom_property_names_are_not_normalised():
     assert is_custom_property("color") is False
     assert is_custom_property("-webkit-transform") is False
     assert sub("var(--X)", {"--x": "red", "--X": "blue"}) == ("blue", None)
+
+
+# --------------------------------------------------------------------------
+# Phase 3 Task F: the flex grammars
+# --------------------------------------------------------------------------
+
+
+def test_the_flex_shorthand_accepts_the_basis_on_either_side():
+    """`[ <'flex-grow'> <'flex-shrink'>? || <'flex-basis'> ]` -- the `||`
+    means the basis may precede the factors as well as follow them, so
+    `flex: 30px 2` is `2 1 30px`. Both orders are accepted rather than only
+    the common one."""
+    assert val("flex", "30px 2") == {
+        "flex-grow": 2.0, "flex-shrink": 1.0, "flex-basis": Length(30, "px"),
+    }
+    assert val("flex", "2 30px") == val("flex", "30px 2")
+    assert val("flex", "30px 2 3") == {
+        "flex-grow": 2.0, "flex-shrink": 3.0, "flex-basis": Length(30, "px"),
+    }
+
+
+def test_a_unitless_zero_in_the_flex_shorthand_is_a_number_not_a_length():
+    """`flex: 0` is `0 1 0%`, not `1 1 0px`: a unitless zero is the one
+    unitless `<length>` CSS allows *and* a `<number>`, and the grammar
+    resolves it as the number. The two differ in `flex-grow`, which is the
+    half that decides whether the item takes any free space at all."""
+    assert val("flex", "0") == {
+        "flex-grow": 0.0, "flex-shrink": 1.0, "flex-basis": Percent(0),
+    }
+
+
+@pytest.mark.parametrize("src", [
+    "1 30px 2",   # the factors must be adjacent
+    "1 2 3",      # three numbers: the third is not a basis
+    "1 2 3 4",
+    "auto auto",
+    "none 1",
+    "-1",
+    "1 -1",
+])
+def test_an_invalid_flex_shorthand_is_dropped_whole(src):
+    assert val("flex", src) is None
+
+
+@pytest.mark.parametrize("src", [
+    "column column",     # two directions
+    "wrap nowrap",       # two wraps
+    "column wrap nowrap",
+    "sideways",
+])
+def test_an_invalid_flex_flow_is_dropped_whole(src):
+    assert val("flex-flow", src) is None
+
+
+def test_gap_rejects_three_values_and_negatives():
+    assert val("gap", "1px 2px 3px") is None
+    assert val("gap", "-1px") is None
+    assert val("gap", "1px -2px") is None
+    assert val("row-gap", "normal") == {"row-gap": Keyword("normal")}
+    assert val("column-gap", "10%") == {"column-gap": Percent(10)}
+
+
+def test_order_takes_an_integer_and_not_a_fraction():
+    assert val("order", "-3") == {"order": -3}
+    assert val("order", "0") == {"order": 0}
+    assert val("order", "1.5") is None
+    assert val("order", "1px") is None
+
+
+def test_a_two_word_alignment_is_unsupported_rather_than_invalid():
+    """`safe center` and `first baseline` are real CSS this module declines,
+    so they classify as `unsupported-value` -- the same separation the
+    two-value `overflow` gets. `invalid` is the drop bucket that must never
+    grow silently, and a declaration wrongly counted there makes that alarm
+    mean nothing."""
+    for src in ("safe center", "unsafe flex-end", "first baseline",
+                "last baseline"):
+        assert val("align-items", src) is None
+        assert classify_drop_of("align-items", src) == DROP_UNSUPPORTED_VALUE
+    # ...while a keyword that is not CSS at all stays `invalid`.
+    assert classify_drop_of("align-items", "middle") == DROP_INVALID
+
+
+def classify_drop_of(name, src):
+    return classify_drop(name, list(CssTokenizer(src).tokenize()))

@@ -66,10 +66,10 @@ from collections import Counter
 from dataclasses import dataclass
 
 from mayshay.cssparse.cascade import ComputedStyle
-from mayshay.cssparse.values import AUTO, Percent
+from mayshay.cssparse.values import AUTO, Length, Percent
 from mayshay.layout import linebreak as linebreak_module
 from mayshay.layout import text as text_module
-from mayshay.layout.boxtree import ATOMIC_INLINE_DISPLAYS, Box
+from mayshay.layout.boxtree import ATOMIC_INLINE_DISPLAYS, FLEX_DISPLAYS, Box
 from mayshay.layout.used import px, px_or_zero, style_of, text_style_of
 
 COUNTER_NAMES: tuple[str, ...] = (
@@ -80,6 +80,9 @@ COUNTER_NAMES: tuple[str, ...] = (
     "intrinsic_specified_width_used",
     "intrinsic_atomic_inline_break_opportunity",
     "intrinsic_uax14_break_inside_a_run",
+    # Task F. A row flex container sized by summing its items rather than
+    # by taking the largest of them -- section 9.9 rather than block flow.
+    "intrinsic_flex_row_summed",
 )
 
 
@@ -158,12 +161,65 @@ def shrink_to_fit(
 def _inner_sizes(box: Box, metrics: Counter[str]) -> IntrinsicSizes:
     if any(child.is_inline_level for child in box.children):
         return _inline_sizes(box, metrics)
+    if box.display in FLEX_DISPLAYS:
+        return _flex_sizes(box, metrics)
     minimum = maximum = 0.0
     for child in box.children:
         sizes = outer_sizes(child, metrics)
         minimum = max(minimum, sizes.min_content)
         maximum = max(maximum, sizes.max_content)
     return IntrinsicSizes(minimum, maximum)
+
+
+def _flex_sizes(box: Box, metrics: Counter[str]) -> IntrinsicSizes:
+    """Flexbox 1 section 9.9: a **row** flex container's intrinsic widths
+    are its items laid side by side, not stacked.
+
+    This is the one place a flex container is not shaped like a block one
+    for sizing purposes, and getting it wrong is quiet: `max(children)`
+    instead of `sum(children)` gives a number that is the right type, is
+    smaller than the truth, and produces an `inline-flex` that is exactly
+    as wide as its widest item with the rest of them overflowing it.
+
+    A **column** container is the block case and is deliberately left to
+    it: this module computes widths, which are a column container's *cross*
+    axis, and the cross size of a stack of items really is the largest of
+    them.
+
+    Single-line and multi-line differ on min-content and only on
+    min-content: with `nowrap` the items cannot be separated, so the
+    narrowest the container can be is the sum of their min-content
+    contributions; with `wrap` each item can have a line to itself and the
+    largest one decides.
+    """
+    style = style_of(box)
+    if style.flex_direction not in ("row", "row-reverse"):
+        minimum = maximum = 0.0
+        for child in box.children:
+            sizes = outer_sizes(child, metrics)
+            minimum = max(minimum, sizes.min_content)
+            maximum = max(maximum, sizes.max_content)
+        return IntrinsicSizes(minimum, maximum)
+
+    metrics["intrinsic_flex_row_summed"] += 1
+    contributions = [outer_sizes(child, metrics) for child in box.children]
+    # The gap between every adjacent pair is part of the container's
+    # intrinsic size; a percentage gap has no basis here, exactly as a
+    # percentage width has none, so it is zero and counted by the same rule.
+    gap = 0.0
+    if isinstance(style.column_gap, Length) and style.column_gap.unit == "px":
+        gap = float(style.column_gap.value)
+    elif isinstance(style.column_gap, Percent):
+        metrics["intrinsic_percentage_edge_as_zero"] += 1
+    gaps = gap * max(0, len(contributions) - 1)
+    summed_max = sum(sizes.max_content for sizes in contributions) + gaps
+    if style.flex_wrap == "nowrap":
+        summed_min = sum(sizes.min_content for sizes in contributions) + gaps
+    else:
+        summed_min = max(
+            (sizes.min_content for sizes in contributions), default=0.0
+        )
+    return IntrinsicSizes(min(summed_min, summed_max), summed_max)
 
 
 def outer_sizes(

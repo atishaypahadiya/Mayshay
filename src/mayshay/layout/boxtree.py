@@ -54,6 +54,15 @@ ATOMIC_INLINE_DISPLAYS: frozenset[str] = frozenset(
     {"inline-block", "inline-flex", "inline-table"}
 )
 
+# The two displays whose *inner* layout is flex layout (Task F). Here
+# rather than in `layout.flex` because `layout.intrinsic` needs the same
+# test -- a row flex container's max-content width is the SUM of its items
+# and not the largest of them -- and `flex` imports `intrinsic`, so the set
+# cannot live in `flex` without a cycle. Display classification is this
+# module's job in any case; `INLINE_LEVEL` and `ATOMIC_INLINE_DISPLAYS` are
+# here for the same reason.
+FLEX_DISPLAYS: frozenset[str] = frozenset({"flex", "inline-flex"})
+
 # Grid is classified but not implemented. The fallback is deliberate and
 # counted rather than silent: `display: grid` laid out as a block puts the
 # children in the wrong place, and the counter is the only thing that says
@@ -159,6 +168,16 @@ class Box:
     # Untyped for the same reason `geometry` is -- `layout.table` imports
     # this module.
     table_plan: object | None = None
+
+    # Filled by Task F (`layout.flex`) on a `flex` or `inline-flex` box:
+    # its `FlexPlan` -- the lines, the resolved main sizes and what
+    # `justify-content` spent. It lives on the box for the reason
+    # `table_plan` does: the mechanical check runs after absolutization,
+    # when the numbers that produced the rectangles are otherwise gone, and
+    # a module-level map keyed by `id()` would not be re-entrant. Untyped
+    # for the same reason `geometry` is -- `layout.flex` imports this
+    # module.
+    flex_plan: object | None = None
 
     # Filled by Task D1 (`layout.block`) on a box whose width is
     # shrink-to-fit: `inline-block` and its two siblings, floats, and

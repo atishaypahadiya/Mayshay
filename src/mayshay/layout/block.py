@@ -82,6 +82,7 @@ from dataclasses import dataclass, replace
 from mayshay.cssparse.cascade import ComputedStyle
 from mayshay.cssparse.media import Viewport
 from mayshay.cssparse.values import AUTO, Percent
+from mayshay.layout import flex as flex_module
 from mayshay.layout import inline as inline_module
 from mayshay.layout import intrinsic as intrinsic_module
 from mayshay.layout import linebox as linebox_module
@@ -98,6 +99,20 @@ from mayshay.layout.used import style_of as _style_of
 # Task E or Task F; Task C lays their children out as block flow and counts
 # it, exactly as Task B counts `display: grid` falling back to `block`.
 BLOCK_CONTAINER_DISPLAYS: frozenset[str] = frozenset({"block", "list-item"})
+
+# Displays whose inner layout **is** block flow even though their outer
+# display is not `block`. A table cell establishes a block formatting
+# context (CSS 2.1 section 17.5.3), a caption "is a block-level box" (17.4),
+# and an `inline-block` is a block container that happens to sit on a line
+# -- so none of the three is laid out here as a fallback for something
+# unimplemented. They are, though, all outside `BLOCK_CONTAINER_DISPLAYS`,
+# which is what made `layout_inner_fallback_block` read 156 on the corpus
+# before Task F: 48 flex boxes and **108 table cells**, in a counter whose
+# report line says "flex laid out as block flow". Measured, not inferred --
+# every one of the 108 is a `table-cell`.
+BLOCK_FLOW_INNER_DISPLAYS: frozenset[str] = frozenset({
+    "table-cell", "table-caption", "inline-block",
+})
 
 # Block-level, but with a non-block inner formatting context. Each
 # establishes a new formatting context, which is what makes it a
@@ -181,6 +196,9 @@ COUNTER_NAMES: tuple[str, ...] = (
     "layout_viewport_unit_unresolved",
     "layout_length_unit_unexpected",
     "layout_boxes_deferred_subtree",
+    # Task F: a flex item's margins never collapse with anything, which is
+    # a barrier reason of its own rather than a formatting context.
+    "margin_collapse_blocked_flex_item",
 ) + linebox_module.COUNTER_NAMES
 
 # The computed initial value of every margin longhand, for the one place
@@ -610,6 +628,7 @@ def _layout_block(
     is_root: bool = False,
     override_content_width: float | None = None,
     already_counted: bool = False,
+    is_flex_item: bool = False,
 ) -> _Result:
     """Lay out one in-flow block-level box and everything under it.
 
@@ -691,6 +710,14 @@ def _layout_block(
     if is_root:
         # The root element's margins never collapse with anything.
         top_closed_by = bottom_closed_by = "root"
+    elif is_flex_item:
+        # Flexbox 1 section 3: "the margins of adjacent flex items do not
+        # collapse". A reason of its own rather than
+        # `new_formatting_context`, because the item need not establish one
+        # -- an ordinary `<div>` item does not -- and folding the two would
+        # put every flex item into a bucket that is supposed to mean
+        # "overflow, or a display with a non-block inner layout".
+        top_closed_by = bottom_closed_by = "flex_item"
     elif formatting_context is not None:
         top_closed_by = bottom_closed_by = formatting_context
     else:
@@ -755,13 +782,27 @@ def _layout_block(
     else:
         if (
             box.display not in BLOCK_CONTAINER_DISPLAYS
+            and box.display not in BLOCK_FLOW_INNER_DISPLAYS
+            and box.display not in _TABLE_INTERNAL_DISPLAYS
+            and box.display not in table_module.TABLE_DISPLAYS
+            and box.display not in flex_module.FLEX_DISPLAYS
             and box.children
             and not is_root
         ):
-            # Flex and the table family: block-level with a non-block inner
-            # layout that Task E and Task F own. Laid out as block flow and
-            # counted, in the shape of Task B's `boxes_grid_fallback` -- a
-            # fallback that misplaces rather than crashes, and says so.
+            # A box whose inner layout this engine does **not** implement,
+            # laid out as block flow instead -- in the shape of Task B's
+            # `boxes_grid_fallback`: a fallback that misplaces rather than
+            # crashes, and says so.
+            #
+            # **This is now a residual bucket that must read zero**, which
+            # is the only kind worth having (`docs/measurement-hazards.md`
+            # instance seventeen: a residual that legitimately contains
+            # something can never be read as an alarm). `grid` and
+            # `inline-grid` are remapped to `block` and `inline-block` by
+            # `boxtree` and counted there, and every other display in the
+            # tree now has an inner layout some module owns. It read 156
+            # before Task F and every one of those was either a flex box or
+            # a table cell -- neither of which was a fallback for anything.
             metrics["layout_inner_fallback_block"] += 1
         if box.display in table_module.TABLE_DISPLAYS:
             content_height = _layout_table_contents(
@@ -769,6 +810,16 @@ def _layout_block(
                 metrics=metrics,
                 groups=groups,
                 fragment_counts=fragment_counts,
+            )
+            trailing, all_collapsed_through = None, False
+        elif box.display in flex_module.FLEX_DISPLAYS:
+            content_height = _layout_flex_contents(
+                box,
+                metrics=metrics,
+                groups=groups,
+                fragment_counts=fragment_counts,
+                content_width=horizontal.content_width,
+                definite_height=height,
             )
             trailing, all_collapsed_through = None, False
         else:
@@ -969,6 +1020,68 @@ def _layout_table_contents(
 
     return table_module.layout_table_contents(
         box, plan, metrics=metrics, layout_cell=layout_cell, account=account
+    )
+
+
+def _layout_flex_contents(
+    box: Box,
+    *,
+    metrics: Counter[str],
+    groups: list[MarginGroup],
+    fragment_counts: dict[int, int],
+    content_width: float,
+    definite_height: float | None,
+) -> float:
+    """A flex container's inner layout, delegated to `layout.flex`.
+
+    Two callbacks go out and a height comes back, in the shape
+    `_layout_table_contents` uses and for the same reason: `layout.flex`
+    cannot import this module back, and a flex item is an ordinary block
+    container once its main size is known -- there is no second block
+    layout in this engine.
+
+    `layout_item` passes `override_content_width`, which is the same bypass
+    an atomic inline and a table cell take: section 10.3.3's constraint
+    equation does not apply to a flex item, whose main size came from
+    section 9.7 rather than from its containing block.
+    """
+
+    def layout_item(item: Box, content: float) -> float:
+        result = _layout_block(
+            item,
+            cb_width=content,
+            cb_height=None,
+            metrics=metrics,
+            groups=groups,
+            fragment_counts=fragment_counts,
+            override_content_width=content,
+            is_flex_item=True,
+        )
+        return result.border_height
+
+    def skip_item(item: Box, reason: str) -> None:
+        # An absolutely positioned child of a flex container is not a flex
+        # item at all, and this engine does not place absolutely positioned
+        # boxes anywhere -- so it is deferred exactly as block layout defers
+        # it, through the same two counters, and the box partition holds.
+        #
+        # Counted exactly as `_layout_children` counts it and not one
+        # counter more: a deferred box never reaches `_layout_block`, so it
+        # registers no margin edges and no collapse-barrier edges, and
+        # adding either here would break the two partitions rather than
+        # describe the box.
+        metrics["layout_absolute_skipped"] += 1
+        metrics["margin_collapse_blocked_out_of_flow"] += 1
+        _resolve_shrink_to_fit(item, cb_width=content_width, metrics=metrics)
+        _defer_subtree(item, metrics, reason="widths_shrink_to_fit_resolved")
+
+    return flex_module.layout_flex_container(
+        box,
+        content_width=content_width,
+        definite_height=definite_height,
+        metrics=metrics,
+        layout_item=layout_item,
+        skip_item=skip_item,
     )
 
 
@@ -1536,6 +1649,12 @@ def assert_layout_constraints(
     for box in root.walk():
         if box.table_plan is not None:
             table_module.assert_table_constraints(box, box.table_plan)
+        # Flexbox 1 section 9.5's distribution, for the same reason and at
+        # the same point: free space distributed must equal free space
+        # available, read off absolute rectangles rather than off the
+        # numbers that produced them.
+        if box.flex_plan is not None:
+            flex_module.assert_flex_constraints(box, box.flex_plan)
 
 
 def _assert_box_partition(metrics: Counter[str]) -> None:
@@ -1555,6 +1674,7 @@ def _assert_box_partition(metrics: Counter[str]) -> None:
 
 COLLAPSE_BARRIERS: tuple[str, ...] = (
     "root",
+    "flex_item",
     "padding_top",
     "border_top",
     "padding_bottom",
@@ -1585,7 +1705,9 @@ def _assert_margin_edge_partition(metrics: Counter[str]) -> None:
     )
 
 
-def _assert_geometry(box: Box, *, cb_x: float, cb_width: float) -> None:
+def _assert_geometry(
+    box: Box, *, cb_x: float, cb_width: float, in_flex: bool = False
+) -> None:
     """Section 10.3.3 as a tiling, plus the edge relations, on every box.
 
     Two exemptions, both stated rather than achieved by returning early:
@@ -1604,11 +1726,15 @@ def _assert_geometry(box: Box, *, cb_x: float, cb_width: float) -> None:
     geometry = box.geometry
     if geometry is None:
         for child in box.children:
-            _assert_geometry(child, cb_x=cb_x, cb_width=cb_width)
+            _assert_geometry(child, cb_x=cb_x, cb_width=cb_width, in_flex=in_flex)
         return
     where = box.path or f"<{box.origin} {box.display}>"
 
-    if not box.is_inline_level and box.display not in _TABLE_INTERNAL_DISPLAYS:
+    if (
+        not box.is_inline_level
+        and box.display not in _TABLE_INTERNAL_DISPLAYS
+        and not in_flex
+    ):
         # Section 10.3.3, stated as a tiling: the margin box exactly spans
         # the containing block's content width, starting at its left edge.
         #
@@ -1676,7 +1802,20 @@ def _assert_geometry(box: Box, *, cb_x: float, cb_width: float) -> None:
     )
 
     for child in box.children:
-        _assert_geometry(child, cb_x=geometry.content.x, cb_width=geometry.content.width)
+        _assert_geometry(
+            child,
+            cb_x=geometry.content.x,
+            cb_width=geometry.content.width,
+            # A **fourth** exemption from the section 10.3.3 tiling, and
+            # the same kind as the table one: a flex item's main size came
+            # from section 9.7 and its position from section 9.5, so its
+            # margin box neither spans its containing block nor starts at
+            # its left edge. `flex.assert_flex_constraints` is the equation
+            # that replaces this one for them, and it is stricter -- it
+            # checks that the items tile the line rather than only that
+            # each one is inside it.
+            in_flex=box.display in flex_module.FLEX_DISPLAYS,
+        )
 
 
 def _close(actual: float, expected: float, message: str) -> None:
@@ -1703,7 +1842,7 @@ def layout_document(
     metrics: Counter[str] = Counter()
     for name in COUNTER_NAMES + inline_module.COUNTER_NAMES + (
         intrinsic_module.COUNTER_NAMES
-    ) + table_module.COUNTER_NAMES:
+    ) + table_module.COUNTER_NAMES + flex_module.COUNTER_NAMES:
         metrics[name] = 0
 
     # CSS 2.1 section 17.2.1's anonymous table objects and 17.4's wrapper
@@ -1713,6 +1852,12 @@ def layout_document(
     # collapsing text first would decide those contexts against a tree that
     # is about to change.
     table_module.fix_up_tables(root, metrics)
+
+    # Flexbox 1 section 4's anonymous flex items, for the same reason and
+    # in the same place: a run of text directly inside a flex container
+    # becomes its own inline formatting context, and collapsing the text
+    # first would decide that context against a tree about to change.
+    flex_module.fix_up_flex_containers(root, metrics)
 
     # White-space processing first, over the whole tree. Intrinsic sizing
     # reads `Box.text` and Task D2's line breaking will too; collapsing it
