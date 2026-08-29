@@ -333,6 +333,16 @@ LONGHANDS: tuple[str, ...] = (
     "float",
     "clear",
     "position",
+    # Phase 3 Task E. `table-layout`, `border-spacing` and `caption-side`
+    # are read and acted on by `layout.table`; `border-collapse` is read
+    # only so that the separated-model divergence is a counter rather than
+    # an absence. Task C added the four properties block layout could not
+    # be correct without and stopped there; these are the four table layout
+    # cannot be correct without.
+    "table-layout",
+    "border-collapse",
+    "border-spacing",
+    "caption-side",
 )
 
 # The inherited properties, per the CSS property definitions. `display`, the
@@ -358,6 +368,15 @@ INHERITED: frozenset[str] = frozenset({
     "white-space",
     "text-align",
     "list-style-type",
+    # Task E. Three of the four table properties inherit and one does not,
+    # and the split is not arbitrary: `border-collapse`, `border-spacing`
+    # and `caption-side` are set on the `<table>` and consulted on its
+    # *descendants* (a cell asks for the spacing around it, a caption asks
+    # which side it is on), so CSS 2.1 makes them inherited. `table-layout`
+    # is consulted only on the table box itself and does not.
+    "border-collapse",
+    "border-spacing",
+    "caption-side",
 })
 
 # `medium`. The one number in this module that is a convention rather than a
@@ -432,6 +451,14 @@ INITIAL_SPECIFIED: dict[str, object] = {
     "float": Keyword("none"),
     "clear": Keyword("none"),
     "position": Keyword("static"),
+    "table-layout": Keyword("auto"),
+    "border-collapse": Keyword("separate"),
+    # CSS 2.1's initial value is `0`, on both axes. HTML's own UA stylesheet
+    # then sets `border-spacing: 2px` on `<table>`, which is why a browser's
+    # default table has 2px gaps and this engine's does not -- see
+    # `cssparse/ua.py`, which does not carry that rule.
+    "border-spacing": (_ZERO_LENGTH, _ZERO_LENGTH),
+    "caption-side": Keyword("top"),
 }
 
 # Which longhands each property governs -- *all* of them, not just the ones
@@ -579,6 +606,16 @@ class ComputedStyle:
     float_: str = "none"
     clear: str = "none"
     position: str = "static"
+
+    # Phase 3 Task E. `table_layout` and `caption_side` steer
+    # `layout.table`; `border_spacing` is a two-tuple `(horizontal,
+    # vertical)` of computed `Length`s, never a single value, so no consumer
+    # has to ask which shape it got. `border_collapse` is read only to be
+    # counted -- this engine implements the separated model alone.
+    table_layout: str = "auto"
+    border_collapse: str = "separate"
+    border_spacing: object = (_ZERO_LENGTH, _ZERO_LENGTH)
+    caption_side: str = "top"
 
     # This element's custom properties, name -> raw token tuple. Not a
     # longhand and deliberately exempted from the drift assert below: it is
@@ -792,7 +829,17 @@ _KEYWORD_VALUED = frozenset({
     "float",
     "clear",
     "position",
+    "table-layout",
+    "border-collapse",
+    "caption-side",
 }) | frozenset(_BORDER_STYLE_PROPS)
+
+# Properties whose computed value is a **pair** of lengths, each computed
+# the way a lone length would be. Exactly one, and it is spelled out rather
+# than handled by "map over any tuple": `font-family`'s computed value is
+# also a tuple and must be left alone, so a structural rule would resolve
+# font names as if they were lengths. See `_computed_value`.
+_LENGTH_PAIR_VALUED = frozenset({"border-spacing"})
 
 # Properties whose computed value keeps the `Keyword` wrapper rather than
 # being unwrapped to a `str`. Exactly one, and it is not an oversight:
@@ -853,6 +900,18 @@ def _computed_value(
         raise ValueError(
             f"no computed-value rule for keyword {value.name!r} on {prop!r}; "
             f"add it to _KEYWORD_VALUED or resolve it explicitly"
+        )
+    if prop in _LENGTH_PAIR_VALUED and isinstance(value, tuple):
+        # Each half computes exactly as a lone `<length>` does -- `em`
+        # against this element's own font-size, `rem` against the root's --
+        # so the resolution is delegated rather than restated. A restatement
+        # is where a unit gets handled on one axis and not the other.
+        return tuple(
+            _computed_value(
+                "border-spacing-component", item,
+                font_px=font_px, root_px=root_px, own_color=own_color,
+            )
+            for item in value
         )
     if isinstance(value, Length):
         px = _length_to_px(value, font_px=font_px, root_px=root_px)
