@@ -54,8 +54,6 @@ Three test shapes are fixed rather than left open, because the shape of the
 
 from __future__ import annotations
 
-from collections import Counter
-
 import pytest
 
 from mayshay.cssparse.cascade import style_document
@@ -115,12 +113,6 @@ def where(root, ident: str) -> tuple[float, float, float, float]:
 
 def geometry_of(root, ident: str):
     return boxes(root)[ident].geometry
-
-
-def plan_of(root, ident: str):
-    plan = boxes(root)[ident].flex_plan
-    assert plan is not None, f"#{ident} is not a laid-out flex container"
-    return plan
 
 
 # --------------------------------------------------------------------------

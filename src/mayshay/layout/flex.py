@@ -120,7 +120,7 @@ _ALIGN_NORMAL = "stretch"
 # flex-relative ones -- which is exactly the "implement Y for the world
 # where X is absent" rule from the Phase 3 plan. A page with `direction:
 # rtl` would need them to diverge, and `direction` is not parsed.
-_MAIN_START_ALIASES = frozenset({"flex-start", "start", "left", "normal"})
+_MAIN_START_ALIASES = frozenset({"flex-start", "start", "left"})
 _MAIN_END_ALIASES = frozenset({"flex-end", "end", "right"})
 _CROSS_START_ALIASES = frozenset({"flex-start", "start", "self-start"})
 _CROSS_END_ALIASES = frozenset({"flex-end", "end", "self-end"})
@@ -1013,6 +1013,8 @@ def _justify(
     if main_gap and count > 1:
         metrics["flex_main_gap_applied"] += count - 1
     keyword = style.justify_content
+    if keyword == "normal":
+        keyword = _JUSTIFY_NORMAL
     if free <= EPSILON or count == 0:
         # Nothing to distribute -- but the items still have to be *placed*,
         # and an early return here left every item at offset zero and every
@@ -1044,8 +1046,12 @@ def _justify(
         line.between = free / (count + 1)
         line.leading = line.trailing = line.between
     else:
-        # `flex-start`, `start`, `left`, `normal`, and `stretch`, which
-        # behaves as `flex-start` on the main axis of a flex container.
+        # `flex-start`, `start`, `left` -- and `stretch`, which behaves as
+        # `flex-start` on the *main* axis of a flex container. Spelled as a
+        # membership test with a fallthrough rather than as a bare `else`,
+        # so that a keyword added to the cascade's set and forgotten here
+        # lands on flex-start deliberately rather than by omission.
+        assert keyword in _MAIN_START_ALIASES or keyword == "stretch", keyword
         line.leading = line.between = 0.0
         line.trailing = free
 
@@ -1098,6 +1104,7 @@ def _align(
         elif alignment == "center":
             item.cross_offset = line.cross_start + free / 2.0
         else:
+            assert alignment in _CROSS_START_ALIASES, alignment
             item.cross_offset = line.cross_start
 
 
