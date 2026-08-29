@@ -73,6 +73,17 @@ def px_or_zero(value: object, *, basis: float, metrics: Counter[str]) -> float:
 
 
 def style_of(box: Box) -> ComputedStyle:
+    """The style this box is laid out with.
+
+    `box.style` wins over the DOM node's, and the order matters: Task E's
+    table wrapper box **keeps its element's identity** -- it is the box
+    `DOM.getBoxModel` answers for the `<table>` -- while carrying only the
+    half of that element's style CSS 2.1 section 17.4 assigns to it. Reading
+    `node.computed_style` first would give it the borders and padding as
+    well, and they are already on the table box inside it.
+    """
+    if box.style is not None:
+        return box.style
     if box.origin == "element" and box.node is not None:
         style = box.node.computed_style
         if style is not None:

@@ -929,6 +929,29 @@ _POSITION_KEYWORDS = frozenset({
     "static", "relative", "absolute", "fixed", "sticky",
 })
 
+# Phase 3 Task E, CSS 2.1 chapter 17. Four properties, and only one of them
+# is a feature this engine implements as behaviour:
+#
+# * `table-layout` selects section 17.5.2.1's fixed algorithm over
+#   17.5.2.2's automatic one, and is implemented.
+# * `border-spacing` appears in both algorithms' arithmetic -- the used
+#   width of a table is the columns *plus* `(columns + 1)` spacings -- so a
+#   table engine that cannot see it computes a width that is wrong by a
+#   multiple of it. Implemented.
+# * `caption-side` decides whether the caption box precedes or follows the
+#   table box in the table wrapper box (section 17.4). Implemented.
+# * `border-collapse` is **not** implemented: only the separated model is.
+#   It is parsed so that "we used the separated model here and the author
+#   asked for the collapsing one" is a number rather than an absence. Same
+#   argument Task C made for `overflow`, `float`, `clear` and `position`,
+#   and the corpus makes it concrete: 13 textual `border-collapse:collapse`
+#   declarations across the three pages' stylesheets, against 0 textual
+#   `table-layout` declarations of any value (executed with a grep over
+#   `data/corpus`).
+_TABLE_LAYOUT_KEYWORDS = frozenset({"auto", "fixed"})
+_BORDER_COLLAPSE_KEYWORDS = frozenset({"separate", "collapse"})
+_CAPTION_SIDE_KEYWORDS = frozenset({"top", "bottom"})
+
 # CSS Counter Styles 3's predefined counter styles, plus `none`. A closed
 # list, for the reason the colour table is closed: `list-style-type` also
 # accepts a `<custom-ident>` naming an `@counter-style` rule, and this engine
@@ -1046,6 +1069,34 @@ def _parse_font_family(tokens: list[CssToken]) -> tuple[str, ...] | None:
             return None
         families.append(" ".join(words))
     return tuple(families)
+
+
+def _parse_border_spacing(tokens: list[CssToken]) -> tuple | None:
+    """`<length> <length>?` -- horizontal then vertical, per CSS 2.1 17.6.1.
+
+    Returns a **two-tuple even when one value was written**, so no consumer
+    ever has to ask which shape it got. A single value applies to both axes;
+    that expansion happens here rather than in layout, because "one value
+    means both" is a grammar fact and layout should not have to know it.
+
+    Percentages are not allowed on `border-spacing` (the property's value
+    grammar is `<length> <length>?` and nothing else), so a percentage is
+    rejected here rather than reaching the cascade and resolving against
+    something arbitrary.
+    """
+    groups = _split_top_level(tokens)
+    if not (1 <= len(groups) <= 2):
+        return None
+    lengths: list[Length] = []
+    for group in groups:
+        if len(group) != 1:
+            return None
+        length = _parse_length(group[0])
+        if length is None or length.value < 0:
+            # A negative `border-spacing` is invalid, not merely unusual.
+            return None
+        lengths.append(length)
+    return (lengths[0], lengths[-1])
 
 
 def _parse_vertical_align(tokens: list[CssToken]) -> object | None:
@@ -1209,6 +1260,15 @@ _PROPERTY_PARSERS: dict[str, object] = {
     "float": _one("float", _keyword_parser(_FLOAT_KEYWORDS)),
     "clear": _one("clear", _keyword_parser(_CLEAR_KEYWORDS)),
     "position": _one("position", _keyword_parser(_POSITION_KEYWORDS)),
+    # Phase 3 Task E: CSS 2.1 chapter 17. See the keyword sets above for
+    # which of the four are implemented as behaviour and which are parsed so
+    # that the divergence can be counted.
+    "table-layout": _one("table-layout", _keyword_parser(_TABLE_LAYOUT_KEYWORDS)),
+    "border-collapse": _one(
+        "border-collapse", _keyword_parser(_BORDER_COLLAPSE_KEYWORDS)
+    ),
+    "border-spacing": _one("border-spacing", _parse_border_spacing),
+    "caption-side": _one("caption-side", _keyword_parser(_CAPTION_SIDE_KEYWORDS)),
 }
 
 # Which longhands each supported property sets -- *all* of them, including
@@ -1268,6 +1328,13 @@ LONGHANDS_OF: dict[str, tuple[str, ...]] = {
             # a longhand here; see the keyword-set comment above for the
             # measured cost of that simplification.
             "overflow", "float", "clear", "position",
+            # Task E's four. `border-spacing` is a single longhand whose
+            # value is a PAIR, not two longhands: CSS 2.1 defines no
+            # `border-spacing-horizontal`, and inventing one would put a
+            # property name in `LONGHANDS` that no stylesheet can ever
+            # write.
+            "table-layout", "border-collapse", "border-spacing",
+            "caption-side",
         )
     },
 }

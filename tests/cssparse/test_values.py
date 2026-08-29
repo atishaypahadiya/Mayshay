@@ -311,7 +311,7 @@ def test_the_box_model_longhands_are_supported():
     for name, src in supported.items():
         assert val(name, src) is not None, name
 
-    assert len(SUPPORTED_PROPERTIES) == 49
+    assert len(SUPPORTED_PROPERTIES) == 53
     box_model = SUPPORTED_PROPERTIES - {
         "display", "width", "height", "font-size", "color",
         "background-color", "margin", "padding", "border",
@@ -323,6 +323,9 @@ def test_the_box_model_longhands_are_supported():
         # not box-model longhands, they are the properties CSS 2.1 section
         # 8.3.1 states its margin-collapsing barriers in terms of.
         "overflow", "float", "clear", "position",
+        # Task E's four: CSS 2.1 chapter 17's table properties, which are
+        # not box-model longhands either.
+        "table-layout", "border-collapse", "border-spacing", "caption-side",
     }
     assert len(box_model) == 27, sorted(box_model)
 
@@ -483,6 +486,8 @@ def test_the_property_table_and_its_derived_sets_agree():
         "list-style-type": "square",
         "overflow": "hidden", "float": "left",
         "clear": "both", "position": "absolute",
+        "table-layout": "fixed", "border-collapse": "collapse",
+        "border-spacing": "2px 4px", "caption-side": "bottom",
     })
     assert set(samples) == SUPPORTED_PROPERTIES, (
         "a property was added to the table without a sample here: "

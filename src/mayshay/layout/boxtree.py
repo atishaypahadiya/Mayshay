@@ -130,6 +130,36 @@ class Box:
     # `geometry` is -- `layout.linebox` imports this module.
     line_boxes: list | None = None
 
+    # Filled by Task E (`layout.table`) on the two boxes it invents that
+    # cannot take their style from a DOM node.
+    #
+    # `style` overrides what `layout.used.style_of` would read. It is needed
+    # because CSS 2.1 section 17.4 **splits one element's style across two
+    # boxes**: a table generates a table WRAPPER box carrying the element's
+    # `margin-*`, `position` and `float`, and a table box inside it carrying
+    # everything else -- the borders, the padding, the width. One
+    # `computed_style` cannot serve both, and applying the margins twice
+    # would indent every table by double its own margin.
+    #
+    # `table_wrapper` marks the outer of that pair. It is a discriminator
+    # rather than something inferred from "a block box with one table
+    # child", for the reason `origin` is: the inference is right until an
+    # author writes a `display: table` element inside a plain `<div>` with
+    # nothing else in it, and then it is silently wrong.
+    style: object | None = None
+    table_wrapper: bool = False
+
+    # Filled by Task E on a `table` box: its `TablePlan` -- the grid, the
+    # column widths and the border spacing, decided by CSS 2.1 section
+    # 17.5.2 before any box in the table has geometry. It lives on the box
+    # rather than in a parameter threaded through `_layout_block` because
+    # the wrapper computes it and the table box one level down consumes it,
+    # and rather than in a module-level map because a map keyed by `id()`
+    # is not re-entrant: two layouts of one document would share it.
+    # Untyped for the same reason `geometry` is -- `layout.table` imports
+    # this module.
+    table_plan: object | None = None
+
     # Filled by Task D1 (`layout.block`) on a box whose width is
     # shrink-to-fit: `inline-block` and its two siblings, floats, and
     # absolutely positioned boxes. Separate from `geometry` because the
@@ -182,12 +212,31 @@ def assign_dom_identity(document: Node) -> dict[int, tuple[int, str]]:
 
     The path is 1-based among siblings *of the same tag name*, which is what
     XPath means and what `document.evaluate` reproduces on the other side.
+
+    **The ordinal is assigned when a node is reached, not when its parent's
+    child list is scanned**, and the difference is not cosmetic. The
+    previous version numbered every child of a node before descending into
+    any of them, which is a level-by-level order and not document order:
+    in `<table><tbody><tr><td>a<td>b</tr><tr><td>c</tr>` it gave the two
+    `tr`s 8 and 9 and only then gave the first row's cells 10 and 11, where
+    `document.querySelectorAll('*')` -- which is what the other side of the
+    Chrome comparison uses -- gives 8, 9, 10, 11, 12 in tree order.
+
+    Latent since Task B and invisible until Task E, because it needs a
+    subtree whose siblings have children of their own: every Task D2 fixture
+    is one `<div>` deep and agrees under both orders. It surfaced as five
+    table fixtures reporting TREE DIVERGENCE with **identical paths on both
+    sides** -- the two-identifier scheme's own signature for "these are the
+    same element and one of the two identifiers is computed wrongly".
     """
     out: dict[int, tuple[int, str]] = {}
     ordinal = 0
     stack: list[tuple[Node, str]] = [(document, "")]
     while stack:
         node, prefix = stack.pop()
+        if isinstance(node, Element):
+            out[id(node)] = (ordinal, prefix)
+            ordinal += 1
         seen: Counter[str] = Counter()
         annotated: list[tuple[Node, str]] = []
         for child in node.children:
@@ -195,12 +244,9 @@ def assign_dom_identity(document: Node) -> dict[int, tuple[int, str]]:
                 annotated.append((child, prefix))
                 continue
             seen[child.tag_name] += 1
-            path = f"{prefix}/{child.tag_name}[{seen[child.tag_name]}]"
-            annotated.append((child, path))
-        for child, path in annotated:
-            if isinstance(child, Element):
-                out[id(child)] = (ordinal, path)
-                ordinal += 1
+            annotated.append(
+                (child, f"{prefix}/{child.tag_name}[{seen[child.tag_name]}]")
+            )
         stack.extend(reversed(annotated))
     return out
 

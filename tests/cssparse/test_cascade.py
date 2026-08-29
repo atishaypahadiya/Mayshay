@@ -875,7 +875,7 @@ def test_computed_style_has_one_field_per_longhand():
     """Injection: dropping a longhand from `LONGHANDS` while leaving the
     dataclass field, so the property silently never cascades. The module's
     own module-level assert catches the reverse."""
-    assert len(LONGHANDS) == 39
+    assert len(LONGHANDS) == 43
     for prop in LONGHANDS:
         # `_field_name`, not `replace("-", "_")`: `float`'s field is
         # `float_` because the plain name would shadow the builtin inside
@@ -1748,7 +1748,7 @@ def test_inherited_names_and_computed_style_fields_cannot_drift():
     for prop in INHERITED:
         assert hasattr(style, prop.replace("-", "_")), prop
         assert prop in LONGHANDS, prop
-    assert len(INHERITED) == 9
+    assert len(INHERITED) == 12
 
 
 def test_vertical_align_and_box_sizing_do_not_inherit():
@@ -2286,3 +2286,85 @@ def test_an_inherited_line_height_still_resolves_the_childs_vertical_align():
     span = find(doc, "span").computed_style
     assert span.line_height == 2.0
     assert span.vertical_align == Length(10, "px")   # 50% of 2 x 10px
+
+
+# --------------------------------------------------------------------------
+# Task E: CSS 2.1 chapter 17's four table properties
+# --------------------------------------------------------------------------
+
+
+TABLE_HTML = (
+    "<!DOCTYPE html><table><caption>c</caption><tr><td>x</td></tr></table>"
+)
+
+
+def test_the_table_properties_cascade_onto_the_table_box():
+    """All four, asserted with values that differ from their initial ones.
+    A property that failed to cascade would read the initial value, and the
+    initial values are `auto`, `separate`, `0 0` and `top` -- so each
+    sample here is chosen to be the other one."""
+    style = style_of(
+        TABLE_HTML,
+        "table",
+        "table { table-layout: fixed; border-collapse: collapse;"
+        " border-spacing: 3px 7px; caption-side: bottom }",
+    )
+    assert style.table_layout == "fixed"
+    assert style.border_collapse == "collapse"
+    assert style.border_spacing == (Length(3, "px"), Length(7, "px"))
+    assert style.caption_side == "bottom"
+
+
+def test_three_table_properties_inherit_and_table_layout_does_not():
+    """The split is the interesting half, so both directions are asserted on
+    one document: a `<td>` inside a `table-layout: fixed` table must read
+    `auto`, because `table-layout` is consulted on the table box alone,
+    while the other three are consulted on descendants and inherit.
+
+    A `table-layout` that inherited would be invisible -- nothing asks a
+    cell for it -- which is exactly the shape of silent wrongness the
+    INHERITED batch in Task A2 was done deliberately to avoid.
+    """
+    doc = styled(
+        TABLE_HTML,
+        "table { table-layout: fixed; border-collapse: collapse;"
+        " border-spacing: 3px 7px; caption-side: bottom }",
+    )
+    cell = find(doc, "td").computed_style
+    assert cell.table_layout == "auto"
+    assert cell.border_collapse == "collapse"
+    assert cell.border_spacing == (Length(3, "px"), Length(7, "px"))
+    assert cell.caption_side == "bottom"
+
+
+def test_border_spacing_is_always_a_pair_and_resolves_em_on_both_axes():
+    """One written value expands to two here rather than in layout, so no
+    consumer has to ask which shape it got -- and both halves resolve `em`
+    against the element's own font-size.
+
+    The two-value case uses two *different* lengths on purpose: a resolver
+    that computed the first and copied it would pass a `3px 3px` fixture.
+    """
+    one = style_of(
+        TABLE_HTML, "table", "table { font-size: 20px; border-spacing: 1.5em }"
+    )
+    assert one.border_spacing == (Length(30.0, "px"), Length(30.0, "px"))
+
+    two = style_of(
+        TABLE_HTML, "table", "table { font-size: 20px; border-spacing: 1em 2em }"
+    )
+    assert two.border_spacing == (Length(20.0, "px"), Length(40.0, "px"))
+
+
+def test_an_invalid_border_spacing_is_dropped_rather_than_half_applied():
+    """Three values, a negative length and a percentage are all invalid.
+    Asserted through the cascade rather than the parser so a value that got
+    through would show up as a computed style, and asserted against a
+    *declared* good value on the same element so this cannot pass by the
+    property never cascading at all."""
+    for bad in ("2px 4px 6px", "-1px", "50%", "thick"):
+        style = style_of(
+            TABLE_HTML, "table",
+            f"table {{ border-spacing: 5px }} table {{ border-spacing: {bad} }}",
+        )
+        assert style.border_spacing == (Length(5, "px"), Length(5, "px")), bad

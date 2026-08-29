@@ -593,6 +593,54 @@ populations under one name, on text they both walk. That is instance four's
 shape with the two counts summed instead of reported separately, which is
 strictly worse -- a disagreement is visible and a sum is not.
 
+### Instance eighteen: the same broken harness twice, both times a clean zero
+
+Task E needed to answer one question the corpus could actually settle: does
+getting `colspan` distribution wrong move real numbers on these pages? The
+method was three shadow copies of `src/` -- the correct implementation, one
+that puts a spanning cell's whole width on the column it starts in, and one
+that ignores spanning cells entirely -- each run over the corpus, with the
+column widths diffed.
+
+It reported **0 of 27 tables move**, for both wrong implementations.
+
+That is the shape this file's own rule says to disbelieve, and the probe
+found it immediately: `layout.text` derives the vendored font path from its
+own `__file__`, so a shadow tree without `data/fonts` raises
+`FileNotFoundError` on the first text measurement. **All three processes had
+died**, the runner only read the first line of stdout to check the shadow
+proof, and the JSON left behind by an earlier run was diffed against itself.
+Symlinking the font and asserting on the exit code gave the real answer: the
+first-column bug moves **12 of 27** tables, one of them by 592px on a 1184px
+table, and ignoring spans entirely moves 2.
+
+The interesting part is what happened next. The **injection harness for the
+test suite had exactly the same defect**, and it was not noticed while the
+first one was being fixed. Twelve injections each reported "117 failed, 290
+passed" -- every one of them the same 117 font-path failures, with the
+injection contributing nothing. Uniform results across twelve different
+injections read as a working harness rather than a broken one, in the same
+way seven agreeing fixtures did in instance fifteen.
+
+Three things generalise.
+
+**A shadow tree is not a copy of the repository.** Anything a module locates
+relative to its own `__file__` -- a vendored font, a data table, a fixture
+directory -- silently leaves the shadow. The `module.__file__` proof that
+CLAUDE.md requires confirms the *code* was shadowed and says nothing about
+its data.
+
+**"Did the tool run?" is a different question from "did the tool shadow?"**
+and the second was being checked while the first was not. A returncode
+assertion is one line and would have caught both.
+
+**Every injection harness needs a control.** A run with *no* injection that
+must come back green costs one pass and makes "the injection did nothing"
+distinguishable from "the harness does nothing". Both harnesses have one
+now. Without it, twelve green-looking injection reports were evidence of
+nothing at all -- and three of those twelve turned out, once the control was
+in place, to be genuine no-ops that needed new fixtures.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -611,6 +659,7 @@ Every instance in this document was caught by **measurement**:
 | 15 the line box strut | re-measuring in a second harness, then diffing `document.compatMode` |
 | 16 the literal NBSP, again | printing the probe's codepoints after it produced a surprising result |
 | 17 a residual bucket reading 58 | the bucket being defined to read zero, and not reading zero |
+| 18 a colspan delta of exactly zero | probing a suspiciously clean result, then checking the exit code |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced

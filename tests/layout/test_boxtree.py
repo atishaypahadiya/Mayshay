@@ -396,3 +396,69 @@ def built_recording(html, sink, css=""):
     document = parse(f"<style>{css}</style>{html}" if css else html)
     style_document(document, [])
     return build_box_tree(document, non_comparable=sink)
+
+
+def test_dom_ordinals_are_document_order_not_level_order():
+    """`assign_dom_identity`'s ordinal must match
+    `document.querySelectorAll('*')`, which is tree order -- that is the
+    whole basis of the Chrome comparison's node identity.
+
+    **This was wrong from Task B until Task E and no test caught it.** The
+    old walk numbered every child of a node before descending into any of
+    them, so a table's two `<tr>`s took 8 and 9 and the first row's cells
+    took 10 and 11, where a browser gives 8, 9, 10, 11, 12. It needs a
+    subtree whose siblings have children of their own to show at all, and
+    every Task D2 fixture is one `<div>` deep.
+
+    It surfaced as five `scripts/chrome_compare.py` table fixtures reporting
+    TREE DIVERGENCE with **identical paths on both sides**, which is the
+    two-identifier scheme's signature for "same element, one identifier
+    computed wrongly" -- and is the reason there are two.
+
+    The fixture is deliberately not a table: the rule is about tree walking,
+    and a table fixture would let a future reader think it was about tables.
+    """
+    from mayshay.dom.node import Element
+    from mayshay.htmlparse.treebuilder import parse
+    from mayshay.layout.boxtree import assign_dom_identity
+
+    document = parse(
+        "<!DOCTYPE html><body>"
+        "<section><p><b>a</b><i>b</i></p><p><u>c</u></p></section>"
+        "</body>"
+    )
+    ids = assign_dom_identity(document)
+
+    order = []
+
+    def walk(node):
+        for child in node.children:
+            if isinstance(child, Element):
+                order.append(child.tag_name)
+            walk(child)
+
+    walk(document)
+    by_ordinal = [
+        tag
+        for _, tag in sorted(
+            (ids[id(node)][0], node.tag_name)
+            for node in _elements(document)
+        )
+    ]
+    assert by_ordinal == order, (
+        "ordinals must follow a preorder walk of the DOM"
+    )
+    # ...and the one arrangement that tells the two orders apart, spelled
+    # out so the failure names the rule rather than a list mismatch.
+    assert order[order.index("b") - 1] == "p"
+    assert by_ordinal.index("i") < by_ordinal.index("u")
+    assert by_ordinal.index("b") < by_ordinal.index("i")
+
+
+def _elements(node):
+    from mayshay.dom.node import Element
+
+    for child in node.children:
+        if isinstance(child, Element):
+            yield child
+        yield from _elements(child)

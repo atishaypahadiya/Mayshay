@@ -85,6 +85,7 @@ from mayshay.cssparse.values import AUTO, Percent
 from mayshay.layout import inline as inline_module
 from mayshay.layout import intrinsic as intrinsic_module
 from mayshay.layout import linebox as linebox_module
+from mayshay.layout import table as table_module
 from mayshay.layout.boxtree import ATOMIC_INLINE_DISPLAYS, Box
 from mayshay.layout.geometry import EPSILON, BoxGeometry, Edges, Rect
 from mayshay.layout.text import is_white_space_only
@@ -101,8 +102,9 @@ BLOCK_CONTAINER_DISPLAYS: frozenset[str] = frozenset({"block", "list-item"})
 # Block-level, but with a non-block inner formatting context. Each
 # establishes a new formatting context, which is what makes it a
 # margin-collapsing barrier.
-# The table-internal displays, which CSS 2.1 section 17.6 says the margin
-# properties do not apply to. Task E's rule; named here so the deviation is
+# The table-internal displays, which CSS 2.1 section 17.5 says the margin
+# properties do not apply to (17.6 is the border models and says nothing
+# about margins -- the miscitation Task E corrected). Task E's rule; named here so the deviation is
 # a counter rather than a surprise.
 _TABLE_INTERNAL_DISPLAYS: frozenset[str] = frozenset({
     "table-row",
@@ -176,7 +178,6 @@ COUNTER_NAMES: tuple[str, ...] = (
     "layout_absolute_skipped",
     "layout_position_relative_unoffset",
     "layout_inner_fallback_block",
-    "layout_table_box_margins_applied",
     "layout_viewport_unit_unresolved",
     "layout_length_unit_unexpected",
     "layout_boxes_deferred_subtree",
@@ -351,6 +352,15 @@ def _establishes_formatting_context(box: Box, style: ComputedStyle) -> str | Non
     """
     if style.overflow != "visible":
         return "new_formatting_context"
+    if box.table_wrapper:
+        # CSS 2.1 section 17.4's table wrapper box. Its display is `block`,
+        # so none of the tests below sees it, and without this line a
+        # caption's margin collapses out through the wrapper's top edge and
+        # moves the whole table. The flag rather than the display, because
+        # the display is deliberately indistinguishable from any other
+        # block's -- that is what makes the wrapper transparent to the rest
+        # of block layout.
+        return "new_formatting_context"
     if box.display in ATOMIC_INLINE_DISPLAYS:
         return "new_formatting_context"
     if box.display in NON_BLOCK_INNER_DISPLAYS:
@@ -424,6 +434,7 @@ def _resolve_width(
     metrics: Counter[str],
     *,
     override_content_width: float | None = None,
+    used_content_width: float | None = None,
 ) -> _Horizontal:
     """The constraint equation for a block-level, non-replaced, in-flow box:
 
@@ -483,6 +494,21 @@ def _resolve_width(
     border_box_sizing = style.box_sizing == "border-box"
     if border_box_sizing and declared_width is not None:
         metrics["box_sizing_border_box"] += 1
+    if used_content_width is not None:
+        # A table wrapper box (CSS 2.1 section 17.4). Its width is neither
+        # declared nor absorbed from the containing block: it is "the
+        # border-edge width of the table box inside it", already computed.
+        #
+        # Fed in as though it had been declared, rather than through the
+        # `override_content_width` bypass an atomic inline uses, and the
+        # difference is what section 17.5.2 asks for in as many words:
+        # "once the calculated value of 'width' for the table is found ...
+        # then the other parts of section 10.3 do apply. Therefore a table
+        # can be centered using left and right 'auto' margins." Measured --
+        # Chrome 151 puts a 17.7969px auto-width table with `margin: 0 auto`
+        # at x=291.09 in a 600px block, which is centred and not left.
+        declared_width = used_content_width
+        border_box_sizing = False
 
     if declared_width is None:
         # `width: auto` absorbs the remainder, and any `auto` margin is 0.
@@ -529,7 +555,17 @@ def _resolve_width(
         if abs(recomputed - margin_right) > EPSILON:
             # Over-constrained. LTR only: `direction: rtl` would ignore
             # `margin-left` instead, and `direction` is not parsed.
-            metrics["width_over_constrained_margin_right_ignored"] += 1
+            #
+            # A shrink-wrapped table is over-constrained by construction --
+            # its width came from its columns and owes the containing block
+            # nothing -- so it gets its own counter. Folding it into the
+            # one above would put 32 corpus tables into a bucket that is
+            # supposed to mean "the author wrote three conflicting values".
+            metrics[
+                "table_width_remainder_to_margin_right"
+                if used_content_width is not None
+                else "width_over_constrained_margin_right_ignored"
+            ] += 1
         margin_right = recomputed
 
     return _Horizontal(
@@ -587,29 +623,40 @@ def _layout_block(
     if not already_counted:
         metrics["layout_boxes_seen"] += 1
         metrics["widths_resolved"] += 1
-    style = _style_of(box)
-    if box.display in _TABLE_INTERNAL_DISPLAYS and (
-        style.margin_top is not _ZERO
-        or style.margin_bottom is not _ZERO
-        or style.margin_left is not _ZERO
-        or style.margin_right is not _ZERO
-    ):
-        # CSS 2.1 section 17.6: the margin properties do not apply to
-        # table-internal boxes. Task E owns that; here the margins are
-        # applied like any other block's, which is why a `table-cell` with a
-        # margin sits 10px lower than Chrome puts it. Counted rather than
-        # silently different -- it is the only fixture in
-        # `tests/layout/test_block.py` where this engine and Chrome 151
-        # disagree on purpose.
-        metrics["layout_table_box_margins_applied"] += 1
+    style = _drop_table_internal_margins(box, cb_width, metrics)
     if style.position == "relative":
         # In flow and laid out at its static position. `top`/`left` are not
         # in `ComputedStyle` at all, so a relative box cannot be offset even
         # in principle yet; counted so the gap is a number.
         metrics["layout_position_relative_unoffset"] += 1
 
+    plan = None
+    used_content_width = None
+    if box.table_wrapper:
+        # Section 17.4 in the order it has to happen: the wrapper's width is
+        # the table box's border-edge width, so the whole of 17.5.2 runs
+        # here, before this box has a rectangle. It reads intrinsic sizes
+        # and computed styles only -- nothing inside the table is laid out
+        # yet, and nothing needs to be.
+        inner = next(
+            (c for c in box.children if c.display in table_module.TABLE_DISPLAYS),
+            None,
+        )
+        assert inner is not None, (
+            f"a table wrapper box with no table box inside it: {box!r}"
+        )
+        plan = table_module.plan_table(
+            box, inner, cb_width=cb_width, metrics=metrics
+        )
+        inner.table_plan = plan
+        used_content_width = plan.border_width
+
     horizontal = _resolve_width(
-        style, cb_width, metrics, override_content_width=override_content_width
+        style,
+        cb_width,
+        metrics,
+        override_content_width=override_content_width,
+        used_content_width=used_content_width,
     )
 
     margin_top = _px_or_zero(style.margin_top, basis=cb_width, metrics=metrics)
@@ -716,16 +763,25 @@ def _layout_block(
             # counted, in the shape of Task B's `boxes_grid_fallback` -- a
             # fallback that misplaces rather than crashes, and says so.
             metrics["layout_inner_fallback_block"] += 1
-        content_height, trailing, all_collapsed_through = _layout_children(
-            box,
-            metrics=metrics,
-            groups=groups,
-            fragment_counts=fragment_counts,
-            cb_width=horizontal.content_width,
-            cb_height=height,
-            top_group=top_group if top_open else None,
-            bottom_open=bottom_open_for_children,
-        )
+        if box.display in table_module.TABLE_DISPLAYS:
+            content_height = _layout_table_contents(
+                box,
+                metrics=metrics,
+                groups=groups,
+                fragment_counts=fragment_counts,
+            )
+            trailing, all_collapsed_through = None, False
+        else:
+            content_height, trailing, all_collapsed_through = _layout_children(
+                box,
+                metrics=metrics,
+                groups=groups,
+                fragment_counts=fragment_counts,
+                cb_width=horizontal.content_width,
+                cb_height=height,
+                top_group=top_group if top_open else None,
+                bottom_open=bottom_open_for_children,
+            )
         collapsed_through = (
             top_open
             and bottom_edges_open
@@ -799,6 +855,120 @@ def _layout_block(
         bottom=bottom_group,
         collapsed_through=collapsed_through,
         border_height=border_height,
+    )
+
+
+def _drop_table_internal_margins(
+    box: Box, cb_width: float, metrics: Counter[str]
+) -> ComputedStyle:
+    """This box's style, with the margins removed if it is table-internal.
+
+    **CSS 2.1 section 17.5, not 17.6.** "Internal table elements generate
+    rectangular boxes with content and borders. Cells have padding as well.
+    Internal table elements do not have margins." Section 17.6 is the two
+    border models and says nothing about margins; the citation in Task C's
+    comment, in this task's brief and in `tests/layout/test_block.py`'s
+    docstring was wrong in all three places and is corrected in all three.
+
+    Two counters, because the one this replaces conflated them.
+    `layout_table_box_margins_applied` tested `is not _ZERO` -- an identity
+    check against the initial value -- so it counted a *declaration*, not an
+    effect. It read 2 on the corpus and, executed, both are `margin: 0` on a
+    Wikipedia `<td>`: **no table-internal box on the corpus has a non-zero
+    margin**, so this fix moves exactly zero corpus pixels. That is worth
+    knowing and was not knowable from a counter whose name said "applied".
+
+    A returned copy, never a mutation: the `ComputedStyle` belongs to the
+    DOM element and is shared with the cascade's own tests.
+
+    Section 17.4 puts `table-caption` outside this rule on purpose -- a
+    caption box "retains its own content, padding, margin, and border
+    areas" -- so `_TABLE_INTERNAL_DISPLAYS` does not contain it.
+    """
+    style = _style_of(box)
+    if box.display not in _TABLE_INTERNAL_DISPLAYS:
+        return style
+    declared = (
+        style.margin_top,
+        style.margin_right,
+        style.margin_bottom,
+        style.margin_left,
+    )
+    if all(value is _ZERO for value in declared):
+        return style
+    nonzero = any(
+        _px_or_zero(value, basis=cb_width, metrics=metrics) != 0.0
+        for value in declared
+    )
+    metrics[
+        "table_internal_margin_dropped"
+        if nonzero
+        else "table_internal_margin_declared_zero"
+    ] += 1
+    return replace(
+        style,
+        margin_top=_ZERO,
+        margin_right=_ZERO,
+        margin_bottom=_ZERO,
+        margin_left=_ZERO,
+    )
+
+
+def _layout_table_contents(
+    box: Box,
+    *,
+    metrics: Counter[str],
+    groups: list[MarginGroup],
+    fragment_counts: dict[int, int],
+) -> float:
+    """A table box's inner layout, delegated to `layout.table`.
+
+    Two callbacks go out and a height comes back. `layout.table` decides
+    *where* every row, row group and cell goes; `_layout_block` is still
+    what lays a **cell** out, because a cell is an ordinary block container
+    and there is no second block layout in this engine.
+
+    `account` is the other half of that bargain. A row and a row-group box
+    are sized by the grid, so they never reach `_layout_block` -- and every
+    box in the tree has to be counted by exactly one bucket or
+    `_assert_box_partition` fails. This is that bucket, spelled out here
+    beside the counters it feeds rather than duplicated in `layout.table`.
+    """
+    plan = box.table_plan
+    assert plan is not None, f"a table box laid out with no plan: {box!r}"
+
+    def layout_cell(cell: Box, content_width: float) -> float:
+        result = _layout_block(
+            cell,
+            cb_width=content_width,
+            cb_height=None,
+            metrics=metrics,
+            groups=groups,
+            fragment_counts=fragment_counts,
+            override_content_width=content_width,
+        )
+        return result.border_height
+
+    def account(internal: Box) -> None:
+        # Rows and row groups get the same section 17.5 margin treatment as
+        # cells, and they have to get it HERE: they never reach
+        # `_layout_block`, so without this a `margin` on a `<tr>` would be
+        # dropped silently instead of dropped and counted.
+        _drop_table_internal_margins(internal, plan.content_width, metrics)
+        metrics["layout_boxes_seen"] += 1
+        metrics["widths_resolved"] += 1
+        # Two vertical margin edges that cannot collapse with anything --
+        # section 17.5 gives internal table elements no margins at all --
+        # registered as two singleton groups so `_partition_margin_edges`
+        # sees the same number of edges this claims.
+        metrics["margin_edges_seen"] += 2
+        _new_group(groups).add(0.0)
+        _new_group(groups).add(0.0)
+        metrics["collapse_barrier_edges_seen"] += 2
+        metrics["margin_collapse_blocked_new_formatting_context"] += 2
+
+    return table_module.layout_table_contents(
+        box, plan, metrics=metrics, layout_cell=layout_cell, account=account
     )
 
 
@@ -1098,6 +1268,13 @@ def _layout_children(
             )
             continue
 
+        override = None
+        if box.table_wrapper and child.display in table_module.TABLE_DISPLAYS:
+            # The table box's width came from section 17.5.2, not from the
+            # constraint equation. `Box.table_plan` carries it the one
+            # level down, from the wrapper that computed it to the table box
+            # that consumes it.
+            override = child.table_plan.content_width
         result = _layout_block(
             child,
             cb_width=cb_width,
@@ -1105,6 +1282,7 @@ def _layout_children(
             metrics=metrics,
             groups=groups,
             fragment_counts=fragment_counts,
+            override_content_width=override,
         )
         _merge_and_count(collector, result.top, metrics)
 
@@ -1349,6 +1527,15 @@ def assert_layout_constraints(
     linebox_module.assert_line_partitions(metrics)
     linebox_module.assert_text_conservation(root, metrics)
     _assert_geometry(root, cb_x=0.0, cb_width=initial_containing_block_width)
+    # Section 17.5.2's tiling, after `_absolutize` and not during layout.
+    # During layout every rectangle is relative to its own parent, so a cell
+    # compared against the TABLE's origin is off by the row's -- and a check
+    # that composed the offsets itself would agree with a wrong composition.
+    # Read from the absolute coordinates it is the same equation and it also
+    # catches `_absolutize` getting the chain wrong.
+    for box in root.walk():
+        if box.table_plan is not None:
+            table_module.assert_table_constraints(box, box.table_plan)
 
 
 def _assert_box_partition(metrics: Counter[str]) -> None:
@@ -1421,9 +1608,18 @@ def _assert_geometry(box: Box, *, cb_x: float, cb_width: float) -> None:
         return
     where = box.path or f"<{box.origin} {box.display}>"
 
-    if not box.is_inline_level:
+    if not box.is_inline_level and box.display not in _TABLE_INTERNAL_DISPLAYS:
         # Section 10.3.3, stated as a tiling: the margin box exactly spans
         # the containing block's content width, starting at its left edge.
+        #
+        # A third exemption since Task E, and it is the same kind as the
+        # atomic-inline one above: section 17.5.2's own words are "this
+        # section overrides the rules that apply to calculating widths as
+        # described in section 10.3". A cell's width is its column's and a
+        # row's is the grid's, so neither spans its containing block.
+        # `layout.table.assert_table_constraints` is the equation that
+        # replaces this one for them, and it is stricter -- it checks the
+        # cells tile the row rather than only that each one is inside it.
         _close(
             geometry.margin.width,
             cb_width,
@@ -1507,8 +1703,16 @@ def layout_document(
     metrics: Counter[str] = Counter()
     for name in COUNTER_NAMES + inline_module.COUNTER_NAMES + (
         intrinsic_module.COUNTER_NAMES
-    ):
+    ) + table_module.COUNTER_NAMES:
         metrics[name] = 0
+
+    # CSS 2.1 section 17.2.1's anonymous table objects and 17.4's wrapper
+    # box, **before** white-space processing. The fixup changes which boxes
+    # sit in which inline formatting context -- a run of text inside a
+    # `display: table` gains an anonymous row and cell around it -- and
+    # collapsing text first would decide those contexts against a tree that
+    # is about to change.
+    table_module.fix_up_tables(root, metrics)
 
     # White-space processing first, over the whole tree. Intrinsic sizing
     # reads `Box.text` and Task D2's line breaking will too; collapsing it
