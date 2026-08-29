@@ -155,6 +155,62 @@ whether Chrome is right. It told us the two methods answer different
 questions, which is what was needed. A check has a scope, and its scope is
 the difference between the two things being compared.
 
+### Corollary: agreeing measurements that share a generator
+
+The criterion above was written for a single check. Task D2 produced the
+same failure with confidence multiplied by seven.
+
+Seven fixtures were measured in Chrome, all seven agreed with each other,
+all seven contradicted CSS 2.1, and a rule was written that explained all
+seven and no other. Every one came from the same probe page, which had no
+doctype. One defect, reported seven times.
+
+> **More agreeing measurements is not more evidence unless they are
+> independently produced.** Coherence across many data points reads as
+> strong confirmation and is worth nothing when they share a generator —
+> they are one observation, repeated.
+
+This inverts the usual heuristic, which is why it is worth stating. The
+instinct that seven consistent results are hard to argue with is correct
+*only* for seven independent results. A shared harness, a shared fixture
+page, a shared fetch, a shared parse — each collapses N measurements into
+one, silently, while leaving the count of them intact.
+
+The tell is that the explanation is *too* clean. A rule that accounts for
+every row and no other, derived from a handful of observations, is either a
+real law or a description of the single defect generating them. Both look
+identical from inside.
+
+The practical form: before trusting a set of measurements, ask what they
+**share** — not whether they agree. Vary the shared thing, not the input.
+The strut case was settled by changing the doctype, which no fixture
+varied, and not by adding an eighth fixture, which would have agreed with
+the other seven.
+
+### Corollary: when the reference implementation confirms your bug
+
+The same case, at its worst point. The bad measurement said Chrome gave 9
+for the headline fixture. This engine's own output was 9.2.
+
+A comparison harness exists to catch our errors. This one produced a number
+that **agreed with our error**, and that agreement was the reason to trust
+it. The reference did not merely fail to catch the defect — it endorsed it.
+
+> **A reference implementation confirming your defect is worse than having
+> no reference**, because it is a false green with the maximum available
+> confidence attached to it. "It matches Chrome" ends an investigation in a
+> way that "I think this is right" does not.
+
+The mitigation is not to scrutinise the reference's *output* — the output
+was fine, and re-reading 9.00 more carefully reveals nothing. It is to
+assert the reference's **preconditions**: that it rendered the document you
+meant, in the mode you meant, with the stylesheet you meant.
+`scripts/chrome_compare.py` now asserts `document.compatMode` before it
+reports anything, and the corpus comparison is declined outright because
+Chrome would fetch the live stylesheets while this engine applies the
+collected copies — a precondition that cannot currently be met, recorded as
+a limitation rather than papered over.
+
 ### The criterion applied before it was named
 
 `scripts/collect.py` uses BeautifulSoup to find `<link rel=stylesheet>`
