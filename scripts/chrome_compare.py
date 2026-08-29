@@ -263,6 +263,114 @@ VERTICAL: dict[str, str] = {
     'inline-block;width:60px">inner</span> base</div>',
 }
 
+#: CSS 2.1 chapter 17 -- Task E. Compared on `x` and `w` at 16px, like the
+#: horizontal suite.
+#:
+#: **These fixtures deliberately disagree about their preconditions.** Most
+#: zero `border-spacing` and cell padding; five do not, and two give the
+#: table a border and padding as well. That is instance fifteen's first
+#: corollary applied on purpose: an engine that gets the `(columns + 1)`
+#: spacing term wrong is invisible in every zero-spacing fixture at once,
+#: and three injections proved it -- they passed a suite of twenty-three
+#: table tests that all shared `border-spacing: 0`.
+#:
+#: HTML's own UA stylesheet sets `border-spacing: 2px` on `table` and
+#: `padding: 1px` on `td`; `cssparse/ua.py` carries neither, so every
+#: fixture states what it wants rather than inheriting a difference.
+#:
+#: **Every `<tbody>` here is written out, and that is a finding rather than
+#: a style.** Written without one, all sixteen column fixtures came back as
+#: TREE DIVERGENCE and not as a layout result -- Chrome's parser inserts the
+#: implied `tbody` that HTML's "in table" insertion mode requires and this
+#: engine's tree builder does not, so `/table[1]/tr[1]/td[1]` here is
+#: `/table[1]/tbody[1]/tr[1]/td[1]` there. That is Phase 1's carried gap
+#: (the table insertion modes) surfacing in Phase 3, it is an `htmlparse`
+#: defect and not a layout one, and the two-identifier scheme is what kept
+#: the two apart instead of reporting sixteen table-layout failures.
+TABLE_RESET = "table{border-spacing:0;border-collapse:separate}td,th{padding:0}"
+
+TABLES: dict[str, str] = {
+    # Column distribution. One `data-m` per column, because the thing under
+    # test is how a width was divided.
+    "colspan-proportional": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    "<table><tbody><tr><td data-m>WWWW</td><td data-m>WWWWWWWWWWWWWWWWWWWW</td></tr>"
+    '<tr><td colspan=2 style="width:400px">x</td></tr></tbody></table></div>',
+    "colspan-three": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    "<table><tbody><tr><td data-m>WW</td><td data-m>WWWW</td><td data-m>WWWWWWWW"
+    '</td></tr><tr><td colspan=3 style="width:600px">x</td></tr></tbody></table></div>',
+    "colspan-order": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    "<table><tbody><tr><td data-m>WW</td><td data-m>WW</td><td data-m>WW</td></tr>"
+    '<tr><td colspan=2 style="width:200px">x</td><td>WW</td></tr>'
+    '<tr><td colspan=3 style="width:400px">y</td></tr></tbody></table></div>',
+    "colspan-absorbed": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    "<table><tbody><tr><td data-m>WWWWWWWWWW</td><td data-m>WWWWWWWWWW</td></tr>"
+    "<tr><td colspan=2>x</td></tr></tbody></table></div>",
+    # ...and the same rule WITH a spacing, which is the precondition the
+    # four above share and this one breaks.
+    "colspan-with-spacing": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    '<table style="border-spacing:12px"><tbody><tr><td data-m>WWWW</td>'
+    "<td data-m>WWWWWWWWWWWWWWWWWWWW</td></tr>"
+    '<tr><td colspan=2 style="width:400px">x</td></tr></tbody></table></div>',
+    # The table's own width.
+    "auto-shrink-to-fit": '<div data-h="fx" style="width:600px">'
+    f"<style>{TABLE_RESET}</style>"
+    "<table><tbody><tr><td data-m>ab</td></tr></tbody></table></div>",
+    "auto-constrained": '<div data-h="fx" style="width:120px">'
+    f"<style>{TABLE_RESET}</style>"
+    "<table><tbody><tr><td data-m>alpha beta gamma delta</td></tr></tbody></table></div>",
+    "between-min-and-max": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    '<table style="width:100px"><tbody><tr><td data-m>WWW</td>'
+    "<td data-m>alpha beta gamma delta</td></tr></tbody></table></div>",
+    "both-columns-flexible": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    '<table style="width:260px"><tbody><tr><td data-m>aa bb cc</td>'
+    "<td data-m>alpha beta gamma delta epsilon</td></tr></tbody></table></div>",
+    "past-max-content": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    '<table style="width:500px"><tbody><tr><td data-m>aa</td>'
+    "<td data-m>a much longer cell</td></tr></tbody></table></div>",
+    "cell-width-below-min": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    '<table><tbody><tr><td data-m style="width:10px">WWWWWWWWWW</td>'
+    "<td data-m>WW</td></tr></tbody></table></div>",
+    # Fixed layout: zero corpus coverage, so these fixtures are all there is.
+    "fixed": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    '<table style="table-layout:fixed;width:400px"><tbody>'
+    '<tr><td data-m style="width:100px">a</td><td data-m>b</td>'
+    "<td data-m>c</td></tr></tbody></table></div>",
+    "fixed-auto-width": '<div data-h="fx" style="width:500px">'
+    f"<style>{TABLE_RESET}</style>"
+    '<table style="table-layout:fixed"><tbody><tr><td data-m>a</td>'
+    "<td data-m>b</td></tr></tbody></table></div>",
+    "fixed-span-spacing": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    '<table style="table-layout:fixed;width:400px;border-spacing:20px"><tbody>'
+    '<tr><td data-m colspan=2 style="width:200px">a</td><td data-m>b</td>'
+    "</tr></tbody></table></div>",
+    # Geometry: spacing outside as well as between, and a table that has a
+    # border and padding in the separated model.
+    "spacing-and-rows": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    '<table style="border-spacing:10px 20px"><tbody>'
+    "<tr><td data-m>a</td><td data-m>b</td></tr>"
+    "<tr><td data-m>c</td><td data-m>d</td></tr></tbody></table></div>",
+    "table-border-and-padding": f'<div data-h="fx"><style>{TABLE_RESET}</style>'
+    '<table style="border:5px solid;padding:7px;border-spacing:3px"><tbody>'
+    "<tr><td data-m>aa</td><td data-m>bb</td></tr></tbody></table></div>",
+    # Section 17.4 and 17.5, on the wrapper rather than on a cell.
+    "caption-in-the-table-rect": '<div data-h="fx">'
+    f"<style>{TABLE_RESET}</style>"
+    '<table data-m><caption style="height:30px">c</caption>'
+    '<tr><td style="height:20px">a</td></tr></tbody></table></div>',
+    "auto-margins-centre": '<div data-h="fx" style="width:600px">'
+    f"<style>{TABLE_RESET}</style>"
+    '<table data-m style="margin:0 auto"><tr><td>ab</td></tr></tbody></table></div>',
+    "internal-margins-dropped": '<div data-h="fx" style="width:400px">'
+    f"<style>{TABLE_RESET}</style>"
+    '<div data-m style="display:table-cell;margin-top:10px">'
+    '<div style="height:20px;margin-top:40px;width:30px"></div></div></div>',
+    "anonymous-table-for-orphan-cells": '<div data-h="fx" style="width:600px">'
+    f"<style>{TABLE_RESET}</style>"
+    '<div data-m style="display:table-cell">aa</div>'
+    '<div data-m style="display:table-cell">a much longer one</div></div>',
+}
+
+
 #: A box whose four edges are all different and all declared, so the
 #: startup assertion is against measured ground truth rather than against
 #: itself. Content 400x50, padding 414x60, border 420x66, margin 460x86.
@@ -308,12 +416,17 @@ const out = {};
 for (const fx of document.querySelectorAll('[data-fx]')) {
   const anchor = fx.querySelector('[data-h]');
   const base = anchor.getBoundingClientRect();
-  const el = fx.querySelector('[data-m]');
+  // ALL the marked boxes, not the first -- see measure_here(). A table
+  // fixture marks one cell per column, because the thing under test is how
+  // a width was DIVIDED and one column cannot show that.
+  const marked = [...fx.querySelectorAll('[data-m]')];
+  const el = marked[0];
   // The path RELATIVE to the anchor. Chrome's page stacks every fixture
   // in one document and this engine parses each one alone, so the absolute
   // paths differ for a reason that is about the harness and not about
   // either parser. Relative to the anchor they are the same question.
-  out[fx.dataset.fx] = {rects: rects(el, base), edges: edges(el),
+  out[fx.dataset.fx] = {rects: [].concat(...marked.map(m => rects(m, base))),
+                        edges: edges(el),
                         path: xpath(el).slice(xpath(anchor).length),
                         ordinal: ordinal(el) - ordinal(anchor)};
 }
@@ -409,24 +522,29 @@ def measure_here(body: str, size: int) -> dict:
     layout_document(root, VIEWPORT)
 
     anchor = None
-    target = None
+    targets: list = []
     for box in root.walk():
         if box.origin != "element" or not isinstance(box.node, Element):
             continue
         if box.node.attrs.get("data-h") is not None and anchor is None:
             anchor = box
-        if box.node.attrs.get("data-m") is not None and target is None:
-            target = box
-    if target is None or anchor is None or anchor.geometry is None:
+        if box.node.attrs.get("data-m") is not None:
+            targets.append(box)
+    if not targets or anchor is None or anchor.geometry is None:
         raise SystemExit(f"fixture has no data-h/data-m box: {body[:60]}")
+    target = targets[0]
 
     base = anchor.geometry.border
-    if target.fragments:
-        rectangles = [f.geometry.border for f in target.fragments]
-    elif target.geometry is not None:
-        rectangles = [target.geometry.border]
-    else:
-        rectangles = []
+    # ALL the marked boxes, concatenated, so a table fixture can mark one
+    # cell per column -- the thing under test there is how a width was
+    # DIVIDED, and one column cannot show that. A single marked box gives
+    # exactly the previous behaviour.
+    rectangles = []
+    for marked in targets:
+        if marked.fragments:
+            rectangles.extend(f.geometry.border for f in marked.fragments)
+        elif marked.geometry is not None:
+            rectangles.append(marked.geometry.border)
     path = target.path or ""
     anchor_path = anchor.path or ""
     if path.startswith(anchor_path):
@@ -566,6 +684,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"heights     {name}")
         for name in VERTICAL:
             print(f"vertical    {name}")
+        for name in TABLES:
+            print(f"tables      {name}")
         return 0
 
     if not Path(arguments.chrome).exists():
@@ -576,11 +696,13 @@ def main(argv: list[str] | None = None) -> int:
     horizontal = HORIZONTAL
     vertical = VERTICAL
     heights = HEIGHTS
+    tables = TABLES
     if arguments.only:
         wanted = set(arguments.only)
         horizontal = {k: v for k, v in HORIZONTAL.items() if k in wanted}
         vertical = {k: v for k, v in VERTICAL.items() if k in wanted}
         heights = {k: v for k, v in HEIGHTS.items() if k in wanted}
+        tables = {k: v for k, v in TABLES.items() if k in wanted}
 
     assert_box_model(16)
     total_agree = total = 0
@@ -607,6 +729,16 @@ def main(argv: list[str] | None = None) -> int:
         agree, count = run(
             vertical, 2048, "yh", VERTICAL_TOLERANCE,
             "baseline alignment, with Chrome's metric rounding removed",
+        )
+        total_agree += agree
+        total += count
+    if tables:
+        # `xw` at 16px, the same axes and tolerance as the horizontal suite:
+        # table layout is a width algorithm, and the heights in these
+        # fixtures are line boxes the strut suite already covers.
+        agree, count = run(
+            tables, 16, "xw", HORIZONTAL_TOLERANCE,
+            "table column widths (CSS 2.1 17.5.2)",
         )
         total_agree += agree
         total += count
