@@ -51,6 +51,12 @@ this task is that a single page has been standing in for the web.
 | **< 3%** gated, and the mean is carried by ≤ 3 pages | Wikipedia artifact; **paint goes next** |
 | 3–10% | no auto-ruling. Report it and decide by hand |
 
+**Per stratum, and the ruling reads the strata before the pool.** If
+government sites sit at 15% and everything else at 2%, that is not a 3%
+median to be waved through — it is a finding that floats gate one site
+type, and the ruling is made on that shape rather than on the pooled
+number. A pooled median that no stratum resembles is reported as such.
+
 **Second gate, reported alongside:** the share of *pages* on which at least
 one flex container or table is gated behind a float or absolute ancestor.
 A low box share with a high page share means floats block a little content
@@ -224,12 +230,30 @@ and I will.
 and it is reproducible. What gets tracked is
 `data/corpus-lists/2026-08-29-survey.tsv`:
 
-    url <TAB> stratum <TAB> selection_reason
+    url <TAB> stratum <TAB> risk <TAB> selection_reason
 
 with `#` comments. `collect.py` gains `--urls-from FILE` reading it, and
-carries `stratum` and `selection_reason` through into `collection.json`
-so a report can break any figure down by stratum without a second lookup
-table that can drift.
+carries all three metadata columns through into `collection.json` so a
+report can break any figure down by stratum without a second lookup table
+that can drift.
+
+`risk` is a **prediction written before fetching** — `ok`, `rot`,
+`robots`, `bot`, `js`, `homepage`, `paywall` — and `collection.json`
+records what actually happened beside it. Two reasons it earns a column
+rather than a comment. It makes the sample's fragility legible in advance
+instead of arriving as a pile of failures, and comparing predicted risk
+against actual outcome is itself a cheap check on whether the sample was
+picked with any judgment at all. **No URL in the list has been fetched**;
+the deep paths were written from memory against a May 2026 cutoff, so the
+`rot` rows are the expected casualties and the 60-page floor is what
+absorbs them.
+
+The file also carries a **reserve block**, commented out and marked
+`#RESERVE`, concentrated in the two strata most likely to be refused
+(e-commerce, forums). A reserve is collected only to replace a failed
+primary in the same stratum, and every substitution is recorded in
+`collection.json` — so the sample stays documented rather than quietly
+repaired to look complete.
 
 Expected on-disk size: roughly 60–120 MB. Fetch time at the default 1s
 delay, with ~5 sheets per page plus robots: **25–40 minutes**. Every
@@ -249,7 +273,24 @@ and needs re-picking.
 ## The measurement set to re-run
 
 Each against `2026-08-29-survey`, and **each also re-run against
-`2026-08-27-phase-3` at the same commit**. That second half is not
+`2026-08-27-phase-3` at the same commit**.
+
+**Every figure is reported per stratum, not only in aggregate.** This is
+the point of stratifying and the easiest thing to lose: an aggregate
+median across nine deliberately different populations hides exactly what
+the nine were built to separate. A register row that leaves zero only on
+marketing pages is a different fact from one that moves everywhere, and
+the float distribution is expected to differ sharply between government
+sites laying out with tables and news sites floating figures — averaging
+those two into one number describes no page in the sample.
+
+So every table below carries one column per stratum plus an `all` column,
+in that order, and the aggregate is the last column rather than the
+headline. Where a figure is a distribution, report the per-stratum median
+and the range across strata; the pooled median is reported too and is
+never the one quoted alone. The `nonlatin` stratum is additionally broken
+down **per script**, because script is that stratum's independent variable
+in the way site type is everywhere else. That second half is not
 optional, and it is the whole reason this section is longer than "run the
 scripts":
 
@@ -338,20 +379,23 @@ per-collection and whole-corpus paths cannot coincide.
 ## Done when
 
 1. `data/corpus-lists/2026-08-29-survey.tsv` is committed with 80 URLs,
-   nine strata, and a selection reason on every row.
+   nine strata, and a risk flag and selection reason on every row.
+   **Reviewed by the user before any fetch.**
 2. The three collector defects are fixed, with tests, and the existing
    three pages are migrated into `2026-08-27-phase-3/` losslessly.
 3. The survey is collected; `collection.json` accounts for **every URL
    attempted**, including failures.
 4. All eight measurement sets are run over both collections at one commit,
    with collection and commit recorded in the output.
-5. `docs/synthetic-only-coverage.md` gains the survey column and the two
+5. Every figure is reported **per stratum** with the aggregate last, and
+   `nonlatin` is additionally broken down per script.
+6. `docs/synthetic-only-coverage.md` gains the survey column and the two
    findings sections.
-6. `docs/corpus.md` documents both collections, the strata, the selection
+7. `docs/corpus.md` documents both collections, the strata, the selection
    rules, and the stated bias of the sample.
-7. The float distribution is reported and the pre-registered rule applied,
-   or explicitly overridden with a reason.
-8. Full suite green.
+8. The float distribution is reported per stratum and pooled, and the
+   pre-registered rule applied, or explicitly overridden with a reason.
+9. Full suite green.
 
 ## What this deliberately does not do
 

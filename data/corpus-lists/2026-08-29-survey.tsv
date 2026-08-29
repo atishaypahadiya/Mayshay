@@ -1,0 +1,180 @@
+# mayshay corpus survey -- 2026-08-29
+#
+# 80 primary URLs across nine strata, plus a marked reserve block used only
+# to replace a primary that fails. Collected by scripts/collect.py into
+# data/corpus/2026-08-29-survey/. See docs/plans/2026-08-29-corpus-widening.md.
+#
+# Columns, tab-separated:
+#   url                a page, not a homepage, except where the risk column
+#                      says `homepage` and the reason says why
+#   stratum            one of the nine; every figure is reported per stratum
+#   risk               what is most likely to go wrong with this row:
+#                        ok             expected to fetch and parse
+#                        rot            deep URL, may have moved since it
+#                                       was written down
+#                        robots         robots.txt may disallow this path
+#                        bot            bot protection likely (Cloudflare,
+#                                       Akamai, PerimeterX)
+#                        js             content may be client-rendered
+#                        homepage       a homepage, deliberately
+#                        paywall        may serve an interstitial
+#   selection_reason   why THIS url, in one line
+#
+# The risk column is a prediction, not a result. What actually happened is
+# in collection.json, and every report's denominator is URLs ATTEMPTED (80),
+# never pages collected.
+#
+# UNVERIFIED: no URL below has been fetched. Deep article paths are written
+# from memory against a May 2026 cutoff and today is 2026-08-29, so the `rot`
+# rows are the ones expected to fail. That is what the 60-page floor is for.
+
+# ---------------------------------------------------------------------------
+# news / magazine -- 10.  Floated figures, pull quotes, ad slots, multi-column
+# teasers. The stratum where CSS 2.1 chapter 9 floats should be densest.
+# ---------------------------------------------------------------------------
+https://www.bbc.com/news/science-environment	news	js	Major broadcaster section page; server-rendered shell with heavy progressive enhancement, so it measures the common "SSR plus hydration" shape
+https://www.theguardian.com/technology	news	ok	Section page mixing a card grid with article teasers; no hard paywall, and long-lived CSS with a documented design system
+https://text.npr.org/	news	homepage	NPR's deliberately text-only edition -- the near-zero-CSS extreme of this stratum, and a control for what a news page costs without layout
+https://arstechnica.com/science/	news	ok	Long-form with floated figures and inline ad slots; the classic float-heavy article body
+https://apnews.com/hub/technology	news	ok	Wire service hub page; plain structural markup, few tables, good baseline
+https://www.aljazeera.com/news/	news	ok	International outlet whose Arabic sibling appears in the non-Latin stratum, giving one organisation across two scripts
+https://www.cbc.ca/news/science	news	ok	Public broadcaster with older CSS than the US/UK majors; expected to be more table- and float-reliant
+https://www.quantamagazine.org/physics/	news	ok	Long-form science with SVG figures, pull quotes and a distinctive editorial layout
+https://www.smithsonianmag.com/science-nature/	news	js	Magazine section page; image-grid heavy, expected to be flex-dense for a news site
+https://www.propublica.org/topics/	news	ok	Investigative long-form; graphics-heavy bodies and a nonprofit-newsroom stylesheet rather than a commercial CMS
+
+# ---------------------------------------------------------------------------
+# documentation / reference -- 10.  Long flow content, tables, <pre>, sidebars.
+# Row 9 is a deliberate CONTROL, see below.
+# ---------------------------------------------------------------------------
+https://developer.mozilla.org/en-US/docs/Web/CSS/flex	docs	ok	MDN's page for the shorthand Task F implemented: syntax tables, code blocks, a sticky sidebar, and on-topic for the flex census
+https://docs.python.org/3/library/stdtypes.html	docs	ok	One of the largest Sphinx pages on the web; dozens of tables and a deep heading tree, which stresses table layout on real markup
+https://www.postgresql.org/docs/current/functions-string.html	docs	ok	Dense multi-column reference tables with wrapping cells -- the shape chapter 17's fixed/auto width algorithms actually meet
+https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html	docs	ok	mdBook output: minimal hand-written CSS, a flex sidebar, and long <pre> blocks with no wrapping
+https://docs.djangoproject.com/en/stable/topics/db/queries/	docs	ok	Long single-page flow with admonition boxes and inline code; a different documentation generator from the other four
+https://man7.org/linux/man-pages/man2/open.2.html	docs	ok	A man page as HTML: almost entirely <pre>, essentially no author CSS, the low-CSS floor for this stratum
+https://www.rfc-editor.org/rfc/rfc9110.html	docs	ok	HTTP semantics as a very long preformatted document; tests white-space:pre handling and intrinsic sizing at extreme length
+https://www.w3.org/TR/CSS22/visuren.html	docs	ok	The visual formatting model chapter this engine implements, in W3C's own 1998-era stylesheet
+https://en.wikipedia.org/wiki/HTML	docs	ok	CONTROL: the identical URL already in the 2026-08-27-phase-3 collection. Two fetch dates for one page separates "the page changed" from "the engine changed" -- the only row here that can do that
+https://kubernetes.io/docs/concepts/workloads/pods/	docs	ok	Hugo-built docs with a modern three-column flex shell, contrasting with the four older generators above
+
+# ---------------------------------------------------------------------------
+# e-commerce -- 10.  Product grids are the densest flex on the web. This is
+# also the RISKIEST stratum: bot protection and robots.txt disallow are both
+# routine here, and it is the one most likely to fall short of 10.
+# ---------------------------------------------------------------------------
+https://www.adafruit.com/product/3055	ecommerce	ok	Independent electronics retailer with a bot-tolerant robots.txt; a real product page with gallery, variant selector and spec table
+https://www.sparkfun.com/products/13664	ecommerce	rot	Same category as Adafruit with a different template; product IDs churn, so this row is expected to need replacement
+https://shop.pimoroni.com/collections/raspberry-pi	ecommerce	ok	Shopify-hosted category grid -- Shopify's default templates are among the most-deployed flex layouts anywhere
+https://itch.io/games	ecommerce	ok	Open storefront with a dense responsive card grid and no bot protection; the cleanest large product grid likely to fetch
+https://store.steampowered.com/app/620/Portal_2/	ecommerce	js	Large commercial storefront that still server-renders its product pages; heavy nested flex in the purchase modules
+https://www.lulu.com/search	ecommerce	bot	Print-on-demand search results: a paginated grid with query-string URLs, which also exercises the slug fix
+https://bookshop.org/lists	ecommerce	rot	Independent bookseller aggregator; list pages are grid-heavy and the site is small enough to be politely fetched
+https://www.rei.com/c/camping-and-hiking	ecommerce	bot	Large US retailer category page with faceted navigation; included knowing bot protection may refuse it, because the stratum needs at least one big-retailer template
+https://www.ikea.com/us/en/cat/sofas-fu003/	ecommerce	js	Category grid from a retailer whose layout is almost entirely flex and grid; likely client-rendered, which is itself the finding
+https://www.patagonia.com/shop/mens-jackets-vests	ecommerce	bot	Second big-retailer template so the stratum does not rest on one; expected to be the second most likely refusal
+
+# ---------------------------------------------------------------------------
+# SPA shells -- 8.  Near-empty DOM. These are a FINDING, not a failure: a
+# page that parses to 15 elements and lays out nothing is a fact about the
+# web, and excluding it is the selection bias this sample exists to escape.
+# ---------------------------------------------------------------------------
+https://excalidraw.com/	spa	homepage	Canvas-based drawing app; the document is a mount point and essentially all layout is client-side
+https://www.tldraw.com/	spa	homepage	Second canvas app with a different bundler and framework, so the stratum is not one toolchain
+https://demo.realworld.io/	spa	homepage	The RealWorld reference SPA -- a deliberately conventional React app, the median of this stratum rather than an extreme
+https://todomvc.com/examples/react/dist/	spa	rot	TodoMVC's React example: the smallest honest SPA on the web, and a useful floor for "how few elements does a page have"
+https://angular.dev/playground	spa	rot	Framework-authored playground; Angular's shell markup differs structurally from React's
+https://svelte.dev/playground/hello-world	spa	rot	Svelte compiles away its framework, so its shell is closer to hand-written HTML than the others -- a contrast within the stratum
+https://observablehq.com/@observablehq/hello-world	spa	js	Notebook runtime: content is generated entirely after load, and the served document is near-empty
+https://app.diagrams.net/	spa	homepage	Long-lived, non-venture-backed web app; an older SPA idiom than the framework demos above
+
+# ---------------------------------------------------------------------------
+# government / public sector -- 10.  Old markup, tables used for layout, CSS
+# written under procurement. Expected to be the highest table-layout density
+# in the sample and a strong test of chapter 17 on markup nobody validated.
+# ---------------------------------------------------------------------------
+https://www.gov.uk/guidance/the-highway-code	gov	ok	GDS design system: modern, accessible, deliberately plain CSS -- the well-engineered end of this stratum
+https://www.irs.gov/forms-instructions	gov	ok	US federal forms index; dense data tables and a legacy CMS
+https://www.cdc.gov/vaccines/index.html	gov	rot	Public health content with heavy internal cross-linking; recently reorganised, so the path may have moved
+https://www.usa.gov/agency-index	gov	ok	A long alphabetical index; the simplest possible structural page at real length
+https://www.canada.ca/en/services/benefits.html	gov	ok	Bilingual federal service page on a shared national template
+https://european-union.europa.eu/institutions-law-budget_en	gov	js	EU institutional page; multilingual infrastructure and a cookie banner that may or may not replace the document
+https://www.uscourts.gov/court-records	gov	ok	Federal judiciary; older markup than the executive-branch sites above
+https://www.census.gov/topics/population.html	gov	ok	Statistical agency: data tables are the content rather than the chrome
+https://www.cityofchicago.org/city/en/depts.html	gov	ok	Large municipal site -- the layer where table-based layout genuinely survives, and the reason this stratum is 10 and not 6
+https://www.nyc.gov/site/finance/index.page	gov	ok	Second large municipal site on a different vendor CMS, so the municipal finding is not one procurement
+
+# ---------------------------------------------------------------------------
+# personal sites / blogs -- 10.  Hand-written HTML and minimal CSS at one end,
+# elaborate typographic CSS at the other. Chosen as a deliberate RANGE: rows 1
+# and 5 are close to the minimum and maximum author-CSS budgets on the web.
+# ---------------------------------------------------------------------------
+https://danluu.com/algorithms-interviews/	personal	ok	Famously near-zero CSS: no stylesheet worth the name, so almost every computed value is our UA sheet -- the floor of the author/UA gap
+https://gwern.net/scaling-hypothesis	personal	ok	The opposite extreme: floated sidenotes, drop caps, multi-column and a very large hand-tuned stylesheet
+https://jvns.ca/blog/2023/01/13/examples-of-problems-with-integers/	personal	rot	Hand-written posts with inline SVG and code blocks; a specific post URL, so rot-prone
+https://simonwillison.net/tags/css/	personal	ok	A tag index rather than a post, which is more stable and still a real content page
+https://drewdevault.com/2020/03/18/Reckless-limitless-scope.html	personal	rot	Hugo-generated, deliberately plain; represents the static-site-generator default that thousands of blogs ship unchanged
+https://rachelandrew.co.uk/archives/	personal	ok	Written by a CSS layout spec editor, so the page itself is likely to use grid and flex correctly and idiomatically
+https://meyerweb.com/eric/thoughts/	personal	ok	Long-running blog by the author of the CSS reset; markup and CSS with two decades of accumulated layers
+https://adactio.com/journal/	personal	ok	Progressive-enhancement advocate; expected to degrade unusually well and to use very little JS
+https://sive.rs/blog	personal	ok	Deliberately minimal by stated policy -- a second low-CSS row so the danluu finding is not a single site
+https://tonsky.me/	personal	homepage	Elaborate custom typography and a hand-rolled layout; homepage because the site's index is its content
+
+# ---------------------------------------------------------------------------
+# forums / community -- 8.  Deep nesting, query-string URLs, and the last
+# genuine table-layout holdouts. Two rows are chosen specifically to exercise
+# the slug fix (query strings), which three hand-picked URLs never could.
+# ---------------------------------------------------------------------------
+https://news.ycombinator.com/item?id=1	forum	ok	An early, permanently-present HN item, and a QUERY-STRING url -- the exact shape that silently collided before the slug fix. Same domain as the phase-3 collection but a different page type
+https://lobste.rs/t/css	forum	ok	Small hand-written community site; table-based listing markup with almost no framework CSS
+https://meta.discourse.org/c/feature/2	forum	js	Discourse is a client-rendered forum with a virtual scroller -- likely a near-empty document, which makes it an SPA finding inside the forum stratum
+https://forums.raspberrypi.com/viewforum.php?f=63	forum	ok	phpBB with a query-string url: nested tables, decades-old markup idioms, and a second slug-fix exercise
+https://www.linuxquestions.org/questions/linux-newbie-8/	forum	rot	vBulletin-era layout; the most likely row in the sample to use tables for page structure rather than data
+https://lists.debian.org/debian-devel/2026/01/threads.html	forum	rot	Mailing list archive: nested <ul> threading and <pre> bodies, essentially no CSS at all
+https://old.reddit.com/r/webdev/	forum	robots	Reddit's legacy interface, which is table- and float-based; robots.txt is restrictive and this row is expected to be refused
+https://stackoverflow.com/questions/tagged/css-flexbox	forum	bot	Q&A tag page with dense code blocks and vote widgets; bot protection is likely and the row is included knowing it
+
+# ---------------------------------------------------------------------------
+# marketing / landing -- 8.  MY ADDITION, and the highest-yield eight slots
+# for moving register rows off zero. The hero/feature-grid/pricing-table idiom
+# is where flex-direction:column, order, align-content and multi-line wrapping
+# actually live. Rows 4 and 5 are PRICING PAGES, chosen specifically for
+# column-direction flex, which has zero occurrences in the current corpus.
+# ---------------------------------------------------------------------------
+https://stripe.com/payments	marketing	js	The most-imitated marketing layout on the web; gradients, layered absolute positioning and deeply nested flex
+https://linear.app/features	marketing	js	Feature grid with staggered cards; a current-generation design-system landing page
+https://tailwindcss.com/plus	marketing	ok	Built by the authors of the utility framework most responsible for how much flex is on the web; near-certain to exercise wrap and gap
+https://vercel.com/pricing	marketing	js	PRICING PAGE: side-by-side plan cards are column-direction flex with wrapping, the single most likely source of a non-zero flex-direction:column count
+https://www.notion.com/pricing	marketing	js	Second pricing page on a different design system, so a column-flex finding is not one site
+https://www.apple.com/macbook-air/	marketing	js	Product page as layout showcase; sticky headers, staged reveals and very heavy nesting
+https://basecamp.com/	marketing	homepage	Deliberately plain, opinionated marketing with hand-written CSS -- the low-complexity control for this stratum
+https://webflow.com/made-in-webflow	marketing	js	Visual-builder output: machine-generated CSS with a distinctive class naming scheme, structurally unlike hand-authored pages
+
+# ---------------------------------------------------------------------------
+# non-Latin script -- 6.  MY ADDITION, with the caveat stated: the vendored
+# Liberation Sans covers none of these scripts, so these pages produce
+# MISSING-GLYPH and SCRIPT-CLASSIFICATION counts, not box positions to trust.
+# Six writing systems, two right-to-left. `characters classified AL by
+# default: must be 0` cannot be tested by any other row in this file.
+# ---------------------------------------------------------------------------
+https://www3.nhk.or.jp/news/	nonlatin	homepage	Japanese: no inter-word spaces, mixed kanji/kana/Latin runs, and full-width punctuation with its own line-break rules
+https://www.cna.com.tw/list/aall.aspx	nonlatin	ok	Traditional Chinese: Han-only runs with no spaces, and a query-free listing page that should fetch cleanly
+https://www.alarabiya.net/	nonlatin	homepage	Arabic: RIGHT-TO-LEFT with cursive joining. This engine has no bidi at all, so the finding is how loudly that fails and what it counts
+https://www.ynet.co.il/	nonlatin	homepage	Hebrew: the second RTL script, non-joining, so RTL and cursive-joining failures can be told apart rather than confounded
+https://www.thairath.co.th/	nonlatin	homepage	Thai: NO INTER-WORD SPACES AT ALL and no ASCII fallback, which is the sharpest possible test of line breaking -- there is literally nothing to break on
+https://www.bhaskar.com/	nonlatin	homepage	Devanagari: combining marks and reordering vowels, where a naive per-codepoint measurement diverges from grapheme clusters
+
+# ---------------------------------------------------------------------------
+# RESERVE -- not collected unless a primary in the same stratum fails.
+# Concentrated in e-commerce and forums, the two strata most likely to be
+# refused. Any substitution is recorded in collection.json so the sample
+# stays documented rather than quietly repaired.
+# ---------------------------------------------------------------------------
+#RESERVE	https://www.thingiverse.com/thing:763622	ecommerce	ok	Open catalogue with a card grid; not commerce strictly, but the same layout shape if two retailers refuse
+#RESERVE	https://standardebooks.org/ebooks	ecommerce	ok	Free-but-catalogued library with a real product grid and an unusually clean stylesheet
+#RESERVE	https://gumroad.com/discover	ecommerce	js	Creator storefront; a different commerce template again
+#RESERVE	https://www.etsy.com/c/jewelry	ecommerce	robots	Marketplace category page, included only as a last resort because robots is restrictive
+#RESERVE	https://forum.arduino.cc/	forum	ok	Discourse instance on a hardware community, if meta.discourse.org proves empty
+#RESERVE	https://bbs.archlinux.org/viewforum.php?id=23	forum	ok	FluxBB with a query string; another old-markup forum engine
+#RESERVE	https://www.reddit.com/r/webdev/	forum	robots	Modern Reddit, if old.reddit.com is refused; different markup entirely
+#RESERVE	https://community.spiceworks.com/	forum	js	Enterprise IT community on yet another forum platform
