@@ -533,14 +533,13 @@ def _split_style(style: ComputedStyle, wrapper_display: str) -> tuple[
         # `Box.table_wrapper` says. Leaving a declared `overflow: hidden`
         # here as well would be harmless and is left alone for that reason.
     )
+    # Driven from `_WRAPPER_PROPERTIES` rather than restated, so the list
+    # and the reset cannot disagree: a property added to the wrapper's half
+    # and forgotten here would be applied to BOTH boxes, which for a margin
+    # means indenting every table by twice its own.
     inner = replace(
         style,
-        margin_top=_INITIAL.margin_top,
-        margin_right=_INITIAL.margin_right,
-        margin_bottom=_INITIAL.margin_bottom,
-        margin_left=_INITIAL.margin_left,
-        position=_INITIAL.position,
-        float_=_INITIAL.float_,
+        **{name: getattr(_INITIAL, name) for name in _WRAPPER_PROPERTIES},
     )
     return wrapper, inner
 
@@ -683,11 +682,6 @@ def _fixup(box: Box, metrics: Counter[str]) -> list[Box]:
 # --------------------------------------------------------------------------
 # The grid: CSS 2.1 section 17.5's placement rules
 # --------------------------------------------------------------------------
-
-#: The displays whose inner layout is table layout rather than block flow.
-TABLE_BOX_DISPLAYS: frozenset[str] = TABLE_DISPLAYS | ROW_GROUP_DISPLAYS | frozenset(
-    {"table-row"}
-)
 
 #: HTML's own clamps on the two span attributes. `colspan` is 1..1000 and
 #: `rowspan` is 0..65534, where 0 means "to the end of the row group". They
