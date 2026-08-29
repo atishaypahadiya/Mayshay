@@ -1065,7 +1065,9 @@ def _align(
     ]
     max_ascent = 0.0
     for item in baseline_items:
-        max_ascent = max(max_ascent, _item_ascent(item, metrics))
+        if item.baseline is None:
+            metrics["flex_items_baseline_synthesized"] += 1
+        max_ascent = max(max_ascent, _item_ascent(item))
 
     for item in line.items:
         alignment = _cross_align(item.style, style)
@@ -1086,7 +1088,7 @@ def _align(
             else:
                 metrics["flex_items_aligned_baseline"] += 1
                 item.cross_offset = line.cross_start + (
-                    max_ascent - _item_ascent(item, metrics)
+                    max_ascent - _item_ascent(item)
                 )
         elif alignment in _CROSS_END_ALIASES:
             item.cross_offset = line.cross_start + free
@@ -1118,18 +1120,19 @@ def _cross_size_is_auto(item: FlexItem, is_row: bool) -> bool:
     return value is AUTO
 
 
-def _item_ascent(item: FlexItem, metrics: Counter[str]) -> float:
+def _item_ascent(item: FlexItem) -> float:
     """The distance from an item's outer cross-start edge to its first
     baseline.
 
     Section 8.5: an item with no baseline of its own gets one synthesized
-    from its border box, and the two cases are counted separately -- "it had
-    none" and "we did not look" are different facts, and only the split
-    tells them apart.
+    from its border box. **No counter here**: this is called twice per item,
+    once for the line's maximum and once for the item's own offset, and a
+    counter inside it read 4 on a two-item fixture -- a count of calls
+    wearing the name of a count of items. It is counted in `_align`, where
+    each item is visited once.
     """
     if item.baseline is not None:
         return item.cross_margin_start + item.baseline
-    metrics["flex_items_baseline_synthesized"] += 1
     return item.outer_cross
 
 
