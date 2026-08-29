@@ -439,60 +439,58 @@ layers down from where a reader would stop.
 practical form: when a rule turns out to be delegated, read the delegate or
 measure — do not read the citing text more carefully.
 
-### Instance fifteen: a plain reading of the spec, and every engine disagrees
+### Instance fifteen: seven fixtures, one harness, one missing doctype
 
-Instance fourteen was a specification that **defers** -- CSS Text 3 pointing
-at UAX #14 -- and a reader who stopped at the citing layer getting a
-confident wrong answer. Task D2 found the next shape along: a specification
-that does **not** defer, says exactly what to do, and is wrong about the
-world.
+The largest single defect this project has produced, and the one that best
+justifies everything else in this file.
 
-CSS 2.1 section 10.8 says a line box always contains a *strut*: a
-zero-width inline box carrying the block container's own font and
-`line-height`. Read plainly, that makes
+Task D2 measured seven fixtures in Chrome 151 and concluded that Chrome does
+**not** implement CSS 2.1 section 10.8's *strut* — the zero-width inline box
+carrying the block container's own font and `line-height` that every line box
+is supposed to contain. On those measurements
+`<div><span style="font-size:8px">x</span></div>` was 9px where the spec says
+18.40. A deliberate divergence was written, documented as "the single largest
+behavioural decision in this module", and it suppressed the strut **2,114
+times on the corpus** — 2,114 line boxes too short, and every block height
+above them wrong.
 
-    <div style="font-size:16px"><span style="font-size:8px">x</span></div>
+Re-measured by the coordinator with two independent methods
+(`getBoundingClientRect` via `--dump-dom`, and CDP `DOM.getBoxModel` on a
+fresh instance), Chrome gave **18.00** for every content-bearing fixture.
 
-18.40px tall, because the block's own 16px strut is the tallest thing on
-the line. **Chrome 151 makes it 9.** So does the same fixture with an
-explicit `line-height` on the block, which rules out inheritance as the
-explanation.
+Both parties measured correctly. **They measured different documents.**
 
-Seven shapes were measured before any rule was written down:
+    no doctype    document.compatMode = BackCompat   ->  9.00
+    <!doctype html>   document.compatMode = CSS1Compat  -> 18.00
 
-| fixture (in a 100px div, `font: 16px/normal Arial`) | Chrome |
-|---|---:|
-| `<span style="font-size:8px">x</span>` | 9 |
-| `<span style="font-size:8px;line-height:8px">x</span>` | 8 |
-| `x` | 18 |
-| `<span style="display:inline-block;width:10px;height:10px"></span>` | 10 |
-| `<span style="line-height:60px"><ib 10px></span>` | 10 |
-| `<span style="padding:0 2px"><ib 10px></span>` (40px font) | 45 |
-| `<br>` | 18 |
+The probe page had no doctype, so Chrome rendered it in **quirks mode**,
+where the line-height quirk really does suppress the strut. In standards mode
+Chrome agrees with CSS 2.1 on all seven rows.
 
-One rule explains all seven: **an inline box contributes its font metrics
-to a line box only when it directly contains text or a forced break on that
-line, or has edges of its own** -- and the root inline box is not exempt,
-which is the part a plain reading gets wrong.
+Three things make this the sharpest entry here.
 
-Implementing the spec instead would have put this engine at odds with the
-reference renderer on every line whose text sits inside a smaller-font
-inline box, which on a real page is most of the small print. It fires
-**2,118 times on the corpus**, so it is not an edge case being tidied away.
+**Seven fixtures were not seven pieces of evidence.** They shared one probe
+harness, so they shared one defect. Seven agreeing measurements feel like
+overwhelming confirmation and were a single observation repeated — the
+"quiet sharing" criterion above, in its purest form: the shared path was the
+one that could be wrong, and its failure was silent.
 
-The generalisation is not "specs are wrong". It is narrower and more
-useful:
+**The wrong number read as confirmation of the code it was checking.** The
+bad measurement gave 9 for the headline fixture. This engine's own output was
+9.2. A comparison harness built specifically to catch our errors produced a
+number that agreed with our error, and the agreement was the reason to trust
+it.
 
-> A specification sentence that no engine implements is still a
-> specification sentence. Reading it is not measuring, and on this project
-> the difference has now cost a number twice in two consecutive tasks --
-> once by reading the citing layer instead of the delegate, and once by
-> reading a layer that had no delegate and no implementer either.
+**A whole explanatory theory was built on it.** The divergence was not
+recorded as a puzzle; it came with a rule that explained all seven rows and
+no other, and that rule was written into a docstring as settled. Coherence
+across seven data points was taken as evidence, when it was a property of
+the single defect generating them.
 
-The countermeasure is the same one and it is cheap: before writing a rule
-down, put the smallest fixture that could distinguish two readings in front
-of the reference renderer. Six of the seven rows above took one Chrome run
-between them.
+`scripts/chrome_compare.py` now emits a doctype and asserts
+`document.compatMode` before reporting anything. That is the mechanical form,
+and it is the only form that would have caught this: no amount of care about
+the *rule* would have prompted anyone to check the *mode*.
 
 ### Instance sixteen: the literal NBSP, again, in the fixture for itself
 
@@ -554,7 +552,7 @@ Every instance in this document was caught by **measurement**:
 | 12 literal NBSP, and a silent no-op edit | printing the remaining non-ASCII set, not the edit's success |
 | 13 defaults counted as usage | splitting `display` counts by the origin of the winning declaration |
 | 14 atomic-inline min-content | Chrome disagreeing with a number CSS Text 3 appeared to endorse |
-| 15 the line box strut | seven fixtures in Chrome before a rule was written down |
+| 15 the line box strut | re-measuring in a second harness, then diffing `document.compatMode` |
 | 16 the literal NBSP, again | printing the probe's codepoints after it produced a surprising result |
 | 17 a residual bucket reading 58 | the bucket being defined to read zero, and not reading zero |
 
