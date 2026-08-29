@@ -588,3 +588,590 @@ def test_the_fixup_asserts_rather_than_looping_when_the_rules_disagree():
     ])
     with pytest.raises(AssertionError, match="did not converge"):
         _fixup_own(box, Counter(), _MAX_FIXUP_DEPTH + 1)
+
+
+# --------------------------------------------------------------------------
+# Sections 17.5.2.1 and 17.5.2.2: the width algorithms
+# --------------------------------------------------------------------------
+#
+# Every expected number below was measured against **Chrome 151** with
+# `scripts/chrome_compare.py`'s table suite before it was written here. The
+# tolerance is three of Chrome's LayoutUnits (3/64 px), which is what
+# `docs/fonts.md` derives for a horizontal comparison and is not a figure
+# chosen to make a row pass -- the rows these fixtures discriminate between
+# differ from each other by tens of pixels, not by hundredths.
+#
+# The stylesheet zeroes `border-spacing` and cell padding on most fixtures
+# because HTML's UA sheet sets `border-spacing: 2px` and `td { padding:
+# 1px }` in a browser and this engine's UA sheet carries neither. Two
+# fixtures deliberately do NOT zero them, so that the harness cannot be
+# agreeing with itself about a shared precondition -- which is
+# `docs/measurement-hazards.md` instance fifteen's first corollary: vary
+# what the fixtures share, not only what they contain.
+
+TABLE_RESET = RESET + "table{border-spacing:0}td,th{padding:0}"
+
+#: Chrome's LayoutUnit is 1/64px, and it quantises per column.
+LAYOUT_UNIT = 1.0 / 64.0
+TOLERANCE = 3 * LAYOUT_UNIT
+
+
+def laid_out(body: str, css: str = "", viewport: Viewport = VIEWPORT):
+    from mayshay.layout.block import layout_document
+
+    document = parse(f"<!doctype html><style>{TABLE_RESET}{css}</style>{body}")
+    style_document(document, [], viewport=viewport)
+    root, _ = build_box_tree(document)
+    metrics = layout_document(root, viewport)
+    return root, metrics
+
+
+def columns(root) -> list[float]:
+    plan = next(b.table_plan for b in root.walk() if b.table_plan is not None)
+    return list(plan.columns)
+
+
+def close(got, expected, note: str = "") -> None:
+    assert len(got) == len(expected), f"{note}: {got} vs {expected}"
+    for index, (a, b) in enumerate(zip(got, expected)):
+        assert abs(a - b) <= TOLERANCE, (
+            f"{note}column {index}: {a} != {b} (delta {abs(a - b):.6f}px, "
+            f"tolerance {TOLERANCE:.6f})"
+        )
+
+
+def test_a_colspan_cell_widens_the_columns_it_spans_in_proportion():
+    """Section 17.5.2.2: "For each cell that spans more than one column,
+    increase the minimum widths of the columns it spans so that together,
+    they are at least as wide as the cell."
+
+    Built so the candidate rules disagree. Both columns hold one unbreakable
+    word, so min equals max and the only thing that can move them is the
+    span. Equal shares give 79.19 / 321.22 and proportional gives
+    66.66 / 333.34; **Chrome 151 gives 66.6563 / 333.3438**, so the spec's
+    "approximately the same amount" is not the equal reading.
+
+    An implementation that put the span's whole width on the column it
+    starts in gives 400 / 0, which is what 12 of the corpus's 27 laid-out
+    tables would have got.
+    """
+    root, metrics = laid_out(
+        "<table><tr><td>WWWW</td><td>WWWWWWWWWWWWWWWWWWWW</td></tr>"
+        '<tr><td colspan=2 style="width:400px">x</td></tr></table>'
+    )
+    close(columns(root), [66.6563, 333.3438], "colspan over two: ")
+    assert metrics["table_cells_spanning_columns"] == 1
+    assert metrics["table_colspan_excess_distributed"] == 1
+
+
+def test_a_colspan_over_three_columns_keeps_their_proportions():
+    """The same rule over three columns wanting 2, 4 and 8 glyph-widths.
+    Chrome 151: 85.7031 / 171.4219 / 342.875, which is 1 : 2 : 4 -- the
+    proportions the columns started with, preserved exactly.
+
+    Two columns cannot tell "proportional" from several other rules that
+    happen to agree on a 2-way split; three can.
+    """
+    root, _ = laid_out(
+        "<table><tr><td>WW</td><td>WWWW</td><td>WWWWWWWW</td></tr>"
+        '<tr><td colspan=3 style="width:600px">x</td></tr></table>'
+    )
+    close(columns(root), [85.7031, 171.4219, 342.875], "colspan over three: ")
+
+
+def test_spanning_cells_are_considered_after_the_others_and_in_span_order():
+    """Section 17.5.2.2 considers spanning cells after non-spanning ones, and
+    this fixture makes the *order among spans* observable: a `colspan=2`
+    wanting 200 and a `colspan=3` wanting 400 over three equal columns.
+
+    Narrow-first gives 173.75 / 173.75 / 52.5 -- the two-column span widens
+    columns 0 and 1 to 100 each, and the three-column span then divides
+    proportionally over 100 / 100 / 30.2. **Chrome 151 gives exactly that.**
+    Widest-first would give three equal columns of 133.3, which is a
+    different and entirely plausible-looking table.
+    """
+    root, _ = laid_out(
+        "<table><tr><td>WW</td><td>WW</td><td>WW</td></tr>"
+        '<tr><td colspan=2 style="width:200px">x</td><td>WW</td></tr>'
+        '<tr><td colspan=3 style="width:400px">y</td></tr></table>'
+    )
+    close(columns(root), [173.75, 173.75, 52.5], "two spans: ")
+
+
+def test_a_colspan_cell_narrower_than_its_columns_moves_nothing():
+    """The negative case, and the reason a wrong distribution is invisible:
+    40 of the corpus's 52 laid-out spanning cells fall here. Both counters
+    asserted, so "we widened nothing" and "we never looked" stay apart.
+
+    Chrome 151: two columns of 151.0156, table 302.0313."""
+    root, metrics = laid_out(
+        "<table><tr><td>WWWWWWWWWW</td><td>WWWWWWWWWW</td></tr>"
+        "<tr><td colspan=2>x</td></tr></table>"
+    )
+    close(columns(root), [151.0156, 151.0156], "unwidened: ")
+    assert metrics["table_colspan_excess_distributed"] == 0
+    assert metrics["table_colspan_absorbed_without_widening"] == 1
+
+
+def test_an_auto_width_table_shrinks_to_fit_and_does_not_fill():
+    """Section 17.5.2's own warning: "if the margins of a table are set to
+    '0' and the width to 'auto', the table will not automatically size to
+    fill its containing block."
+
+    Both directions in one test. In a 600px block a one-cell table is
+    17.7969 wide -- its content -- and in a 120px block a table whose
+    max-content is wider takes the whole 120. Chrome 151 gives both.
+    A table that filled its containing block passes the second and fails
+    the first, which is why the first is here.
+    """
+    wide, _ = laid_out(
+        '<div style="width:600px"><table><tr><td>ab</td></tr></table></div>'
+    )
+    close(columns(wide), [17.7969], "auto width, room to spare: ")
+
+    narrow, _ = laid_out(
+        '<div style="width:120px"><table><tr>'
+        "<td>alpha beta gamma delta</td></tr></table></div>"
+    )
+    close(columns(narrow), [120.0], "auto width, constrained: ")
+
+
+def test_extra_width_fills_each_columns_headroom_before_anything_else():
+    """The table's own `width` distributed over the columns, at a width
+    **between MIN and MAX** -- which is where the candidate rules disagree.
+
+    Column 1 is one unbreakable word, so its min equals its max and it has
+    no headroom at all. A 100px table over MIN 98.66 and MAX 216.98 must
+    therefore put all 1.34px of slack on column 2. Chrome 151: 45.3125 /
+    54.6875. Distributing in proportion to `max` instead would give column 1
+    20.9px, which is below its own minimum -- a rule that cannot be right
+    and that a fixture with two flexible columns would never have caught.
+    """
+    root, _ = laid_out(
+        '<table style="width:100px"><tr><td>WWW</td>'
+        "<td>alpha beta gamma delta</td></tr></table>"
+    )
+    close(columns(root), [45.3125, 54.6875], "one rigid column: ")
+
+
+def test_extra_width_is_shared_in_proportion_to_headroom():
+    """The same rule with both columns able to grow: a 260px table over MIN
+    71.14 and MAX 287.31. Chrome 151: 55.0781 / 204.9219, which is the
+    minimums plus the slack shared in proportion to `max - min`."""
+    root, metrics = laid_out(
+        '<table style="width:260px"><tr><td>aa bb cc</td>'
+        "<td>alpha beta gamma delta epsilon</td></tr></table>"
+    )
+    close(columns(root), [55.0781, 204.9219], "two flexible columns: ")
+    assert metrics["table_extra_width_distributed"] == 1
+
+
+def test_a_table_wider_than_its_max_content_shares_the_rest_by_max():
+    """Phase two: past every column's max there is no headroom left to be
+    proportional to, so `max` decides. Chrome 151 for a 500px table over
+    columns wanting 17.80 and about 130: 60.2656 / 439.7344."""
+    root, _ = laid_out(
+        '<table style="width:500px"><tr><td>aa</td>'
+        "<td>a much longer cell</td></tr></table>"
+    )
+    close(columns(root), [60.2656, 439.7344], "past max-content: ")
+
+
+def test_fixed_layout_takes_the_first_row_and_ignores_the_rest():
+    """Section 17.5.2.1: a first-row cell's `width` sets its column and the
+    remaining columns divide what is left equally. Chrome 151 for a 400px
+    table whose first cell is 100px wide: 100 / 150 / 150.
+
+    **Zero corpus coverage.** Not one of the three corpus pages' stylesheets
+    contains a `table-layout` declaration of any value, so this is a
+    `docs/synthetic-only-coverage.md` row.
+
+    The second row is deliberately wider in content than the first: fixed
+    layout must ignore it, and an implementation that fell through to the
+    automatic algorithm would not.
+    """
+    root, metrics = laid_out(
+        '<table style="table-layout:fixed;width:400px">'
+        '<tr><td style="width:100px">a</td><td>b</td><td>c</td></tr>'
+        "<tr><td>WWWWWWWWWWWWWWWWWWWWWWWW</td><td>W</td><td>W</td></tr></table>"
+    )
+    close(columns(root), [100.0, 150.0, 150.0], "fixed: ")
+    assert metrics["table_layout_fixed"] == 1
+    assert metrics["table_layout_automatic"] == 0
+
+
+def test_fixed_layout_with_an_auto_width_falls_back_and_says_so():
+    """Section 17.5.2.1: "A value of 'auto' ... means use the automatic
+    table layout algorithm." CSS 2.1 then *permits* a UA to apply fixed
+    layout to an auto-width block-level table anyway; Chrome 151 does not --
+    measured, such a table in a 500px block came out 17.8125 wide, which is
+    its content and not its containing block.
+
+    Counted rather than silent, because the two algorithms disagree on every
+    table they are both given.
+    """
+    root, metrics = laid_out(
+        '<div style="width:500px"><table style="table-layout:fixed">'
+        "<tr><td>a</td><td>b</td></tr></table></div>"
+    )
+    close(columns(root), [8.9063, 8.9063], "fixed with auto width: ")
+    assert metrics["table_layout_fixed_fallback_auto_width"] == 1
+    assert metrics["table_layout_fixed"] == 0
+    assert metrics["table_layout_automatic"] == 1
+
+
+def test_a_percentage_cell_width_is_treated_as_auto_and_counted():
+    """Section 17.5.2.2: "A percentage value for a column width is relative
+    to the table width" -- which is the number the algorithm is running to
+    find. Treated as `auto` and counted; 103 of the corpus's 401 cells take
+    this branch, so it is the best-exercised deliberate approximation in
+    this module.
+
+    The negative half matters as much: an explicit *length* on the same
+    cell must still be honoured, or this test would pass against an
+    implementation that ignored `width` on cells entirely.
+    """
+    percentage, metrics = laid_out(
+        '<table style="width:400px"><tr><td style="width:90%">a</td>'
+        "<td>b</td></tr></table>"
+    )
+    assert metrics["table_cell_percentage_width_as_auto"] == 1
+    assert abs(columns(percentage)[0] - 360.0) > 1.0, (
+        "a percentage cell width must not have resolved against the table"
+    )
+
+    length, length_metrics = laid_out(
+        '<table style="width:400px"><tr><td style="width:300px">a</td>'
+        "<td>b</td></tr></table>"
+    )
+    assert length_metrics["table_cell_percentage_width_as_auto"] == 0
+    assert columns(length)[0] >= 300.0
+
+
+# --------------------------------------------------------------------------
+# Sections 17.4, 17.5 and 17.5.3: where the boxes end up
+# --------------------------------------------------------------------------
+
+
+def rect(root, tag: str, nth: int = 0):
+    """The border rectangle of the box that carries this element.
+
+    For `<table>` that is the section 17.4 **wrapper**, whose display is
+    `block` -- it is the box the element's identity is on and the box CDP
+    answers for. The table box inside it is anonymous and has no
+    `tag_name`, so it never matches here, which is the distinction this
+    helper exists to keep straight.
+    """
+    found = [
+        box.geometry.border
+        for box in root.walk()
+        if box.geometry is not None
+        and getattr(box.node, "tag_name", None) == tag
+    ]
+    return found[nth]
+
+
+def test_border_spacing_sits_outside_the_columns_as_well_as_between_them():
+    """**This fixture does not share the harness's zeroed `border-spacing`,
+    on purpose.**
+
+    Every other table fixture here sets `border-spacing: 0`, which makes
+    them agree about a precondition rather than about a result -- and a
+    `(columns + 1)` spacing term that had been written as `(columns - 1)`
+    would be invisible in all of them at once.
+    `docs/measurement-hazards.md` instance fifteen: seven agreeing fixtures
+    through one harness are one observation.
+
+    Chrome 151 with `border-spacing: 10px 20px` over two 8.9063px columns:
+    table 47.8125 wide and 96 tall, rows at y=20 and y=58, each row x=10 and
+    27.8125 wide, cells at x=10 and x=28.9063. Every one of those numbers
+    contains the spacing in a different arrangement.
+    """
+    root, _ = laid_out(
+        '<table style="border-spacing:10px 20px">'
+        "<tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>"
+    )
+    table = rect(root, "table")
+    # 2 columns x 8.8984 + 3 x 10 spacing.
+    assert abs(table.width - 47.7969) <= TOLERANCE
+    rows = [
+        box.geometry.border
+        for box in root.walk()
+        if box.display == "table-row" and box.geometry is not None
+    ]
+    assert [round(r.x, 4) for r in rows] == [10.0, 10.0]
+    assert abs(rows[0].y - 20.0) <= TOLERANCE
+    assert abs(rows[1].y - 58.3984) <= TOLERANCE      # Chrome 58, hhea rounding
+    assert abs(rows[0].width - 27.7969) <= TOLERANCE
+    cells = [
+        box.geometry.border
+        for box in root.walk()
+        if box.display == "table-cell" and box.geometry is not None
+    ]
+    assert abs(cells[0].x - 10.0) <= TOLERANCE
+    assert abs(cells[1].x - 28.8984) <= TOLERANCE     # Chrome 28.9063
+    assert abs(cells[0].y - 20.0) <= TOLERANCE
+
+
+def test_a_table_in_the_separated_model_has_border_and_padding():
+    """The second fixture that varies a shared precondition: this one gives
+    the table a border and padding as well as a spacing, so the three are
+    composed rather than each checked alone.
+
+    Chrome 151 with `border:5px; padding:7px; border-spacing:3px` over two
+    17.7969px columns: table 68.5938 x 48, row at x=15 y=15 and 38.5938
+    wide, cells at x=15 and x=35.7969.
+
+    CSS 2.1 section 17.6.1 says a table "does not have padding" -- in the
+    **collapsing** model, which is what that sentence is about. In the
+    separated model it does, and Chrome agrees; a reader who took the
+    sentence at face value would have subtracted 14px from every number
+    here.
+    """
+    root, _ = laid_out(
+        '<table style="border:5px solid;padding:7px;border-spacing:3px">'
+        "<tr><td>aa</td><td>bb</td></tr></table>"
+    )
+    table = rect(root, "table")
+    assert abs(table.width - 68.5938) <= TOLERANCE
+    cells = [
+        box.geometry.border
+        for box in root.walk()
+        if box.display == "table-cell" and box.geometry is not None
+    ]
+    assert abs(cells[0].x - 15.0) <= TOLERANCE
+    assert abs(cells[1].x - 35.7969) <= TOLERANCE
+
+
+def test_a_cell_stretches_to_the_row_height():
+    """Section 17.5.3 says "the height of a cell box is the minimum height
+    required by the content", and Chrome does not do that: a one-line cell
+    beside an 80px sibling reports an 80px border box.
+
+    This engine follows the browser, because the browser is what the
+    comparison harness is and a cell that stopped at its content height
+    would disagree with every table on every page. Stated here rather than
+    left as a silent choice.
+    """
+    root, _ = laid_out(
+        "<table><tr><td>one</td>"
+        '<td style="height:80px">tall</td></tr></table>'
+    )
+    cells = [
+        box.geometry.border
+        for box in root.walk()
+        if box.display == "table-cell" and box.geometry is not None
+    ]
+    assert [c.height for c in cells] == [80.0, 80.0]
+
+
+def test_a_shrink_wrapped_table_still_centres_with_auto_margins():
+    """Section 17.5.2: "once the calculated value of 'width' for the table
+    is found ... then the other parts of section 10.3 do apply. Therefore a
+    table can be centered using left and right 'auto' margins."
+
+    Which is why the wrapper's width is fed through the constraint equation
+    as though it had been declared rather than through the bypass an atomic
+    inline uses. Chrome 151 puts a 17.7969px table with `margin: 0 auto` at
+    x=291.0938 in a 600px block; the exact half is 291.1016, and the 0.0078
+    between them is one and a quarter LayoutUnits of Chrome's own rounding.
+    """
+    # A 600px viewport and no wrapping `<div>`: a 600px div inside a 1280px
+    # body is itself over-constrained, and its own counter would be read as
+    # the table's. Same reasoning as `test_block.py`'s `NARROW`.
+    root, metrics = laid_out(
+        '<table style="margin:0 auto"><tr><td>ab</td></tr></table>',
+        viewport=Viewport(600, 800),
+    )
+    table = rect(root, "table")
+    assert abs(table.x - 291.0938) <= TOLERANCE
+    assert metrics["width_margins_centred"] == 1
+    # ...and the table's own over-constraint is NOT reported as an author
+    # error, which is what a shared counter would have said 32 times.
+    assert metrics["width_over_constrained_margin_right_ignored"] == 0
+    assert metrics["table_width_remainder_to_margin_right"] == 0
+
+
+def test_the_table_elements_rectangle_includes_its_caption():
+    """Section 17.4's wrapper box, measured rather than assumed.
+
+    Chrome 151 for a table with a 30px caption above a 20px row: the
+    `<table>` element's rect is 50px tall and starts at the caption. So the
+    box CDP answers for a `<table>` is the wrapper, which is why the wrapper
+    carries the element identity and the table box inside it is anonymous.
+    Had it been the other way round, every Chrome comparison of a captioned
+    table would have compared two different rectangles and called the
+    difference a layout error.
+    """
+    root, _ = laid_out(
+        '<table><caption style="height:30px">c</caption>'
+        '<tr><td style="height:20px">a</td></tr></table>'
+    )
+    wrapper = next(b for b in root.walk() if b.table_wrapper)
+    assert wrapper.geometry.border.height == 50.0
+    assert wrapper.geometry.border.y == 0.0
+    inner = next(c for c in wrapper.children if c.display == "table")
+    assert inner.geometry.border.y == 30.0
+
+
+def test_a_row_group_spans_its_rows_and_rows_nest_inside_it():
+    """A `<thead>` and a `<tbody>` share one grid, and each group's box
+    covers exactly its own rows. Row indices are global to the table, not
+    per group -- numbering them per group would put two cells in one slot
+    the first time a table had a header.
+    """
+    root, metrics = laid_out(
+        "<table><thead><tr><td>h</td></tr></thead>"
+        "<tbody><tr><td>a</td></tr><tr><td>b</td></tr></tbody></table>"
+    )
+    assert metrics["table_row_groups_laid_out"] == 2
+    assert metrics["table_rows_laid_out"] == 3
+    head = rect(root, "thead")
+    body = rect(root, "tbody")
+    assert head.y == 0.0
+    assert body.y == head.height
+    assert abs(body.height - 2 * head.height) <= TOLERANCE
+
+
+def test_a_rowspan_cell_occupies_its_slots_so_neighbours_land_correctly():
+    """`rowspan` grid occupancy, which is a **width** rule and not a height
+    one: without it, the cell in the second row starts at column 0 instead
+    of column 1 and the whole table's column widths are wrong.
+
+    **Zero corpus coverage** -- executed over all 401 corpus cells, not one
+    has `rowspan > 1`. Distributing a spanning cell's height across the rows
+    it covers is not implemented and is counted.
+    """
+    root, metrics = laid_out(
+        "<table>"
+        '<tr><td rowspan=2>WWWWWWWWWW</td><td>a</td></tr>'
+        "<tr><td>b</td></tr></table>"
+    )
+    assert metrics["table_cells_spanning_rows"] == 1
+    assert metrics["table_rowspan_height_not_distributed"] == 1
+    assert metrics["table_columns"] == 2
+    cells = [
+        box
+        for box in root.walk()
+        if box.display == "table-cell" and box.geometry is not None
+    ]
+    # The second row's only cell is in COLUMN 1, beside the spanning cell,
+    # not underneath it at column 0.
+    assert cells[2].geometry.border.x == cells[1].geometry.border.x
+
+
+def test_the_column_widths_add_up_to_the_table_width_on_every_fixture():
+    """The mechanical check, exercised directly rather than only as a side
+    effect. `assert_table_constraints` already runs on every layout in this
+    file; this asserts that it is checking something -- that the equation
+    holds for a table with spacing, spans, groups and a caption at once.
+    """
+    from mayshay.layout.table import assert_table_constraints
+
+    root, _ = laid_out(
+        '<table style="border-spacing:4px 6px;width:500px">'
+        "<caption>c</caption>"
+        "<thead><tr><td>a</td><td>b</td><td>c</td></tr></thead>"
+        '<tbody><tr><td colspan=2>wide</td><td>d</td></tr></tbody></table>'
+    )
+    box = next(b for b in root.walk() if b.table_plan is not None)
+    plan = box.table_plan
+    assert_table_constraints(box, plan)
+    assert abs(
+        sum(plan.columns) + 4 * plan.spacing_x - plan.content_width
+    ) < 1e-9
+    assert abs(box.geometry.content.width - plan.content_width) < 1e-9
+
+
+# --------------------------------------------------------------------------
+# The three fixtures that exist because an injection was a no-op
+# --------------------------------------------------------------------------
+#
+# All three were added after an injection ran green, and all three failed for
+# the same reason: every fixture above sets `border-spacing: 0`, so a bug in
+# the spacing arithmetic of a *spanning* cell was invisible in all of them at
+# once. `docs/measurement-hazards.md` instance fifteen's first corollary is
+# exactly this -- the fixtures varied their input and shared their
+# precondition, and the shared thing was the one that could be wrong.
+
+
+def test_a_spanning_cell_is_as_wide_as_its_columns_plus_the_gaps_between():
+    """A `colspan=2` cell's border box covers two columns and the **one**
+    spacing between them -- not the ones outside it, which belong to its
+    neighbours.
+
+    Chrome 151 with `border-spacing: 12px`: columns 64.6563 and 323.3438,
+    which sum to 388, and the spanning cell is 400 wide -- 388 plus one
+    12px gap, exactly its declared width. The table is 424: 388 plus three
+    gaps.
+
+    Injection `w3` -- `+ len(span) * spacing` instead of
+    `+ (len(span) - 1) * spacing` -- passed the entire suite before this
+    existed.
+    """
+    root, _ = laid_out(
+        '<table style="border-spacing:12px">'
+        "<tr><td>WWWW</td><td>WWWWWWWWWWWWWWWWWWWW</td></tr>"
+        '<tr><td colspan=2 style="width:400px">x</td></tr></table>'
+    )
+    close(columns(root), [64.6563, 323.3438], "colspan with spacing: ")
+    cells = [
+        box.geometry.border
+        for box in root.walk()
+        if box.display == "table-cell" and box.geometry is not None
+    ]
+    assert abs(cells[2].width - 400.0) <= TOLERANCE, "the spanning cell"
+    assert abs(rect(root, "table").width - 424.0) <= TOLERANCE
+
+
+def test_a_specified_cell_width_is_a_floor_under_its_min_content_not_a_swap():
+    """Section 17.5.2.2: "If the specified 'width' (W) of the cell is
+    greater than MCW, W is the minimum cell width." Greater than -- so a W
+    *smaller* than the content changes nothing, and the content may not
+    overflow the cell.
+
+    Chrome 151 for `<td style="width:10px">` around ten `W` glyphs: the
+    column is 151.0156, not 10. This is the one place where CSS Sizing 3's
+    rule for an ordinary box and CSS 2.1's rule for a cell genuinely
+    disagree, which is why `intrinsic.outer_sizes` grew
+    `ignore_specified_width` rather than this being read off its default.
+
+    Injection `w10` -- assigning W instead of taking the maximum -- passed
+    the entire suite before this existed.
+    """
+    root, _ = laid_out(
+        '<table><tr><td style="width:10px">WWWWWWWWWW</td>'
+        "<td>WW</td></tr></table>"
+    )
+    close(columns(root), [151.0156, 30.2031], "width below min-content: ")
+
+
+def test_fixed_layout_takes_the_spacing_out_of_a_spanning_cells_share():
+    """Section 17.5.2.1: "If the cell spans more than one column, the width
+    is divided over the columns." The spacings *inside* the cell come off
+    before the division, or each column gets a share that is too large and
+    the cell ends up wider than it asked for.
+
+    Chrome 151 for a 400px fixed table with `border-spacing: 20px` and a
+    first-row `colspan=2` cell of 200px: the spanning cell is 200 wide
+    (90 + 20 + 90) and the third column takes the remaining 140.
+    Dividing 200 by 2 without the gap gives 100 each, a 220px cell and a
+    120px third column -- all three numbers wrong and all three plausible.
+
+    Injection `w12` passed the entire suite before this existed. Fixed
+    layout has zero corpus coverage, so this fixture is the only thing
+    between that rule and nobody noticing.
+    """
+    root, metrics = laid_out(
+        '<table style="table-layout:fixed;width:400px;border-spacing:20px">'
+        '<tr><td colspan=2 style="width:200px">a</td><td>b</td></tr></table>'
+    )
+    assert metrics["table_layout_fixed"] == 1
+    close(columns(root), [90.0, 90.0, 140.0], "fixed with a span: ")
+    cells = [
+        box.geometry.border
+        for box in root.walk()
+        if box.display == "table-cell" and box.geometry is not None
+    ]
+    assert abs(cells[0].width - 200.0) <= TOLERANCE
+    assert abs(cells[1].width - 140.0) <= TOLERANCE
