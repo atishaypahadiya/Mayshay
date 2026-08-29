@@ -44,6 +44,32 @@ Counted, not implemented -- each with a name so the divergence is a number:
   puts every cell's content at the top of its box.
   `table_cell_vertical_align_as_top`.
 
+## What the corpus can and cannot say about this
+
+**It can settle one thing, and it does.** Re-implementing the `colspan`
+step wrongly in a shadow copy and diffing the corpus's column widths:
+
+    a spanning cell contributes wholly to the column it starts in
+        -> 12 of the 27 laid-out tables move, one of them from
+           [592.0, 592.0] to [1184.0, 0.0] -- a column collapsed to nothing
+    a spanning cell contributes to no column at all
+        -> 2 of 27 move, by 21px and 154px
+
+So the attribution error is catastrophic and visible, and the omission
+error is nearly invisible -- which is the opposite way round from what
+"54 colspan cells means a wrong distribution will move real numbers"
+suggests. Both wrong versions render every page without complaint.
+
+The measurement is worth its own warning. It first reported **0 of 27** for
+both, which is the shape `docs/measurement-hazards.md` says to disbelieve;
+all three shadow processes had died on the vendored font path and the
+runner was diffing a stale file. See instance eighteen.
+
+**It cannot say anything about section 17.2.1.** Every one of that
+section's thirteen rules fires four times or fewer on this corpus, and ten
+of them fire zero times. `docs/synthetic-only-coverage.md` carries a row
+per rule.
+
 ## The mechanical check
 
 `assert_table_constraints` runs on every layout, not only under test, and
