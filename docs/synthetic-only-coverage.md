@@ -24,6 +24,35 @@ things the analysis half of this project can say.
 * A count of 1 or 2 is barely better than 0: it is one edit away from
   returning to 0, and it cannot discriminate between implementations.
 
+## Occurrence count is not the question that matters
+
+"Is this feature exercised by the corpus?" and "would a wrong implementation
+of it be visible?" are different questions, and the second is the one a
+reader actually wants answered. A feature can occur 54 times and still hide
+a defect; a feature occurring twice can be load-bearing.
+
+Task E measured both for `colspan`, using **shadow builds**: implement the
+rule wrongly in a copy of `src/`, run the corpus, diff the output. Two
+plausible wrong rules, both of which render every page without complaint:
+
+| wrong rule | tables whose columns move (of 27) |
+|---|---:|
+| spanning cell attributed wholly to its **starting column** | **12** |
+| spanning cell contributes to **nothing** | 2 |
+
+The first collapses a Wikipedia column from 592px to zero. The second moves
+two tables, one of them by 21px. Same feature, same 52 corpus occurrences,
+and a factor of six between how visible the two mistakes are — which no
+occurrence count could have told anyone.
+
+**Where it is cheap, record discriminating power beside the count.** Shadow
+builds are the instrument and they are inexpensive: a copy of `src/`, one
+edited rule, one corpus run, one diff. They also answer the question the
+occurrence count only gestures at — *if this were wrong, would we find out?*
+
+The honest default when no shadow build has been run is to say so, rather
+than letting an occurrence count stand in for an answer it cannot give.
+
 ## Register
 
 Corpus at 2026-08-27: three pages, 8,593 DOM elements, 7,639 producing a

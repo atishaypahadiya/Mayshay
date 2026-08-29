@@ -687,6 +687,44 @@ Where a rule cannot be made mechanical, expect it to be violated and plan
 for the violation to be *loud* -- which is the whole content of the
 "quiet sharing" criterion above.
 
+## The positive case: a check that caught a fault in itself
+
+This document is almost entirely failures, so the one clear payout belongs
+in it too.
+
+The Chrome comparison carries **two identifiers** per box — a document-order
+ordinal and a structural path — for a stated reason: when the ordinals line
+up and the paths disagree, the DOM trees diverged, and that is an
+`htmlparse` finding rather than a layout one. It was designed to separate a
+defect in the *subject* from a defect in the *stage above it*.
+
+During Task E it reported five fixtures as **tree divergence with identical
+paths on both sides**. That combination is impossible under the failure the
+scheme was built for: if the trees really had diverged, the paths would
+differ. It is the signature of *one identifier being wrong about an element
+both sides agree on* — and the ordinal was. Task B had been numbering
+level-by-level rather than in document order since it was written,
+contradicting its own docstring and the Phase 3 comparison contract, and
+7,058 tests had not noticed.
+
+The generalisation:
+
+> **Any check that derives one quantity two independent ways can catch a
+> defect in either derivation, not only in the subject.** A disagreement
+> localises to "one of these three things is wrong", and the *pattern* of
+> the disagreement usually says which.
+
+That is a stronger property than redundancy. A second derivation added for
+confidence turns out to be an instrument for debugging itself, because its
+failure modes are distinguishable: paths differ and ordinals agree means one
+thing, ordinals differ and paths agree means another, and both differing
+means a third. A single identifier would have reported "mismatch" and
+pointed nowhere.
+
+Worth designing for deliberately: when adding a check, prefer two
+derivations whose *disagreement patterns* are distinct over one derivation
+that is merely more careful.
+
 ## What to do about it
 
 * **A measurement is verified by a second measurement obtained a different

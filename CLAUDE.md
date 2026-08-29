@@ -77,6 +77,14 @@ Package root is `src/mayshay/`. Imports look like:
   A suspiciously clean result -- exactly zero, exactly integral, exactly
   unchanged -- is a claim about the instrument until a probe proves
   otherwise.
+- Any test touching tree traversal, ordering, or identity uses **at least
+  three levels of nesting, with siblings at more than one level**. Task B
+  numbered document ordinals level-by-level instead of in document order and
+  7,058 tests did not notice, because every fixture that exercised the code
+  was one `<div>` deep -- a shape where the two orders coincide. Nesting
+  depth is a test-design axis in its own right: the corpus-cannot-
+  discriminate problem appearing inside the synthetic tests, where the
+  synthetic-only register does not look.
 - Non-ASCII in test data is written as an escape (\u212a), never as a literal.
   Kelvin sign vs ASCII K, NBSP vs space, and combining marks all read
   identically in a terminal.
