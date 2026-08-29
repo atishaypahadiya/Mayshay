@@ -160,6 +160,16 @@ class Box:
     # this module.
     table_plan: object | None = None
 
+    # Filled by Task F (`layout.flex`) on a `flex` or `inline-flex` box:
+    # its `FlexPlan` -- the lines, the resolved main sizes and what
+    # `justify-content` spent. It lives on the box for the reason
+    # `table_plan` does: the mechanical check runs after absolutization,
+    # when the numbers that produced the rectangles are otherwise gone, and
+    # a module-level map keyed by `id()` would not be re-entrant. Untyped
+    # for the same reason `geometry` is -- `layout.flex` imports this
+    # module.
+    flex_plan: object | None = None
+
     # Filled by Task D1 (`layout.block`) on a box whose width is
     # shrink-to-fit: `inline-block` and its two siblings, floats, and
     # absolutely positioned boxes. Separate from `geometry` because the
