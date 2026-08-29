@@ -54,14 +54,17 @@ suite is read.** Measured at 1280x1024 with external sheets applied:
 233 elements compute `flex` or `inline-flex`, 201 produce a box, and
 **29 of those are laid out** -- the other 172 sit inside a float (146) or
 absolutely positioned (26) subtree this engine declines to lay out. Of the
-29, fifteen hold one item, twelve hold two and two hold three. A one-item
-flex container is very nearly a block container: `justify-content` has
-nothing to distribute, `flex-grow` has no competitor for the free space,
-and `order` cannot reorder anything.
+29, **sixteen hold exactly one item**, eleven hold two and two hold three
+-- 44 items in all. A one-item flex container is very nearly a block
+container: `justify-content` has nothing to distribute, `flex-grow` has no
+competitor for the free space, and `order` cannot reorder anything.
 
-So **14 containers on the corpus can discriminate any of the main-axis
+So **13 containers on the corpus can discriminate any of the main-axis
 work**, all of them on Wikipedia, and the tests here are synthetic and
-written from Flexbox 1 for that reason.
+written from Flexbox 1 for that reason. (The task brief said 193 of 233
+hold one item and 33 hold more; both figures are over the DOM elements
+rather than over the boxes that reach layout, and neither is reproducible
+-- see `docs/synthetic-only-coverage.md`.)
 
 Three things the corpus does reach and the Phase 3 plan did not schedule:
 `flex-wrap: wrap` on 3 laid-out containers, a non-`normal` `column-gap` on

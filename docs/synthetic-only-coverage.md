@@ -301,6 +301,160 @@ added chapter 17's four. Until it does, every flex container on the corpus
 computes `display: flex` and nothing else, so the 205 `flex` boxes in the
 display census have never had a flex property applied to them.
 
+## What Task F found when it ran
+
+The section above was written **before** F was dispatched. Its *conclusion*
+held -- the corpus cannot discriminate flex layout -- and **every number in
+it was over the wrong population**, which made the gap larger, not smaller.
+
+### The populations, and why the brief's figures are not reproducible
+
+Four different denominators, all correct, all called "flex containers"
+somewhere:
+
+| population | count | what it is |
+|---|---:|---|
+| elements computing `flex` or `inline-flex` | **233** | 205 + 28, all on Wikipedia |
+| ...of those, producing a box | **201** | 32 sit under a `display: none` ancestor |
+| ...of those, **laid out** | **29** | 146 are inside a float and 26 inside an absolutely positioned subtree, neither of which this engine lays out |
+| flex **items** placed inside those 29 | **44** | the population every per-item row below counts against |
+
+The tagging section's histogram was `0 -> 7, 1 -> 193, 2 -> 31, 3 -> 2`.
+Measured five ways -- DOM children of all kinds, element children only,
+element children with `display` not `none`, in-flow element children, and
+box-tree children -- **none of them reproduces it**, and every one of them
+finds containers with 4, 5, 7 and 11 children that the brief's histogram
+has no row for. The closest is element children with `display != none`:
+
+    0 -> 1   1 -> 182   2 -> 6   3 -> 11   4 -> 21   5 -> 8   6 -> 1   7 -> 3
+
+The figure that matters is the one over the boxes that reach the algorithm,
+and it is smaller than either:
+
+    items per laid-out container:   1 -> 16    2 -> 11    3 -> 2
+
+16 + 22 + 6 = 44, which is the item count the layout reports, so this
+histogram multiplies out to its own population -- the check the brief's
+does not pass. **13 containers on this corpus can discriminate anything
+about the main axis**, not 33.
+
+This is the unstated-denominator hazard in its ordinary form, and it cost
+nothing here only because the conclusion was the same either way.
+
+### What the corpus turned out to reach, and what it did not
+
+`flex-direction` is the sharp one. The corpus's stylesheets contain **six
+`column` declarations** (2 `flex-direction`, 4 through `flex-flow`), and
+**not one of them wins on any element**: all 233 compute `row`. So column
+layout -- half of this task's scope, and the half whose main size is a
+height and therefore needs a second code path -- has **zero corpus
+occurrences** and is tested synthetically alone.
+
+The two things the plan deferred and the brief asked to be counted or
+implemented both turned out smaller than the brief's declaration counts
+suggested, and in opposite directions:
+
+* **`flex-wrap: wrap`.** 6 declarations, 3 elements, **2 laid-out
+  containers** -- and **zero of them actually wrap**: their items fit on
+  one line. The brief said deferring wrapping "misplaces five real
+  containers"; measured with a shadow variant that lays every wrapped
+  container out as `nowrap`, **0 of 1,460 element rectangles move**.
+  Wrapping is implemented anyway, and is synthetic-only coverage.
+* **`gap` and `column-gap`.** 10 declarations, and they do reach: **7 of
+  the 29 laid-out containers have a non-`normal` `column-gap` and 6 a
+  `row-gap`**. Removing gap entirely moves 15 rectangles by up to 20px.
+  This one the brief had right.
+
+### Task F: CSS Flexible Box Layout 1
+
+Population for the container rows: the **29 laid-out flex containers**.
+Population for the item rows: the **44 items** inside them. Where a row is
+about a declaration rather than a used value, the population is the **79
+flex declarations** across the three pages' sheets and `<style>` blocks,
+at-rules descended into.
+
+| feature | corpus count | population | added |
+|---|---:|---|---|
+| `flex-direction: column` | **0** | containers laid out (29); 6 declarations exist and none wins | Task F |
+| `flex-direction: row-reverse` / `column-reverse` | **0** | flex declarations (79) | Task F |
+| `flex-wrap: wrap` | 2 | containers laid out (29) | Task F |
+| a container that actually produces **two lines** | **0** | same; both `wrap` containers fit on one line | Task F |
+| `flex-wrap: wrap-reverse` | **0** | flex declarations (79) | Task F |
+| `align-content` other than `normal` | **0** | containers laid out (29) | Task F |
+| `justify-content: space-around` / `space-evenly` / `stretch` | **0** | same; the four values that occur are `center` 6, `flex-end` 3, `end` 2, `space-between` 1 | Task F |
+| `justify-content: space-between` with more than one item | **0** | same; the one container that declares it holds a single item | Task F |
+| `align-items: baseline` | 2 | same; 3 items aligned, ascents differing by 4.78px in one | Task F |
+| an item with **no** baseline reaching baseline alignment | **0** | items aligned by baseline (3) | Task F |
+| `align-self` other than `auto` | **0** | items placed (44); 1 declaration exists and does not win | Task F |
+| `order` other than `0` | **0** | same; zero declarations of any value | Task F |
+| a definite `flex-basis` on an item | **0** | same; all 44 take `auto` | Task F |
+| `flex-basis: content` | **0** | same | Task F |
+| a **percentage** `flex-basis` | **0** | same; 1 declaration (`70%`) exists and does not win | Task F |
+| an item stopped at its automatic minimum size (4.5) | **0** | same | Task F |
+| a percentage `row-gap` / `column-gap` | **0** | same | Task F |
+| an `auto` margin on a flex item | 4 | same | Task F |
+| a **floated** child of a flex container (an item, not a float) | 1 | same | Task F |
+| an anonymous flex item generated by *this* module | 1 | containers laid out (29); Task B's 9.2.1.1 generates the other 4 | Task F |
+| a blank text run refused an item by *this* module | 4 | same; Task B's blank-run rule takes the rest | Task F |
+| `box-sizing: border-box` on a flex item's main size | **0** | items placed (44) | Task F |
+| an `inline-flex` reaching the summed intrinsic width | **0** | 28 elements compute `inline-flex` and every one is inside a float or absolute subtree | Task F |
+
+Three of those deserve a sentence.
+
+**The anonymous-item rule is mostly unreachable, and for a familiar
+reason.** CSS 2.1 section 9.2.1.1 already wraps a run of inline-level
+children in an anonymous block whenever the box also has block-level
+children, and Task B implements it -- so `text<div></div>` inside a flex
+container arrives at `layout.flex` already wrapped. Flexbox 1 section 4's
+rule fires only where 9.2.1.1 does not: when *every* child is inline-level.
+That is the same shape as section 17.2.1's rules 3 and 4 being unreachable
+behind Task B's blank-run rule, which this register already records, and it
+is the second time Task B has quietly done a later task's work.
+
+**`inline-flex` is a count of 1 away from mattering and currently at 0.**
+28 elements compute it; every one is inside a subtree this engine declines
+to lay out, so the summed intrinsic width -- the largest single behavioural
+change this task made to the corpus -- is exercised only through *nested*
+containers, never through an inline one. This register's own warning that a
+small count is one bug fix away from a different number, arriving by the
+same route as `vertical-align: top` on a cell.
+
+**Every "counted, not implemented" row above is zero.** `order`,
+`align-content`, the three reverse values and `align-self` are out of scope
+per the Phase 3 plan and none of them occurs. The two divergences that *do*
+occur are `auto` margins on an item (4) and a floated item (1), and the
+second is a case where this engine is more correct than block layout rather
+than less.
+
+### Discriminating power, measured
+
+Eight variants, each implementing one rule wrongly, run over the corpus and
+diffed against the correct output by **every box rectangle, anonymous and
+text boxes included**. A control with no injection diffs to zero.
+
+| wrong rule | element rectangles that move (of 1,460) | largest delta |
+|---|---:|---:|
+| a row flex container's intrinsic width **maxed** instead of summed (9.9) | **57** | 399.29px |
+| `justify-content` ignored, everything at `flex-start` | 25 | 769.97px |
+| `gap` ignored entirely | 15 | 20.00px |
+| `align-items: baseline` treated as `flex-start` | 1 | 4.78px |
+| `flex-wrap: wrap` laid out as `nowrap` (the Phase 3 plan's deferral) | **0** | -- |
+| the automatic minimum size (4.5) dropped to zero | **0** | -- |
+| `flex: 1` read as `1 1 auto` instead of `1 1 0%` | **0** | -- |
+
+The three zeros are all explained by a counter rather than assumed:
+`flex_lines_wrapped` is 0 (neither `wrap` container overflows its line),
+`flex_items_clamped_to_min_content` is 0 (no item's flexed target ever
+reaches its floor), and no laid-out item carries a non-`auto` `flex-basis`
+at all, so the shorthand's famous default has nothing to be famous about
+here.
+
+The `baseline` row is the interesting one, and not because it is 1. It
+first measured **0**, and the zero was a fact about the instrument: the
+diff harness keyed its rectangles by DOM path and skipped every anonymous
+and text box, which is exactly what the corpus's two baseline-aligned items
+are. See `docs/measurement-hazards.md` instance nineteen.
+
 ## Tagged for Task D2, before it runs
 
 `vertical-align` is what baseline alignment is steered by, and the corpus

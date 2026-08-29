@@ -641,6 +641,62 @@ now. Without it, twelve green-looking injection reports were evidence of
 nothing at all -- and three of those twelve turned out, once the control was
 in place, to be genuine no-ops that needed new fixtures.
 
+### Instance nineteen: a diff that could not see the boxes it moved
+
+Task F measured discriminating power the way Task E did -- implement a rule
+wrongly, run the corpus, diff every box rectangle. Seven variants, and one
+of them reported **exactly zero**: treating `align-items: baseline` as
+`flex-start` moved nothing.
+
+It was checked rather than believed, because an exact zero is a claim about
+the instrument. The check was an independent prediction: the layout's own
+plan says the corpus's two baseline-aligned items have ascents of 16.321
+and 21.105, so the smaller one must move by 4.784px, and a rule that moves
+a box by 4.784px cannot also move nothing.
+
+**The diff keyed its rectangles by DOM path, and skipped every box that has
+none.** The corpus's two baseline-aligned flex items are anonymous boxes
+wrapping text runs; so are their children. Nothing the variant moved was
+ever recorded. Re-keyed by walk index -- which is stable across variants
+because the tree fixups run before any of them -- the same variant moves
+**1 box by 4.78px**, exactly the predicted number.
+
+Three of the seven variants still report zero afterwards, and all three are
+now explained by a counter rather than by an absence:
+`flex_lines_wrapped` is 0, `flex_items_clamped_to_min_content` is 0, and no
+laid-out item carries a non-`auto` `flex-basis`.
+
+What generalises is not "include anonymous boxes". It is that the harness
+had a **silent domain restriction**: it answered "how many *identifiable*
+boxes moved" while its name, its output and its use all said "how many
+boxes moved". That is the unstated-denominator shape (instance four) inside
+a measuring instrument rather than inside a metric -- and it was caught
+only because a *second, independent* prediction of the same quantity
+existed. A zero with nothing to check it against would have been written
+down as a finding about the corpus.
+
+### Instance twenty: a counter that counted calls
+
+In the same task, `flex_items_baseline_synthesized` read **4** on a
+two-item fixture.
+
+Nothing was wrong with the alignment. The ascent of a baseline-aligned item
+is asked for twice -- once for the line's maximum and once for the item's
+own offset -- and the counter sat inside the function that answers, so it
+counted questions rather than items. The number was of the right type, in
+the right range, and exactly double.
+
+It was caught by a test that asserted `== 2` from the fixture's own shape,
+which is the cheap general form: **a counter over a population a test can
+state independently is worth more than a counter nothing pins.** The fix
+moved the increment to the one place that visits each item once.
+
+The same task shipped one deliberately in the other direction:
+`intrinsic_flex_row_summed` really is a count of calls -- intrinsic sizing
+recurses, and 700 calls over 29 containers is not 700 containers -- so the
+report labels it `(CALLS, not boxes)` rather than pretending otherwise.
+Both are the same rule: the population belongs in the name.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -660,6 +716,8 @@ Every instance in this document was caught by **measurement**:
 | 16 the literal NBSP, again | printing the probe's codepoints after it produced a surprising result |
 | 17 a residual bucket reading 58 | the bucket being defined to read zero, and not reading zero |
 | 18 a colspan delta of exactly zero | probing a suspiciously clean result, then checking the exit code |
+| 19 a baseline delta of exactly zero | predicting the delta from the layout's own ascents, and getting a number the diff called impossible |
+| 20 a counter reading 4 for 2 items | a test that stated the population from the fixture's own shape |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced

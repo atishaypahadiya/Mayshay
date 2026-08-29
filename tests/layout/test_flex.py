@@ -4,8 +4,8 @@
 Measured at 1280x1024 with external sheets applied: 233 elements compute
 `display: flex` or `inline-flex`, 201 produce a box, and **29 of those are
 laid out** -- the other 172 sit inside a float or absolutely positioned
-subtree this engine declines to lay out. Of the 29, fifteen hold exactly
-one item; only 14 hold two or more, and only 2 hold three. A one-item flex
+subtree this engine declines to lay out. Of the 29, **sixteen hold exactly
+one item**; only 13 hold two or more, and only 2 hold three. A one-item flex
 container is almost exactly a block container: `justify-content` has nothing
 to distribute, `flex-grow` has no competitor for the free space, and `order`
 cannot reorder anything.
@@ -554,6 +554,32 @@ def test_baseline_alignment_lines_up_the_first_baselines():
     assert metrics["flex_items_aligned_baseline"] == 2
 
 
+def test_baseline_alignment_uses_the_first_line_box_not_the_last():
+    """Flexbox 1 section 8.5 asks a flex item for its **first** baseline;
+    CSS 2.1 section 10.8.1 asks an `inline-block` for its **last**. The two
+    live one module apart and differ on any item with more than one line.
+
+    Chrome: a narrow item whose text wraps to four lines is 72 tall, and
+    the single-line item beside it sits at **y=0** -- their first baselines
+    coincide. Reading the last line instead would push it down by three
+    line boxes.
+
+    Added because an injection that made `_first_baseline` read
+    `line_boxes[-1]` left the whole suite green: every baseline fixture up
+    to here had one line per item, where first and last are the same box.
+    A no-op injection is not evidence, so it was replaced rather than
+    reported.
+    """
+    root, _ = laid_out(
+        '<div id=f style="display:flex;align-items:baseline">'
+        '<div id=a style="width:40px">one two three four</div>'
+        '<div id=b style="width:40px">x</div></div>'
+    )
+    assert len(boxes(root)["a"].line_boxes) > 1
+    assert rect(root, "b").y == 0
+    assert rect(root, "a").height > rect(root, "b").height
+
+
 def test_baseline_alignment_falls_back_when_an_item_has_no_baseline():
     """An item with no line box in it has no baseline, and section 8.5
     synthesizes one from its border box. Counted separately from a real
@@ -1096,15 +1122,26 @@ def test_the_corpus_barely_exercises_any_of_this():
     They are **not** measured here -- that needs the corpus, which is not a
     test dependency -- they are the figures recorded by the task, and this
     test pins the arithmetic that makes them a coverage claim: 29 laid-out
-    containers, 15 of them with a single item, leaves 14 that can
+    containers, 16 of them with a single item, leaves 13 that can
     discriminate anything about the main axis.
+
+    The first draft of this test said 15 and 14, counted from `box.children`
+    before the anonymous-item fixup ran, and its own arithmetic disproved
+    it: 15 + 2*12 + 3*2 is 45 items and the layout places 44. The item
+    total is here for that reason -- a histogram that does not multiply out
+    to the population is counting something else.
     """
     laid_out_containers = 29
-    one_item = 15
-    two_items = 12
+    one_item = 16
+    two_items = 11
     three_items = 2
+    items_placed = 44
     assert one_item + two_items + three_items == laid_out_containers
-    assert two_items + three_items == 14
+    # The arithmetic that makes this a coverage claim rather than a tally:
+    # 13 containers hold more than one item, and they are the only ones
+    # that can tell two implementations of the main axis apart.
+    assert two_items + three_items == 13
+    assert one_item + 2 * two_items + 3 * three_items == items_placed
     # 193 of 233 DOM-level containers hold one element child or fewer, and
     # 172 of the 201 boxes are inside a float or absolute subtree that is
     # never laid out. Both are recorded in docs/synthetic-only-coverage.md.
