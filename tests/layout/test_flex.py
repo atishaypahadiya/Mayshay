@@ -1049,7 +1049,10 @@ def test_align_content_is_counted_only_where_it_could_act():
         '<div id=a style="width:300px;height:20px"></div>'
         '<div id=b style="width:300px;height:20px"></div></div>'
     )
-    assert multi_metrics["flex_align_content_ignored"] == 2
+    # One per container, not one per reason: this fixture satisfies both
+    # halves of the condition (a declared value *and* leftover space) and
+    # must still count 1.
+    assert multi_metrics["flex_align_content_ignored"] == 1
 
 
 # --------------------------------------------------------------------------

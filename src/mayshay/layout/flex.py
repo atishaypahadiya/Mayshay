@@ -464,14 +464,20 @@ def layout_flex_container(
         max(0, len(lines) - 1)
     )
     plan.cross_size = cross_definite if cross_definite is not None else cross_used
-    if cross_definite is not None and len(lines) > 1 and cross_definite != cross_used:
-        # `align-content` distributes exactly this leftover, and only this
-        # leftover: with an auto cross size the lines fill the container by
-        # construction and there is nothing for it to do. Counting the
-        # reachable case alone is what keeps this from being a residual
-        # bucket that legitimately contains something.
-        metrics["flex_align_content_ignored"] += 1
-    if style.align_content != "normal" and len(lines) > 1:
+    if len(lines) > 1 and (
+        style.align_content != "normal"
+        or (cross_definite is not None and cross_definite != cross_used)
+    ):
+        # **Once per container, not once per condition.** `align-content`
+        # distributes leftover cross-axis space between lines, so it can
+        # only act on a multi-line container that either has leftover space
+        # or asked for something other than `normal`; with an auto cross
+        # size the lines fill the container by construction and there is
+        # nothing to distribute. Counting only the reachable case is what
+        # keeps this from being a residual bucket that legitimately
+        # contains something -- and counting it once is what keeps it from
+        # being the call-counting defect in `docs/measurement-hazards.md`
+        # instance twenty, which this task already committed once.
         metrics["flex_align_content_ignored"] += 1
 
     for line in lines:
