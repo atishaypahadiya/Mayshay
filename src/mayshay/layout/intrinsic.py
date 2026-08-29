@@ -166,7 +166,13 @@ def _inner_sizes(box: Box, metrics: Counter[str]) -> IntrinsicSizes:
     return IntrinsicSizes(minimum, maximum)
 
 
-def outer_sizes(box: Box, metrics: Counter[str]) -> IntrinsicSizes:
+def outer_sizes(
+    box: Box,
+    metrics: Counter[str],
+    *,
+    include_margins: bool = True,
+    ignore_specified_width: bool = False,
+) -> IntrinsicSizes:
     """A box's intrinsic **contributions**: inner sizes plus its own edges.
 
     `basis=0.0` on every percentage is deliberate and is the reason
@@ -175,19 +181,64 @@ def outer_sizes(box: Box, metrics: Counter[str]) -> IntrinsicSizes:
     *margin* or *padding* really is taken as zero. Resolving both against a
     zero basis would give a percentage width of 0px, which is a different
     and much worse answer that looks the same in a counter.
+
+    Two keyword arguments, both added by Task E and both because CSS 2.1
+    chapter 17 asks a different question from CSS Sizing 3 -- not because
+    table layout wanted a variant of its own:
+
+    * `include_margins=False`. Section 17.5: "Internal table elements do not
+      have margins." A cell's contribution to its column is its content plus
+      its border and padding and nothing else.
+    * `ignore_specified_width=True`. For a normal box a definite `width`
+      *is* the contribution, which is what the default does. Section
+      17.5.2.2 says something different for a cell -- "If the specified
+      'width' (W) of the cell is greater than MCW, W is the minimum cell
+      width" -- so the table needs the content-driven size **and** W, and
+      takes the larger. It cannot get that from a function that has already
+      thrown MCW away.
+
+    The alternative was for `layout.table` to compute a cell's min-content
+    itself, and the whole reason this module exists is that there must be
+    exactly one implementation of that. Two keywords here are the cheap
+    half of that bargain.
     """
     style = style_of(box)
     edges = _horizontal_edges(style, metrics)
-    specified = _specified_content_width(style, metrics)
+    outside = edges.inside if not include_margins else edges.total
+    specified = None if ignore_specified_width else _specified_content_width(
+        style, metrics
+    )
     if specified is not None:
         metrics["intrinsic_specified_width_used"] += 1
         if style.box_sizing == "border-box":
             specified = max(0.0, specified - edges.inside)
-        return IntrinsicSizes(specified + edges.total, specified + edges.total)
+        return IntrinsicSizes(specified + outside, specified + outside)
     inner = _inner_sizes(box, metrics)
-    return IntrinsicSizes(
-        inner.min_content + edges.total, inner.max_content + edges.total
-    )
+    return IntrinsicSizes(inner.min_content + outside, inner.max_content + outside)
+
+
+def horizontal_edges(style: ComputedStyle, metrics: Counter[str]) -> "_Edges":
+    """`(inside, total)` horizontal edges: border+padding, and with margins.
+
+    Public since Task E. `layout.table` needs the same resolution this
+    module uses for a cell's own edges, and a second copy of "a percentage
+    padding on an unsized containing block is taken as zero, and counted"
+    is exactly the drift `intrinsic.py` exists to prevent.
+    """
+    return _horizontal_edges(style, metrics)
+
+
+def specified_content_width(
+    style: ComputedStyle, metrics: Counter[str]
+) -> float | None:
+    """A definite `width` in pixels, or None when the contents decide.
+
+    Public since Task E for the same reason as `horizontal_edges`: section
+    17.5.2.2's W is this number, and the rule that a percentage `width`
+    behaves as `auto` when the containing block is not yet sized is stated
+    once, here.
+    """
+    return _specified_content_width(style, metrics)
 
 
 @dataclass(frozen=True)

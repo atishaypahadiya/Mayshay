@@ -149,6 +149,17 @@ class Box:
     style: object | None = None
     table_wrapper: bool = False
 
+    # Filled by Task E on a `table` box: its `TablePlan` -- the grid, the
+    # column widths and the border spacing, decided by CSS 2.1 section
+    # 17.5.2 before any box in the table has geometry. It lives on the box
+    # rather than in a parameter threaded through `_layout_block` because
+    # the wrapper computes it and the table box one level down consumes it,
+    # and rather than in a module-level map because a map keyed by `id()`
+    # is not re-entrant: two layouts of one document would share it.
+    # Untyped for the same reason `geometry` is -- `layout.table` imports
+    # this module.
+    table_plan: object | None = None
+
     # Filled by Task D1 (`layout.block`) on a box whose width is
     # shrink-to-fit: `inline-block` and its two siblings, floats, and
     # absolutely positioned boxes. Separate from `geometry` because the

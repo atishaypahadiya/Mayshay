@@ -30,8 +30,10 @@ plausible, slightly-too-tight page that nothing else catches.
 Where this engine and Chrome deliberately disagree, the test says so and
 says why -- there are exactly three places, all of them deferred work with a
 counter: an inline formatting context has no measured height until Task D,
-out-of-flow boxes are not laid out at all, and CSS 2.1 section 17.6's rule
-that margins do not apply to table-internal boxes is Task E's.
+and out-of-flow boxes are not laid out at all. A third, CSS 2.1 section
+17.5's rule that internal table elements have no margins, was Task C's
+deliberate divergence and is Task E's fix -- the citation said 17.6, which
+is the two border models and says nothing about margins.
 """
 
 from __future__ import annotations
@@ -983,15 +985,21 @@ def test_an_atomic_inline_child_blocks_collapse_through_too():
     assert inline_block.geometry.border == Rect(0.0, 64.74609375, 10.0, 10.0)
 
 
-def test_a_table_internal_box_keeps_the_barrier_and_records_the_deviation():
+def test_a_table_internal_box_keeps_the_barrier_and_drops_its_margin():
     """`display: table-cell` establishes a formatting context, so the
-    child's margin does not escape -- asserted, and matching Chrome.
+    child's margin does not escape.
 
-    CSS 2.1 section 17.6 also says the margin properties do not apply to
-    table-internal boxes, which Task E owns: Chrome puts this cell at y=0
-    and this engine puts it at y=10, having applied the 10px margin. That is
-    the one place in this file where the two disagree on purpose, and it is
-    counted rather than left as a surprise.
+    **This is where Task C and Chrome used to disagree on purpose, and no
+    longer do.** CSS 2.1 section 17.5 -- not 17.6, which is the border
+    models -- says "internal table elements do not have margins", and Task
+    E drops them. Every number below was re-measured against Chrome 151 for
+    this fixture: the cell at y=0 with a 60px border box, the child at
+    y=40, and the whole thing 0px wide because an anonymous table is
+    shrink-to-fit and the child is empty.
+
+    Eight barrier edges rather than two: Task E's section 17.2.1 fixup
+    gives this orphan cell the anonymous row, anonymous table and wrapper
+    box it needs, and all four are formatting-context barriers.
     """
     root, metrics = laid_out(
         '<div style="width:400px">'
@@ -999,17 +1007,48 @@ def test_a_table_internal_box_keeps_the_barrier_and_records_the_deviation():
         '<div id=c style="height:20px;margin-top:40px"></div></div></div>'
     )
     assert geometry(root, "p").border.height == 60.0, "the margin did not escape"
-    assert top(root, "c") == 50.0
-    # Eight edges, not two. Task E's section 17.2.1 fixup gives this orphan
-    # cell the anonymous row, anonymous table and wrapper box it needs, and
-    # all four of those boxes are formatting-context barriers. The number
-    # moved because the tree did, which is why it is asserted rather than
-    # tolerated.
+    assert top(root, "p") == 0.0          # Chrome 151: 0
+    assert top(root, "c") == 40.0         # Chrome 151: 40
+    assert geometry(root, "p").border.width == 0.0   # Chrome 151: 0
     assert metrics["margin_collapse_blocked_new_formatting_context"] == 8
     assert metrics["table_fixup_anonymous_row_for_orphan_cell"] == 1
     assert metrics["table_fixup_anonymous_table_for_misparented_row"] == 1
-    assert metrics["layout_table_box_margins_applied"] == 1
-    assert top(root, "p") == 10.0  # Chrome: 0. See the docstring.
+    assert metrics["table_internal_margin_dropped"] == 1
+    assert metrics["table_internal_margin_declared_zero"] == 0
+
+
+def test_a_row_and_a_cell_both_have_their_margins_dropped():
+    """Rows never reach `_layout_block` -- `layout.table` sizes them from
+    the grid -- so a `<tr>` margin would be dropped *silently* rather than
+    dropped and counted if section 17.5 were applied in only one place.
+
+    Chrome 151 for this fixture: the row and the cell both at x=0, y=0,
+    8px wide, with 25px of margin declared on each and none applied.
+    """
+    root, metrics = laid_out(
+        '<div style="width:400px"><div style="display:table-row;margin:25px">'
+        '<div id=c style="display:table-cell;margin:25px">x</div></div></div>'
+    )
+    assert metrics["table_internal_margin_dropped"] == 2
+    assert geometry(root, "c").border.x == 0.0
+    assert geometry(root, "c").border.y == 0.0
+
+
+def test_a_zero_margin_on_a_cell_is_counted_apart_from_a_real_one():
+    """The distinction the counter this replaced could not make.
+
+    `layout_table_box_margins_applied` tested `is not _ZERO`, an identity
+    check against the initial value, so `margin: 0` on a `<td>` counted as
+    a margin having been applied. It read 2 on the corpus and both are
+    exactly this -- so the section 17.5 fix moves zero corpus pixels, which
+    is a fact the old counter's name actively hid.
+    """
+    root, metrics = laid_out(
+        '<div style="width:400px">'
+        '<div id=c style="display:table-cell;margin:0">x</div></div>'
+    )
+    assert metrics["table_internal_margin_declared_zero"] == 1
+    assert metrics["table_internal_margin_dropped"] == 0
 
 
 # --------------------------------------------------------------------------
