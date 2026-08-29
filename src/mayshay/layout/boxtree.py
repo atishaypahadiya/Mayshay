@@ -54,6 +54,15 @@ ATOMIC_INLINE_DISPLAYS: frozenset[str] = frozenset(
     {"inline-block", "inline-flex", "inline-table"}
 )
 
+# The two displays whose *inner* layout is flex layout (Task F). Here
+# rather than in `layout.flex` because `layout.intrinsic` needs the same
+# test -- a row flex container's max-content width is the SUM of its items
+# and not the largest of them -- and `flex` imports `intrinsic`, so the set
+# cannot live in `flex` without a cycle. Display classification is this
+# module's job in any case; `INLINE_LEVEL` and `ATOMIC_INLINE_DISPLAYS` are
+# here for the same reason.
+FLEX_DISPLAYS: frozenset[str] = frozenset({"flex", "inline-flex"})
+
 # Grid is classified but not implemented. The fallback is deliberate and
 # counted rather than silent: `display: grid` laid out as a block puts the
 # children in the wrong place, and the counter is the only thing that says

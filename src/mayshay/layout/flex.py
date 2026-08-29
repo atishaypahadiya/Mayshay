@@ -93,13 +93,16 @@ from dataclasses import dataclass, field, replace
 from mayshay.cssparse.cascade import ComputedStyle
 from mayshay.cssparse.values import AUTO, Keyword, Length, Percent
 from mayshay.layout import intrinsic as intrinsic_module
-from mayshay.layout.boxtree import Box
+from mayshay.layout.boxtree import FLEX_DISPLAYS, Box
 from mayshay.layout.geometry import EPSILON
 from mayshay.layout.text import is_white_space_only
 from mayshay.layout.used import px, px_or_zero, style_of
 
-#: The two displays whose *inner* layout is flex layout.
-FLEX_DISPLAYS: frozenset[str] = frozenset({"flex", "inline-flex"})
+#: The two displays whose *inner* layout is flex layout, re-exported: every
+#: caller reads it from here. It is defined in `boxtree` because
+#: `layout.intrinsic` needs the same test -- a row flex container's
+#: max-content width is the sum of its items, not the largest of them --
+#: and this module imports `intrinsic`, so the set cannot live here.
 
 # Box Alignment 3's `normal` behaves as these inside a flex container. The
 # mapping is a used-value fact and lives here rather than in the cascade,
