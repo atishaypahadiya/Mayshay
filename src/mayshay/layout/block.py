@@ -966,11 +966,9 @@ def _layout_table_contents(
         metrics["collapse_barrier_edges_seen"] += 2
         metrics["margin_collapse_blocked_new_formatting_context"] += 2
 
-    height = table_module.layout_table_contents(
+    return table_module.layout_table_contents(
         box, plan, metrics=metrics, layout_cell=layout_cell, account=account
     )
-    table_module.assert_table_constraints(box, plan)
-    return height
 
 
 def _resolve_shrink_to_fit(box: Box, *, cb_width: float, metrics: Counter[str]) -> float:
@@ -1528,6 +1526,15 @@ def assert_layout_constraints(
     linebox_module.assert_line_partitions(metrics)
     linebox_module.assert_text_conservation(root, metrics)
     _assert_geometry(root, cb_x=0.0, cb_width=initial_containing_block_width)
+    # Section 17.5.2's tiling, after `_absolutize` and not during layout.
+    # During layout every rectangle is relative to its own parent, so a cell
+    # compared against the TABLE's origin is off by the row's -- and a check
+    # that composed the offsets itself would agree with a wrong composition.
+    # Read from the absolute coordinates it is the same equation and it also
+    # catches `_absolutize` getting the chain wrong.
+    for box in root.walk():
+        if box.table_plan is not None:
+            table_module.assert_table_constraints(box, box.table_plan)
 
 
 def _assert_box_partition(metrics: Counter[str]) -> None:

@@ -164,7 +164,9 @@ COUNTER_NAMES: tuple[str, ...] = (
     "table_border_collapse_requested",
     "table_column_box_width_ignored",
     "table_rowspan_height_not_distributed",
-    "table_cell_vertical_align_as_top",
+    "table_cell_vertical_align_top",
+    "table_cell_baseline_aligned_as_top",
+    "table_cell_vertical_align_other_as_top",
     "table_cell_percentage_width_as_auto",
     "table_internal_margin_dropped",
     "table_internal_margin_declared_zero",
@@ -1255,17 +1257,29 @@ def layout_table_contents(
         height = layout_cell(cell.box, max(0.0, width - inside))
         if cell.rowspan == 1:
             natural[cell.row] = max(natural[cell.row], height)
-        if style.vertical_align != "top":
-            # Section 17.5.3 aligns a cell's content within the row by its
-            # baseline unless told otherwise, and the initial value IS
-            # `baseline`. This engine puts every cell's content at the top,
-            # which agrees with `baseline` exactly when every cell in the
-            # row has the same first-baseline offset -- one line of one font
-            # with equal padding, which is the common case and every case on
-            # this corpus. Counted, not silent: 371 of the corpus's 401
-            # cells compute `baseline` and 30 compute `top`, and `middle`
-            # occurs zero times.
-            metrics["table_cell_vertical_align_as_top"] += 1
+        # Section 17.5.3's cell alignment, in three buckets rather than one.
+        # A single "we used top" counter read 351 on the corpus -- every
+        # cell -- which can never be read as an alarm, and
+        # `docs/measurement-hazards.md` instance seventeen is exactly that:
+        # a residual bucket that legitimately contains something is
+        # decorative. So:
+        #
+        #   top       no divergence at all; the cell is aligned as asked.
+        #   baseline  the initial value. Agrees with `top` exactly when
+        #             every cell in the row has the same first-baseline
+        #             offset -- one line, one font, equal padding -- which
+        #             is the common case and, measured, every case here.
+        #   other     `middle` and `bottom`, which this engine does not
+        #             implement. **This is the one that must read zero**,
+        #             and on the corpus it does: 371 of 401 cells compute
+        #             `baseline`, 30 compute `top`, and `middle` and
+        #             `bottom` occur zero times.
+        if style.vertical_align == "top":
+            metrics["table_cell_vertical_align_top"] += 1
+        elif style.vertical_align == "baseline":
+            metrics["table_cell_baseline_aligned_as_top"] += 1
+        else:
+            metrics["table_cell_vertical_align_other_as_top"] += 1
 
     # --- row heights: section 17.5.3 --------------------------------------
     heights = list(natural)
@@ -1274,7 +1288,6 @@ def layout_table_contents(
         if isinstance(declared, Length) and declared.unit == "px":
             heights[index] = max(heights[index], float(declared.value))
 
-    # --- pass two: position everything ------------------------------------
     tops: list[float] = []
     y = plan.spacing_y
     for index in range(len(grid.rows)):
@@ -1282,12 +1295,18 @@ def layout_table_contents(
         y += heights[index] + plan.spacing_y
     content_height = y
 
+    # --- pass two: position everything ------------------------------------
+    #
+    # **Every rectangle here is relative to its own parent's content box**,
+    # because `layout.block._absolutize` composes the chain afterwards: a
+    # cell's origin is its row's content origin, a row's is its row group's
+    # or the table's. Writing table-relative coordinates for a cell is not
+    # slightly wrong, it is the row's offset applied twice -- measured as a
+    # cell at x=20 in a table whose row is at x=10, and as the second row's
+    # cells at y=116.8 where Chrome puts them at 58.
     inner_x = plan.spacing_x
     inner_width = max(0.0, plan.content_width - 2 * plan.spacing_x)
-    for index, row in enumerate(grid.rows):
-        account(row)
-        metrics["table_rows_laid_out"] += 1
-        _rectangles(row, inner_x, tops[index], inner_width, heights[index])
+    group_tops: dict[int, float] = {}
 
     for group in table.children:
         if group.display not in ROW_GROUP_DISPLAYS:
@@ -1296,10 +1315,12 @@ def layout_table_contents(
         account(group)
         metrics["table_row_groups_laid_out"] += 1
         if not rows:
+            group_tops[id(group)] = plan.spacing_y
             _rectangles(group, inner_x, plan.spacing_y, inner_width, 0.0)
             continue
         first = grid.row_index[id(rows[0])]
         last = grid.row_index[id(rows[-1])]
+        group_tops[id(group)] = tops[first]
         _rectangles(
             group,
             inner_x,
@@ -1308,13 +1329,32 @@ def layout_table_contents(
             tops[last] + heights[last] - tops[first],
         )
 
+    parent_top = {}
+    for child in table.children:
+        if child.display == "table-row":
+            parent_top[id(child)] = (inner_x, 0.0)
+        elif child.display in ROW_GROUP_DISPLAYS:
+            for row in child.children:
+                if row.display == "table-row":
+                    parent_top[id(row)] = (0.0, group_tops[id(child)])
+
+    for index, row in enumerate(grid.rows):
+        account(row)
+        metrics["table_rows_laid_out"] += 1
+        offset_x, offset_y = parent_top.get(id(row), (inner_x, 0.0))
+        _rectangles(
+            row, offset_x, tops[index] - offset_y, inner_width, heights[index]
+        )
+
     for cell in grid.cells:
         geometry = cell.box.geometry
         if geometry is None:
             continue
         spanned = sum(heights[cell.row : cell.row + cell.rowspan])
         spanned += (cell.rowspan - 1) * plan.spacing_y
-        _stretch(geometry, starts[cell.column], tops[cell.row], spanned)
+        # Relative to the row's content box: the row already starts one
+        # horizontal spacing in, and a cell's top IS its row's top.
+        _stretch(geometry, starts[cell.column] - inner_x, 0.0, spanned)
 
     return content_height
 
@@ -1438,6 +1478,11 @@ def assert_table_constraints(box: Box, plan: TablePlan) -> None:
         geometry = cell.box.geometry
         if geometry is None:
             continue
+        # Absolute, and deliberately NOT read back through the row: this
+        # check exists to catch a cell placed against the wrong parent, and
+        # measuring it from the row it was placed against would agree with
+        # any such mistake. The 20-versus-10 double-offset bug that
+        # `layout_table_contents` documents was found exactly here.
         expected_x = origin + starts[cell.column]
         expected_width = _spanned_width(plan, cell)
         assert abs(geometry.border.x - expected_x) <= EPSILON, (
