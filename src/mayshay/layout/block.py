@@ -171,6 +171,10 @@ COUNTER_NAMES: tuple[str, ...] = (
     "width_over_constrained_margin_right_ignored",
     "width_clamped_to_zero",
     "box_sizing_border_box",
+    # section 17.4: a table wrapper box's width is the border-edge width of
+    # the table inside it, even where a flex item's main size would
+    # otherwise have been used.
+    "layout_table_wrapper_width_wins",
     # section 8.3.1
     "margins_collapsed",
     "margins_collapsed_through_empty",
@@ -488,12 +492,28 @@ def _resolve_width(
     margin_left = _px(style.margin_left, basis=cb_width, metrics=metrics)
     margin_right = _px(style.margin_right, basis=cb_width, metrics=metrics)
     if override_content_width is not None:
-        # An atomic inline. Its width is shrink-to-fit and was resolved
-        # before line breaking -- section 10.3.3's constraint equation does
-        # not apply to it at all, so it is bypassed rather than fed a
-        # containing block it does not have. `auto` margins on an atomic
-        # inline compute to zero (section 10.3.2), which is what `or 0.0`
-        # says here.
+        # An atomic inline, or a flex item. Its width is shrink-to-fit or
+        # came from Flexbox 1 section 9.7 and was resolved before this box
+        # was reached -- section 10.3.3's constraint equation does not apply
+        # to it at all, so it is bypassed rather than fed a containing block
+        # it does not have. `auto` margins on an atomic inline compute to
+        # zero (section 10.3.2), which is what `or 0.0` says here.
+        #
+        # **`used_content_width` still wins**, and section 17.4 is why: "the
+        # table wrapper box's width is the border-edge width of the table
+        # box inside it". That is not a preference between two candidate
+        # widths, it is a structural identity -- the anonymous table box is
+        # the wrapper's only in-flow child and section 10.3.3 makes it span
+        # the wrapper's content box. A `<table>` reached here as a flex item
+        # took the override and got the item's main size instead, and the
+        # table inside it kept the width section 17.5.2 gave it: 630.39px of
+        # table in a 538px wrapper on stackblitz.com, 469.05px in a 0px one
+        # on tonsky.me. The item's used main size then differs from the one
+        # section 9.7 planned, which is a real divergence and belongs to the
+        # table, not to this equation; `layout_table_wrapper_width_wins`
+        # counts it.
+        if used_content_width is not None:
+            metrics["layout_table_wrapper_width_wins"] += 1
         return _Horizontal(
             margin_left=margin_left or 0.0,
             margin_right=margin_right or 0.0,
@@ -501,7 +521,11 @@ def _resolve_width(
             border_right=border_right,
             padding_left=padding_left,
             padding_right=padding_right,
-            content_width=override_content_width,
+            content_width=(
+                override_content_width
+                if used_content_width is None
+                else used_content_width
+            ),
         )
     left_auto = margin_left is None
     right_auto = margin_right is None
@@ -1049,7 +1073,21 @@ def _layout_flex_contents(
     def layout_item(item: Box, content: float) -> float:
         result = _layout_block(
             item,
-            cb_width=content,
+            # **The containing block, not the item's own used size.** A flex
+            # item's containing block is the flex container's content box
+            # (Flexbox 1 section 4), so every percentage on the item --
+            # its margins, its padding, its borders, and per CSS 2.1
+            # sections 8.3 and 8.4 the vertical ones too -- resolves
+            # against `content_width`. Passing the item's used main size
+            # here instead resolved them against the item, which is a
+            # *different number that looks like a used value*: on
+            # postgresql.org an 8.333% margin came out 37.15px beside the
+            # 95.17px `layout.flex` had already put in the plan, and the
+            # two disagreed by exactly the free space section 9.5 then
+            # could not account for. `override_content_width` is what
+            # carries the used main size; the two arguments answer two
+            # questions and conflating them is the defect.
+            cb_width=content_width,
             cb_height=None,
             metrics=metrics,
             groups=groups,

@@ -367,8 +367,18 @@ suggested, and in opposite directions:
 
 ### Task F: CSS Flexible Box Layout 1
 
-Population for the container rows: the **29 laid-out flex containers**.
-Population for the item rows: the **44 items** inside them. Where a row is
+**These rows are over the three Phase 3 pages and are superseded as a
+measure of what the corpus reaches.** The 79-page survey found 3,724
+laid-out flex containers and 6,802 items, and 715 of the containers are
+`flex-direction: column` -- a row that reads **0** below. The 12 pages
+that crashed during the survey are fixed (Task H) and the census is
+re-measured over all 79 in `docs/reports/phase-3/task-H-flex-census.md`.
+The rows are kept as written because they are what was true of the
+population they name, which is the point of naming it.
+
+Population for the container rows: the **29 laid-out flex containers**
+on the three Phase 3 pages. Population for the item rows: the **44 items**
+inside them. Where a row is
 about a declaration rather than a used value, the population is the **79
 flex declarations** across the three pages' sheets and `<style>` blocks,
 at-rules descended into.

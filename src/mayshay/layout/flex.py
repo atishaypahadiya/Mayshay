@@ -26,8 +26,11 @@ and there must not be.
 Implemented: `flex-direction` row and column, `flex-wrap: nowrap` and
 `wrap`, `justify-content`, `align-items` / `align-self` including
 `baseline`, `flex-grow` / `flex-shrink` / `flex-basis` resolution, the
-automatic minimum size, `row-gap` / `column-gap`, and anonymous flex
-items.
+automatic minimum size, `row-gap` / `column-gap`, anonymous flex items,
+and -- Task H -- section 9.4 step 11's redo for a **column** container
+whose main size its parent decides after the fact
+(`_reflow_if_main_size_changed`), which is what ten of the twelve pages in
+the first wide corpus run needed.
 
 Counted, not implemented -- each with a name, so the divergence is a
 number rather than an absence, and **each is zero on this corpus**
@@ -169,6 +172,9 @@ COUNTER_NAMES: tuple[str, ...] = (
     "flex_item_float_ignored",
     "flex_baseline_in_column_as_start",
     "flex_wrap_without_definite_main_size",
+    # A column container laid out again because the box that contains it
+    # gave its block axis a size. See `_reflow_if_main_size_changed`.
+    "flex_column_reflowed_definite_main",
 )
 
 
@@ -307,6 +313,13 @@ class FlexItem:
     frozen: bool = False
     #: the item's outer cross size once it has been laid out.
     outer_cross: float = 0.0
+    #: the same, before `_align`'s `stretch` could have grown it. `_align`
+    #: writes `outer_cross` in place, and `_distribute` can run twice on the
+    #: same items (`_reflow_if_main_size_changed`) -- so without a value to
+    #: restore, the second run's `_size_lines` would read a line's cross
+    #: size back off the stretch the first run applied to it. Set where
+    #: `outer_cross` is first set, and restored by `_lay_out_item`.
+    natural_outer_cross: float = 0.0
     #: distance from the item's outer cross-start edge to its first baseline,
     #: or None when it has none and one was synthesized.
     baseline: float | None = None
@@ -345,6 +358,29 @@ class FlexLine:
 
 
 @dataclass
+class _Context:
+    """Everything sections 9.3 to 9.6 need that section 9.2 already decided.
+
+    Kept so that a container whose main size turns out to be definite
+    *after* its own layout can run those sections again against the real
+    number. Nothing here depends on the main size: a column item's base
+    size, its automatic minimum and its cross size all come from the
+    container's inline axis, which is why re-running from section 9.3 is
+    the same computation as having been called with the size in the first
+    place, and not an approximation of it.
+    """
+
+    style: ComputedStyle
+    is_row: bool
+    content_width: float
+    cross_definite: float | None
+    main_gap: float
+    cross_gap: float
+    items: list["FlexItem"]
+    layout_item: object
+
+
+@dataclass
 class FlexPlan:
     """Everything `assert_flex_constraints` needs to restate the equation."""
 
@@ -354,6 +390,15 @@ class FlexPlan:
     main_gap: float
     cross_gap: float
     lines: list[FlexLine] = field(default_factory=list)
+    #: section 9.2's result, kept for a re-run. `None` only on a plan built
+    #: by hand in a test.
+    context: _Context | None = None
+    #: the counters sections 9.3 to 9.6 contributed on the run that produced
+    #: this plan. A re-run subtracts these before adding its own, so a
+    #: container that was laid out twice is still counted once -- the
+    #: alternative is `flex_lines` and `flex_items_placed` reading double on
+    #: exactly the nested containers this task exists to fix.
+    tail_metrics: Counter[str] = field(default_factory=Counter)
 
 
 # --------------------------------------------------------------------------
@@ -422,9 +467,43 @@ def layout_flex_container(
         skip_item=skip_item,
     )
 
-    lines = _collect_lines(
-        items, style, main_available, main_gap, metrics=metrics
+    context = _Context(
+        style=style,
+        is_row=is_row,
+        content_width=content_width,
+        cross_definite=cross_definite,
+        main_gap=main_gap,
+        cross_gap=cross_gap,
+        items=items,
+        layout_item=layout_item,
     )
+    plan = _distribute(box, context, main_available, metrics)
+    return plan.cross_size if is_row else plan.main_size
+
+
+def _distribute(
+    box: Box, context: _Context, main_available: float, metrics: Counter[str]
+) -> FlexPlan:
+    """Sections 9.3 to 9.6 against one main size, and the geometry they
+    write. Split out of `layout_flex_container` so it can run a second time
+    -- see `_reflow_if_main_size_changed`.
+
+    Its own counters go into a scratch `Counter` that is kept on the plan
+    and merged into `metrics` here. A re-run subtracts the kept one first,
+    so the counters describe the container once however many times these
+    sections ran on it.
+    """
+    style = context.style
+    is_row = context.is_row
+    content_width = context.content_width
+    cross_definite = context.cross_definite
+    main_gap = context.main_gap
+    cross_gap = context.cross_gap
+    items = context.items
+    layout_item = context.layout_item
+
+    tail: Counter[str] = Counter()
+    lines = _collect_lines(items, style, main_available, main_gap, metrics=tail)
     plan = FlexPlan(
         is_row=is_row,
         main_size=main_available if main_available != math.inf else 0.0,
@@ -432,10 +511,12 @@ def layout_flex_container(
         main_gap=main_gap,
         cross_gap=cross_gap,
         lines=lines,
+        context=context,
+        tail_metrics=tail,
     )
 
     for line in lines:
-        _resolve_flexible_lengths(line, main_available, main_gap, metrics)
+        _resolve_flexible_lengths(line, main_available, main_gap, tail)
 
     # Laying the items out at their final main size, and learning their
     # cross sizes, has to happen between flexing and alignment: a row item's
@@ -446,19 +527,19 @@ def layout_flex_container(
                 item,
                 is_row=is_row,
                 content_width=content_width,
-                metrics=metrics,
+                metrics=tail,
                 layout_item=layout_item,
             )
 
-    _size_lines(lines, cross_definite, cross_gap, metrics)
+    _size_lines(lines, cross_definite, cross_gap, tail)
     if main_available == math.inf:
         # A column container's main size is now known: the line's content.
         plan.main_size = max(
             (_line_used_main(line, main_gap) for line in lines), default=0.0
         )
     for line in lines:
-        _justify(line, plan.main_size, main_gap, style, metrics)
-        _align(line, style, is_row=is_row, metrics=metrics)
+        _justify(line, plan.main_size, main_gap, style, tail)
+        _align(line, style, is_row=is_row, metrics=tail)
 
     cross_used = sum(line.cross_size for line in lines) + cross_gap * (
         max(0, len(lines) - 1)
@@ -478,15 +559,72 @@ def layout_flex_container(
         # contains something -- and counting it once is what keeps it from
         # being the call-counting defect in `docs/measurement-hazards.md`
         # instance twenty, which this task already committed once.
-        metrics["flex_align_content_ignored"] += 1
+        tail["flex_align_content_ignored"] += 1
 
+    box.flex_plan = plan
     for line in lines:
         for item in line.items:
             _place(item, is_row=is_row)
-            metrics["flex_items_placed"] += 1
+            # The item's block size was just decided by *this* container.
+            # If the item is itself a column flex container, that is its
+            # main size, and its own sections 9.3 to 9.6 ran without it.
+            _reflow_if_main_size_changed(item.box, metrics)
+            tail["flex_items_placed"] += 1
 
-    box.flex_plan = plan
-    return plan.cross_size if is_row else plan.main_size
+    metrics.update(tail)
+    return plan
+
+
+def _reflow_if_main_size_changed(box: Box, metrics: Counter[str]) -> None:
+    """Run sections 9.3 to 9.6 again on a **column** flex container whose
+    main size was decided after its own layout.
+
+    A column container with `height: auto` has no definite main size while
+    it lays itself out, so section 9.7 freezes every item at its base size
+    and section 9.5 has nothing to distribute. Then its parent sizes it:
+    `align-items: stretch` on a row container gives it the line's cross
+    size, and a column container gives it whatever section 9.7 grew it to.
+    Either way `_place` resizes its border box and its own plan is left
+    describing a container that no longer exists.
+
+    **This is the defect behind ten of the twelve crashes Task H was
+    opened for**, and it is `assert_flex_constraints` doing exactly its
+    job: on quantamagazine.org/physics a column `<a>` reported one item of
+    outer main size 0.0 inside a content box 18.4 tall, so 18.4px of free
+    space existed that `justify-content: center` had never seen. The plan
+    did not describe the geometry.
+
+    Flexbox 1 section 9.4 step 11 asks for this in as many words -- "if the
+    flex item has `align-self: stretch`, redo layout for its contents,
+    treating this used size as its definite cross size" -- and this is that
+    redo, for the axis this engine can redo without laying the subtree out
+    twice. A **row** container is not reflowed: its main axis is the inline
+    axis, which its parent's cross-axis stretch does not touch, and there
+    is nothing here for it to have got wrong.
+
+    Idempotent by construction: after a reflow the plan's main size *is*
+    the box's used content size, so a second call returns immediately.
+
+    The gate below is `EPSILON` (1e-6) and `assert_flex_constraints` uses
+    1e-5, deliberately in that order: every difference the check can fail
+    on is a difference this reflows, and not the other way round. Equal
+    tolerances would leave a band where the size changed too little to
+    reflow and enough to assert.
+    """
+    plan = box.flex_plan
+    if not isinstance(plan, FlexPlan) or plan.is_row or plan.context is None:
+        return
+    geometry = box.geometry
+    if geometry is None:
+        return
+    used_main = geometry.content.height
+    if math.isclose(used_main, plan.main_size, rel_tol=0.0, abs_tol=EPSILON):
+        return
+    metrics["flex_column_reflowed_definite_main"] += 1
+    # The first run's counters come back out before the second run's go in;
+    # everything section 9.2 counted is outside `tail_metrics` and stays.
+    metrics.subtract(plan.tail_metrics)
+    _distribute(box, plan.context, used_main, metrics)
 
 
 # --------------------------------------------------------------------------
@@ -721,9 +859,10 @@ def _size_column_item(
         cross_inner = intrinsic_module.shrink_to_fit(
             item.box, max(0.0, cross_available), metrics=metrics
         )
-    item.outer_cross = cross_inner + item.cross_inside + (
+    item.natural_outer_cross = cross_inner + item.cross_inside + (
         item.cross_margin_start + item.cross_margin_end
     )
+    item.outer_cross = item.natural_outer_cross
     border_height = layout_item(item.box, cross_inner)
     natural = max(0.0, border_height - item.main_inside)
 
@@ -967,13 +1106,16 @@ def _lay_out_item(
 ) -> None:
     if is_row:
         border_height = layout_item(item.box, item.target)
-        item.outer_cross = (
+        item.outer_cross = item.natural_outer_cross = (
             border_height + item.cross_margin_start + item.cross_margin_end
         )
     else:
         # Already laid out in `_size_column_item` at its cross size; the
         # main axis is resized in `_place`, where the final target is known.
-        pass
+        # Its cross size is restored rather than recomputed, so that a
+        # second `_distribute` starts from the size the item has and not
+        # from the one `_align` stretched it to on the first.
+        item.outer_cross = item.natural_outer_cross
     item.baseline = _first_baseline(item.box)
 
 

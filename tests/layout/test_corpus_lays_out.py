@@ -9,9 +9,13 @@ code that had been reviewed a week earlier. No unit test could have found it
 This does not check that layout is CORRECT. It checks that it terminates,
 which is the floor, and the floor is where the last defect was.
 
-Marked `xfail(strict=True)` while Task H is open: when the twelve are fixed
-this test starts passing, pytest reports XPASS as a failure, and the mark
-comes off in that diff. A gate that has to be remembered is not a gate.
+Task H fixed the twelve and this reads **79 of 79**. It was marked
+`xfail(strict=True)` until it did: the mark came off in the diff that
+earned it, which is what `xfail_strict` is for. A gate that has to be
+remembered is not a gate.
+
+The four causes behind the twelve are in `tests/layout/test_corpus_causes.py`,
+one fixture each, every one derived from a named page in this collection.
 """
 
 from __future__ import annotations
@@ -39,11 +43,6 @@ def _pages():
 
 
 @requires_corpus
-@pytest.mark.xfail(
-    strict=True,
-    reason="Task H: 12 of 79 pages crash -- 10 on Flexbox 1 section 9.5. "
-    "Remove this mark in the diff that fixes them.",
-)
 def test_every_collected_page_lays_out():
     from mayshay.cssparse.cascade import style_document
     from mayshay.cssparse.media import Viewport
