@@ -95,11 +95,15 @@ class _StubFetcher(collect.Fetcher):
         return _Response(*SITE[url])
 
 
+COLLECTION = "2026-08-29-test"
+
+
 @pytest.fixture
 def collected(tmp_path):
     fetcher = _StubFetcher()
-    page = collect.collect_page(PAGE_URL, tmp_path, fetcher, follow_imports=True)
-    directory = tmp_path / page.slug
+    root = tmp_path / COLLECTION
+    page = collect.collect_page(PAGE_URL, root, fetcher, follow_imports=True)
+    directory = root / page.slug
     manifest = json.loads((directory / "manifest.json").read_text("utf-8"))
     return fetcher, directory, manifest
 
@@ -258,7 +262,166 @@ def test_loader_exposes_the_source_url_and_html(collected):
 
 def test_load_pages_ignores_directories_without_a_manifest(collected):
     _, directory, _ = collected
-    (directory.parent / "2026-08-26-snapshot").mkdir()
-    (directory.parent / "2026-08-26-snapshot" / "wikipedia.html").write_text("<p>")
-    pages = corpus.load_pages(directory.parent)
+    stray = directory.parent / "hand-saved"
+    stray.mkdir()
+    (stray / "wikipedia.html").write_text("<p>")
+    pages = corpus.load_pages(COLLECTION, root=directory.parent.parent)
     assert [p.slug for p in pages] == [directory.name]
+
+
+# --------------------------------------------------------------------------
+# The three defects the 2026-08-29 survey found, each invisible below four
+# URLs and each confirmed by execution before it was fixed.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "a, b, why",
+    [
+        ("https://e.com/a/b", "https://e.com/a/b/", "a trailing slash"),
+        ("https://e.com/p?id=1", "https://e.com/p?id=2", "a query string"),
+        ("https://e.com/p?a=1&b=2", "https://e.com/p?b=2&a=1", "query order"),
+        ("https://e.com/x", "https://f.com/x", "a different host"),
+    ],
+)
+def test_slugs_distinguish_urls_that_used_to_collide(a, b, why):
+    """The query string was dropped entirely, so `?id=1` and `?id=2` produced
+    one directory and the second fetch overwrote the first -- manifest
+    included, so nothing on disk recorded the loss. Forums and e-commerce are
+    exactly the query-bearing site types, and both are survey strata."""
+    assert collect.slug_for(a) != collect.slug_for(b), why
+
+
+def test_a_slug_is_capped_well_under_the_filesystem_limit():
+    """A real Wikipedia-shaped path reached 185 characters, close enough to
+    the 255-byte component limit on APFS and ext4 to matter once a collection
+    directory sits above it."""
+    monster = "https://e.com/" + "/".join(f"segment{i:03d}" for i in range(60))
+    slug = collect.slug_for(monster)
+    assert len(slug) <= collect._SLUG_READABLE_MAX + 8
+    assert slug != collect.slug_for(monster + "/more")
+
+
+def test_a_slug_is_a_pure_function_of_the_url():
+    """The digest is appended ALWAYS, not only on a detected collision: a
+    conditional digest would depend on what else happened to be on disk,
+    which is not a property a directory name may have."""
+    assert collect.slug_for(PAGE_URL) == collect.slug_for(PAGE_URL)
+
+
+def test_a_robots_disallowed_page_is_not_a_page(tmp_path):
+    """It used to write a manifest naming a `page.html` that was never
+    written, so it loaded cleanly and raised FileNotFoundError later, from
+    whichever report first asked for its text. And because its byte count
+    defaulted to 0 while `load_pages` sorts smallest first, it sorted FIRST
+    and took out the report on its opening iteration."""
+
+    class _Refusing(_StubFetcher):
+        def allowed(self, url):
+            return False
+
+    root = tmp_path / COLLECTION
+    page = collect.collect_page(PAGE_URL, root, _Refusing(), follow_imports=True)
+    assert page.status == "robots-disallowed"
+    manifest = json.loads((root / page.slug / "manifest.json").read_text())
+    assert manifest["html"]["file"] is None
+
+    with pytest.raises(corpus.Unfetched):
+        corpus.load_page(root / page.slug)
+
+    loaded = corpus.load_collection(COLLECTION, root=tmp_path)
+    assert loaded.pages == []
+    assert [status for _, status in loaded.unfetched] == ["robots-disallowed"]
+
+
+def test_a_failed_fetch_leaves_no_directory_behind(tmp_path):
+    """`mkdir` used to run before `raise_for_status`, so a 404 left an empty
+    directory and no manifest -- which `load_pages` skips, making the attempt
+    invisible and every downstream percentage silently a percentage of "pages
+    that happened to fetch"."""
+
+    class _NotFound(_StubFetcher):
+        def get(self, url):
+            return _Response(404, b"")
+
+    root = tmp_path / COLLECTION
+    # AssertionError, not Exception: the stub's raise_for_status raises that,
+    # and a bare `Exception` here passed while the test was constructing its
+    # own _Response with the arguments in the wrong order -- green, and never
+    # reaching the code under test.
+    with pytest.raises(AssertionError):
+        collect.collect_page(PAGE_URL, root, _NotFound(), follow_imports=True)
+    assert not root.exists() or list(root.iterdir()) == []
+
+
+def test_the_denominator_is_urls_attempted_not_pages_on_disk(tmp_path):
+    """The whole reason `collection.json` exists. A 404 leaves nothing behind,
+    so counting directories drops it from the denominator silently."""
+    root = tmp_path / COLLECTION
+    rows = [
+        {"url": "https://a/", "status": "ok"},
+        {"url": "https://b/", "status": "http-404"},
+        {"url": "https://c/", "status": "robots-disallowed"},
+    ]
+    collect.write_collection_manifest(root, COLLECTION, rows, None)
+    manifest = json.loads((root / "collection.json").read_text())
+    assert manifest["attempted"] == 3
+    assert manifest["collected"] == 1
+
+
+# --------------------------------------------------------------------------
+# Two populations, never merged
+# --------------------------------------------------------------------------
+
+
+def test_load_pages_refuses_to_guess_a_collection():
+    """No default. Two fetches on two dates are two populations, and every
+    figure in docs/ was computed against one of them."""
+    with pytest.raises(TypeError):
+        corpus.load_pages()  # type: ignore[call-arg]
+
+
+def test_a_directory_is_not_a_collection_name(tmp_path):
+    """`CORPUS / some_absolute_path` returns that path, so a caller passing a
+    directory where a NAME belongs would get a working result and never learn
+    it had skipped the collection layer entirely."""
+    with pytest.raises(TypeError):
+        corpus.load_collection(tmp_path)  # type: ignore[arg-type]
+
+
+def test_collections_do_not_see_each_others_pages(collected, tmp_path):
+    """Three collections, one holding three pages and one holding a single
+    page, so a per-collection path and a whole-corpus path cannot coincide --
+    the nesting-depth rule applied to the corpus loader."""
+    _, directory, _ = collected
+    corpus_root = directory.parent.parent
+
+    other = corpus_root / "2026-01-01-other"
+    for n in range(3):
+        d = other / f"page-{n}"
+        d.mkdir(parents=True)
+        (d / "page.html").write_text(f"<p>{n}")
+        (d / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "source_url": f"https://other/{n}",
+                    "fetched_at": "2026-01-01T00:00:00+00:00",
+                    "status": "ok",
+                    "html": {"file": "page.html", "bytes": 4},
+                    "stylesheets": [],
+                    "imports": {},
+                }
+            )
+        )
+    (corpus_root / "2026-01-01-empty").mkdir()
+
+    assert corpus.collection_names(corpus_root) == [
+        "2026-01-01-other",
+        COLLECTION,
+    ]
+    assert len(corpus.load_pages(COLLECTION, root=corpus_root)) == 1
+    assert len(corpus.load_pages("2026-01-01-other", root=corpus_root)) == 3
+    assert len(corpus.load_pages(corpus.ALL, root=corpus_root)) == 4
+
+    banner = corpus.describe(corpus.ALL, root=corpus_root)
+    assert "MERGED" in banner and "2026-01-01-other" in banner and COLLECTION in banner

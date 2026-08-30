@@ -27,7 +27,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "src"), str(ROOT / "scripts")]
 
 from collections import Counter  # noqa: E402
 
-from corpus import load_pages  # noqa: E402
+from corpus import load_pages, describe  # noqa: E402
 from mayshay import metrics as metrics_module  # noqa: E402
 from mayshay.cssparse.cascade import style_document  # noqa: E402
 from mayshay.cssparse.media import Viewport  # noqa: E402
@@ -468,6 +468,14 @@ CENSUS = (
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("pages", nargs="*", help="page slugs; default all")
+    ap.add_argument(
+        "--collection",
+        required=True,
+        help="which data/corpus/<collection>/ to measure, or 'all'. REQUIRED "
+        "and with no default: two fetches on two dates are two populations, "
+        "and every figure in docs/ was computed against one of them. "
+        "'all' is legal and prints what it merged",
+    )
     ap.add_argument("--viewport", default="1280x1024")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--dry-run", action="store_true")
@@ -476,7 +484,7 @@ def main(argv: list[str] | None = None) -> int:
     width, _, height = args.viewport.lower().partition("x")
     viewport = Viewport(float(width), float(height))
 
-    pages = load_pages()
+    pages = load_pages(args.collection)
     if args.pages:
         pages = [p for p in pages if p.slug in set(args.pages)]
     if not pages:
@@ -485,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     run_id = metrics_module.new_run_id()
+    print(describe(args.collection))
     print(f"run_id {run_id}   viewport {args.viewport}\n")
     rows = 0
     totals: dict[str, int] = {}

@@ -48,14 +48,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "data" / "corpus"
 
+# The one legal way to ask for a mixed population, and it announces itself.
+ALL = "all"
+
 
 @dataclass
 class CorpusPage:
     """One `data/corpus/<slug>/` directory, as described by its manifest."""
 
     directory: Path
+    collection: str
     source_url: str
     fetched_at: str
+    stratum: str
+    selection_reason: str
     html_file: str
     html_bytes: int
     sheets: list[dict]  # fetched AND applied, document order
@@ -122,8 +128,30 @@ class CorpusPage:
         return sum(sheet["bytes"] or 0 for sheet in self.sheets)
 
 
+class Unfetched(Exception):
+    """A page directory whose manifest says no HTML was ever written."""
+
+    def __init__(self, directory: Path, status: str) -> None:
+        super().__init__(f"{directory.name}: {status}")
+        self.directory, self.status = directory, status
+
+
 def load_page(directory: Path) -> CorpusPage:
+    """One page. Raises `Unfetched` if the manifest records no HTML.
+
+    Refusing is the point. A robots-disallowed page used to produce a
+    manifest naming a `page.html` that was never written, so it loaded
+    cleanly and raised `FileNotFoundError` later, from whichever report
+    first asked for its text -- and because its byte count defaulted to 0
+    and `load_pages` sorts smallest first, it sorted first and took out the
+    report on its opening iteration. A page that was not fetched is not a
+    page; it is a row in `collection.json`.
+    """
     manifest = json.loads((directory / "manifest.json").read_text("utf-8"))
+    html = manifest.get("html") or {}
+    status = manifest.get("status", "ok")
+    if not html.get("file") or not (directory / html["file"]).is_file():
+        raise Unfetched(directory, status if status != "ok" else "no html on disk")
     sheets = manifest.get("stylesheets", [])
     imports = manifest.get("imports", {})
 
@@ -135,10 +163,13 @@ def load_page(directory: Path) -> CorpusPage:
 
     return CorpusPage(
         directory=directory,
+        collection=directory.parent.name,
         source_url=manifest["source_url"],
         fetched_at=manifest["fetched_at"],
-        html_file=manifest["html"]["file"],
-        html_bytes=manifest["html"]["bytes"],
+        stratum=manifest.get("stratum", ""),
+        selection_reason=manifest.get("selection_reason", ""),
+        html_file=html["file"],
+        html_bytes=html["bytes"],
         sheets=[s for s in sheets if fetched(s) and applied(s)],
         unapplied_sheets=[s for s in sheets if fetched(s) and not applied(s)],
         missing_sheets=[s for s in sheets if not fetched(s)],
@@ -147,19 +178,121 @@ def load_page(directory: Path) -> CorpusPage:
     )
 
 
-def load_pages(root: Path | None = None) -> list[CorpusPage]:
-    """Every collected page, smallest HTML first.
+@dataclass
+class Collection:
+    """One `data/corpus/<name>/` directory: its pages and its denominator."""
+
+    name: str
+    directory: Path
+    pages: list[CorpusPage]
+    unfetched: list[tuple[Path, str]]  # (directory, why)
+    attempted: int  # URLs the collector was ASKED for, from collection.json
+    collected_at: str = ""
+
+    @property
+    def denominator(self) -> str:
+        """The line every report prints. Never just the page count."""
+        return f"{len(self.pages)} of {self.attempted} attempted"
+
+
+def load_collection(name: str, root: Path | None = None) -> Collection:
+    """One collection by name, with the URLs that never became pages.
+
+    `attempted` comes from `collection.json`, not from counting directories.
+    Counting directories answers "how many pages are on disk", which is the
+    question nobody asked: a 404 leaves nothing behind, so a directory count
+    silently drops it from the denominator and every percentage computed
+    against it is over "pages that happened to fetch".
+    """
+    if not isinstance(name, str):
+        # `CORPUS / some_absolute_path` returns that path, so a caller who
+        # passed a directory where a collection NAME belongs would get a
+        # working result and never learn it had skipped the collection
+        # layer entirely. Refuse instead of quietly obliging.
+        raise TypeError(
+            f"collection must be a name, not {type(name).__name__}; "
+            f"pass root= for a different corpus root"
+        )
+    directory = (root or CORPUS) / name
+    if not directory.is_dir():
+        raise FileNotFoundError(f"no collection {name!r} under {root or CORPUS}")
+
+    pages, unfetched = [], []
+    for d in sorted(directory.iterdir()):
+        if not (d.is_dir() and (d / "manifest.json").is_file()):
+            continue
+        try:
+            pages.append(load_page(d))
+        except Unfetched as exc:
+            unfetched.append((exc.directory, exc.status))
+
+    manifest_path = directory / "collection.json"
+    attempted, collected_at = len(pages) + len(unfetched), ""
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text("utf-8"))
+        attempted = manifest.get("attempted", attempted)
+        collected_at = manifest.get("collected_at", "")
+
+    return Collection(
+        name=name,
+        directory=directory,
+        pages=sorted(pages, key=lambda p: p.html_bytes),
+        unfetched=unfetched,
+        attempted=attempted,
+        collected_at=collected_at,
+    )
+
+
+def load_pages(collection: str, root: Path | None = None) -> list[CorpusPage]:
+    """Every collected page in one collection, smallest HTML first.
 
     Smallest first so a failure on the 800 KB page is not the first thing
-    that happens. Directories without a `manifest.json` are ignored, which
-    is what keeps `data/corpus/2026-08-26-snapshot/` -- the hand-saved,
-    stylesheet-less Phase 1/2 fetch -- out of new measurements. See
-    `docs/corpus.md`.
+    that happens.
+
+    **`collection` is required and has no default.** Two fetches on two
+    dates are two populations, and every figure in `docs/` was computed
+    against one of them; a default would let a caller merge an August 27
+    corpus with an August 29 one and silently change what a published
+    number means. Pass `"all"` to work over the union -- legal, and it
+    prints what it merged.
     """
+    if collection == ALL:
+        return sorted(
+            (p for c in load_all(root) for p in c.pages), key=lambda p: p.html_bytes
+        )
+    return load_collection(collection, root).pages
+
+
+def collection_names(root: Path | None = None) -> list[str]:
+    """Every collection on disk: a directory holding at least one page."""
     root = root or CORPUS
-    pages = [
-        load_page(d)
-        for d in sorted(root.iterdir())
-        if d.is_dir() and (d / "manifest.json").is_file()
-    ]
-    return sorted(pages, key=lambda p: p.html_bytes)
+    if not root.is_dir():
+        return []
+    return sorted(
+        d.name
+        for d in root.iterdir()
+        if d.is_dir() and any(c.is_dir() and (c / "manifest.json").is_file()
+                              for c in d.iterdir())
+    )
+
+
+def load_all(root: Path | None = None) -> list[Collection]:
+    """Every collection, for `--collection all`."""
+    return [load_collection(n, root) for n in collection_names(root)]
+
+
+def describe(collection: str, root: Path | None = None) -> str:
+    """The banner a report prints above any figure.
+
+    A number over a mixed population must SAY it is over a mixed
+    population, at the point of use, or the mixing is exactly as silent as
+    having no collections at all.
+    """
+    if collection == ALL:
+        cols = load_all(root)
+        parts = ", ".join(f"{c.name} ({c.denominator})" for c in cols)
+        return f"collections: {parts}  -- MERGED, {sum(len(c.pages) for c in cols)} pages"
+    c = load_collection(collection, root)
+    return f"collection {c.name}: {c.denominator}" + (
+        f", collected {c.collected_at}" if c.collected_at else ""
+    )

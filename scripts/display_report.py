@@ -44,7 +44,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "src"), str(ROOT / "scripts")]
 
-from corpus import CorpusPage, load_pages  # noqa: E402
+from corpus import CorpusPage, load_pages, describe  # noqa: E402
 from mayshay.cssparse.cascade import style_document  # noqa: E402
 from mayshay.cssparse.media import Viewport  # noqa: E402
 from mayshay.dom.node import Element  # noqa: E402
@@ -149,6 +149,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("pages", nargs="*", help="page slugs; default all")
     parser.add_argument(
+        "--collection",
+        required=True,
+        help="which data/corpus/<collection>/ to measure, or 'all'. REQUIRED "
+        "and with no default: two fetches on two dates are two populations, "
+        "and every figure in docs/ was computed against one of them. "
+        "'all' is legal and prints what it merged",
+    )
+    parser.add_argument(
         "--viewport", default="1280x1024",
         help="viewport for @media evaluation (default: 1280x1024)",
     )
@@ -156,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     width, _, height = args.viewport.lower().partition("x")
     viewport = Viewport(float(width), float(height))
 
-    pages = load_pages()
+    pages = load_pages(args.collection)
     if args.pages:
         wanted = set(args.pages)
         pages = [p for p in pages if p.slug in wanted]
@@ -171,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     grand = 0
     css_total = 0
 
+    print(describe(args.collection))
     print(f"viewport {viewport.width_px:.0f}x{viewport.height_px:.0f} "
           f"({viewport.orientation})\n")
 
