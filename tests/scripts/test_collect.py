@@ -349,7 +349,7 @@ def test_a_failed_fetch_leaves_no_directory_behind(tmp_path):
     # and a bare `Exception` here passed while the test was constructing its
     # own _Response with the arguments in the wrong order -- green, and never
     # reaching the code under test.
-    with pytest.raises(AssertionError):
+    with pytest.raises(AssertionError, match="404"):
         collect.collect_page(PAGE_URL, root, _NotFound(), follow_imports=True)
     assert not root.exists() or list(root.iterdir()) == []
 

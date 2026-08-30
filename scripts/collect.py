@@ -464,6 +464,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="data/corpus", help="corpus root (default: data/corpus)")
     ap.add_argument("--delay", type=float, default=1.0, help="seconds between requests")
     ap.add_argument(
+        "--resume",
+        action="store_true",
+        help="skip a URL whose page directory already holds a manifest. For "
+        "re-running an interrupted collection without re-fetching what "
+        "landed: the same pages from two different minutes are still one "
+        "population, and re-fetching them is a cost paid by someone else's "
+        "server for nothing",
+    )
+    ap.add_argument(
         "--no-follow-imports",
         action="store_true",
         help="record @import targets as skipped instead of fetching them",
@@ -507,6 +516,25 @@ def main(argv: list[str] | None = None) -> int:
             print(f"! {url}: not an absolute URL, skipped", file=sys.stderr)
             book(cand, "not-absolute", None)
             failures += 1
+            continue
+        existing = out_root / slug_for(url) / "manifest.json"
+        if args.resume and existing.is_file():
+            kept = json.loads(existing.read_text("utf-8"))
+            book(
+                cand,
+                kept.get("status", "ok"),
+                Page(
+                    source_url=url,
+                    slug=existing.parent.name,
+                    html_bytes=(kept.get("html") or {}).get("bytes") or 0,
+                    sheets=[
+                        Sheet(**{k: v for k, v in sheet.items() if k != "rel"},
+                              rel=sheet.get("rel") or [])
+                        for sheet in kept.get("stylesheets", [])
+                    ],
+                ),
+            )
+            print(f"[{n}/{len(candidates)}] {existing.parent.name}: kept")
             continue
         try:
             page = collect_page(

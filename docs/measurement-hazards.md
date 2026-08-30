@@ -728,6 +728,76 @@ calling one broken helper, and look far more like agreement.
 The general form: **a label derived from the same field as the behaviour it
 describes cannot audit that behaviour.** It can only report the field.
 
+### Instance twenty-two: an operation that succeeds by ignoring an input
+
+`corpus.load_pages` took a corpus root. It was changed to take a collection
+*name*, and one existing test kept passing while calling it the old way --
+handing it an absolute `Path` where a name now belonged.
+
+    CORPUS / Path("/tmp/pytest-xyz/corpus")   ->   /tmp/pytest-xyz/corpus
+
+`pathlib` discards the left operand entirely when the right one is
+absolute. That is documented, deliberate, and the same rule `os.path.join`
+has had for decades -- and it means the call **succeeded by ignoring one of
+its arguments**. The test passed. It had skipped the entire collection
+layer the change existed to introduce, and reported that the layer worked.
+
+The shape is worth a name of its own because it is not a wrong answer and
+not an exception: it is a *silently narrowed operation*. Related but
+distinct from the two instruments already in this document --
+
+* instance four's unstated denominator answers a narrower question than its
+  name claims;
+* instance nineteen's diff answered "how many *identifiable* boxes moved";
+* **this one answers a question that uses only some of the inputs it was
+  given, and cannot report which.**
+
+Anywhere a path is composed from configuration, a CLI argument, an
+environment variable or test fixture data, one absolute component silently
+discards everything to its left. The generalisation past `pathlib`: an API
+where a valid input can make earlier inputs irrelevant needs a **type**
+guard, not a value check, because every value is legal.
+
+The fix here was to refuse: `load_collection` raises `TypeError` if handed
+anything but a `str`. Not because a `Path` cannot be turned into a name,
+but because a caller who passed one was doing something other than what
+they thought, and the only useful response is to say so.
+
+### Instance twenty-three: the rule was known, applied nine times, skipped once
+
+Ten scripted edits in one session. Nine carried `assert anchor in s`. One
+did not, and that is the one that silently missed: it anchored on
+`ap.add_argument("--no-follow-imports",` as a single line where the file
+splits it across two. `str.replace` returned the string unchanged, wrote it
+back, and reported nothing.
+
+It survived every check that existed. `ast.parse` passed -- nothing was
+malformed. The full suite passed -- because the *branch* the flag controls
+had landed correctly, and only the flag that reaches it was missing, so no
+test could see the gap. It surfaced as an argparse error in a background
+job several minutes later.
+
+**This is the strongest efficacy datum in this document, and it does not
+argue for vigilance.** The author knew the rule, had applied it nine times
+in the same hour, and skipped it once. A rule that must be remembered at
+every use has a per-use failure rate that does not reach zero, and ten uses
+was enough to find it. The heading below -- "writing a rule down does not
+install it" -- is here demonstrated against a rule that *was* installed, in
+the same session, by the same author, and still missed.
+
+So the response was structural rather than exhortative. `scripts/lib/edit.py`
+provides `sub(text, old, new)`, which performs the replacement **and** the
+postcondition in one call and raises `EditMissed` otherwise. There is no
+unchecked variant to reach for, and the checked call is shorter than
+`text.replace(...)` plus an assert. The disciplined path is now also the
+lazy path, which is the only kind of discipline that survives a tenth
+repetition.
+
+The same move, applied to the same problem elsewhere in this repo:
+`tests/test_test_quality.py` does not ask anyone to remember that
+`pytest.raises(Exception)` is worthless -- it fails the suite, with the file
+and line, when one appears.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -750,6 +820,8 @@ Every instance in this document was caught by **measurement**:
 | 19 a baseline delta of exactly zero | predicting the delta from the layout's own ascents, and getting a number the diff called impossible |
 | 20 a counter reading 4 for 2 items | a test that stated the population from the fixture's own shape |
 | 21 a substitution labelled `sub-1` that was not rank 1 | checking the ordering against the ranked list, not against its own labels |
+| 22 a loader that skipped the whole collection layer | a type guard, after `CORPUS / abs_path` silently discarded `CORPUS` |
+| 23 a scripted edit that changed nothing | making the postcondition part of the operation, not a thing to remember |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced
