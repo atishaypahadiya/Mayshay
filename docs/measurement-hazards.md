@@ -697,6 +697,37 @@ recurses, and 700 calls over 29 containers is not 700 containers -- so the
 report labels it `(CALLS, not boxes)` rather than pretending otherwise.
 Both are the same rule: the population belongs in the name.
 
+### Instance twenty-one: two derived values, one malformed field
+
+The corpus survey's substitution had to be **mechanical** -- take the
+lowest-numbered live reserve in the stratum -- precisely so that a
+replacement could not be chosen with knowledge of what the survivors had
+shown. The tooling that implemented it read the rank as `rank[1:]` if
+`rank.startswith("R")`, defaulting to 99 otherwise. The field was written
+`1`, not `R1`. **Every reserve defaulted to 99 and the pool sorted
+alphabetically.**
+
+It promoted `blog.codinghorror.com` (rank 2) over `ciechanow.ski` (rank 1),
+and `mk.co.kr` (rank 3) over `sanook.com` (rank 2). Two of nineteen
+substitutions were wrong.
+
+What made it survive review is the shape worth recording. The output was
+labelled from the same field: the row that "b" had sorted to the front was
+printed as `sub-1`, because the raw field really did say `1`. **The label
+and the ordering were two derived values agreeing with each other, and they
+agreed because they shared a malformed source.** Reading the labels back
+confirmed nothing; the ordering had to be checked against the ranked list
+it claimed to follow, which is a genuinely independent second source.
+
+This is the quiet-sharing criterion -- two measurements only corroborate if
+they fail independently -- appearing inside a **data field** rather than a
+code path, where this document has recorded it four times before. A parse
+and a label reading one malformed field are as coupled as two functions
+calling one broken helper, and look far more like agreement.
+
+The general form: **a label derived from the same field as the behaviour it
+describes cannot audit that behaviour.** It can only report the field.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -718,6 +749,7 @@ Every instance in this document was caught by **measurement**:
 | 18 a colspan delta of exactly zero | probing a suspiciously clean result, then checking the exit code |
 | 19 a baseline delta of exactly zero | predicting the delta from the layout's own ascents, and getting a number the diff called impossible |
 | 20 a counter reading 4 for 2 items | a test that stated the population from the fixture's own shape |
+| 21 a substitution labelled `sub-1` that was not rank 1 | checking the ordering against the ranked list, not against its own labels |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced

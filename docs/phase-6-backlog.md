@@ -137,3 +137,69 @@ decisions, and the property name does not say which count is meant. An
 author-declared census measures what pages *do*; a UA-inclusive census
 measures what an engine must *handle*. Worth reporting as two columns
 throughout Phase 6 rather than picking one.
+
+## 4. The crawlable web is smaller than the visible web, and biased
+
+**Seeded 2026-08-29 by the corpus survey's HEAD check.** Not a collection
+detail: a constraint on what any structural survey of the web can say, and
+the reason it belongs here rather than in `docs/corpus.md`.
+
+Eighty URLs were checked with HEAD before collection, honouring `robots.txt`
+exactly as the collector does. **Six were disallowed. One had been
+predicted.**
+
+| stratum | checked | robots-disallowed | rate |
+|---|---:|---:|---:|
+| `news` | 10 | 1 | 10% |
+| `docs` | 10 | 1 | 10% |
+| `ecommerce` | 10 | 1 | 10% |
+| `spa` | 8 | 1 | 12% |
+| `gov` | 10 | 0 | 0% |
+| `personal` | 10 | 0 | 0% |
+| `forum` | 8 | 2 | 25% |
+| `marketing` | 8 | 0 | 0% |
+| `nonlatin` | 6 | 0 | 0% |
+| **all** | **80** | **6** | **8%** |
+
+The six:
+
+* `https://text.npr.org/`
+* `https://www.w3.org/TR/CSS22/visuren.html`
+* `https://www.lulu.com/search`
+* `https://www.tldraw.com/`
+* `https://lobste.rs/t/css`
+* `https://lore.kernel.org/lkml/`
+
+**The composition is the finding, not the rate.** These are not commercial
+properties protecting inventory. `w3.org/TR/` is the standards corpus this
+engine is written from. `lore.kernel.org` is a public mailing-list archive
+whose entire purpose is durable public availability. `text.npr.org` is a
+news organisation's deliberately accessible edition. `lobste.rs` is a small
+community site. Every one of them exists to be read, and every one of them
+is closed to an identified, rate-limited, one-shot fetcher that obeys the
+protocol.
+
+So the crawlable web is **biased against exactly the sites a structural
+survey most wants**: reference, archival, standards and small-community
+pages -- the hand-authored, long-lived, low-JavaScript end of the
+distribution. The pages that remain skew commercial and framework-built.
+Any claim of the form "N% of the web does X" that rests on a polite crawl
+is really "N% of the web that permits polite crawling", and those two
+populations differ in precisely the dimension a markup survey measures.
+
+Three things to do with this in Phase 6:
+
+1. **Report the disallow rate beside every corpus figure**, per stratum. It
+   is a property of the sample, not an incident during collection.
+2. **Measure whether it moved.** Six of eighty is a 2026-08-29 number from
+   a nine-stratum sample; whether the rate is rising is a better question
+   than what it is, and the seed above is what makes the comparison
+   possible later.
+3. **Name the counterfactual.** For each disallowed URL, what would it have
+   contributed? `w3.org/TR/` and `lore.kernel.org` were the two lowest-CSS
+   documents in the whole sample -- so their exclusion does not merely
+   shrink the corpus, it truncates one tail of the distribution being
+   measured.
+
+Related: `docs/corpus.md` records the mechanics; this entry records what the
+mechanics imply about the population.
