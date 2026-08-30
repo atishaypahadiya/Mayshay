@@ -7,7 +7,23 @@ of the real web built from metrics the engine emits.
 fetch -> tokenize -> tree build -> style -> layout -> paint
 
 ## Status
-Phase 1: HTML tokenizer and tree builder.
+
+| phase | state |
+|---|---|
+| 1. HTML to DOM | done (`phase-1`) |
+| 2. CSS to a styled tree | done (`phase-2`) |
+| 3. Layout | done (`phase-3`) except Task H, 12 corpus pages that crash |
+| — floats | **deferred indefinitely**, with the cost measured |
+| 4. Paint | not started — `src/mayshay/paint/` is empty |
+| 5. Crawler | not started — `src/mayshay/net/` is empty |
+| 6. The analysis | not started — the actual deliverable |
+
+Layout covers block, inline and line boxes, text measured against a pinned
+Liberation Sans, CSS 2.1 tables and a Flexbox 1 subset. Floats are not
+implemented and are not scheduled: they gate a median 6.5% of boxes across
+the 79-page corpus, and about a third on government and non-Latin pages,
+which therefore render with missing content. See
+`docs/plans/2026-08-29-phase-3-task-i-floats.md`.
 
 ## Test corpus
 

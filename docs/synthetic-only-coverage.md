@@ -571,3 +571,30 @@ space. Note that the Phase 1 figure quoted as "117,378 characters, 5,671
 whitespace (4.8%)" is not a whitespace-character count: 5,671 is the
 number of characters *inside whitespace-only nodes*. The whitespace
 character count over the same 117,378 is **17,426 (14.8%)**.
+
+## Floats: deferred indefinitely on 2026-08-29, with the number attached
+
+The 79-page survey measured what Phase 3's three pages could not. Share of a
+page's boxes inside a float or absolutely-positioned subtree, never laid out:
+
+| stratum | median | pages >= 10% |
+|---|---:|---:|
+| forum / news / docs / personal | 0.0 - 1.5% | 7 of 32 |
+| ecommerce / spa / marketing | 10.5 - 15.7% | 14 of 22 |
+| **government** | **30.3%** | 5 of 8 |
+| **non-Latin** | **31.0%** | 6 of 6 |
+| all 67 laid-out pages | 6.5% | 32 |
+| *the three Phase 3 pages* | *0.0%* | *0* |
+
+**Roughly a third of the boxes on government and non-Latin pages are never
+laid out, and will render as missing content.** That is the stated cost of
+the deferral, recorded here rather than discovered later by whoever reads a
+render and assumes a paint bug.
+
+Every claim this register makes about layout coverage is now conditional on
+that: a rule reported as "reachable on N pages" is reachable on the
+in-flow part of N pages. The gated share is the honest error bar.
+
+See `docs/plans/2026-08-29-phase-3-task-i-floats.md` for the plan and the
+reasoning, and `docs/measurement-hazards.md` instances 24 and 25 for how the
+number was nearly wrong in both directions.

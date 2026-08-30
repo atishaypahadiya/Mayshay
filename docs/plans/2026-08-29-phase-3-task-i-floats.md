@@ -1,4 +1,31 @@
-# Task I — floats, and everything that assumed they did not exist
+# Task I — floats — **DEFERRED INDEFINITELY, 2026-08-29**
+
+> **Status: not scheduled.** Deferred after the survey measured it, not
+> before. This document stays as the plan it was, because the deferral is
+> only meaningful with the numbers that justify it attached.
+>
+> **What the deferral costs, measured.** Floats gate a median **6.5%** of a
+> page's boxes across 79 pages, and the cost is not evenly spread:
+> **government pages lose a median 30.3% of their boxes and non-Latin pages
+> 31.0%** — roughly a third of those pages will render with missing content,
+> permanently, until this is picked up. 32 of 67 laid-out pages are above
+> 10%; 72% have some gated content. `clear` stays inert, and floats keep
+> contributing to intrinsic sizes as though in flow.
+>
+> **Why anyway.** The deliverable is the analysis, not a correct engine.
+> Floats gate 6.5% of boxes; paint is **0% of the pipeline** — `src/mayshay/
+> paint/` is an empty package, as is `net/`. A complete-but-imperfect
+> pipeline is worth more than a perfect layout stage with no renderer, and
+> this task's payoff is better box positions for a stage that does not
+> exist. That is the whole argument, and it is a tradeoff rather than an
+> oversight: the numbers above were in hand when the call was made.
+>
+> **What would reopen it.** Phase 6 finding a structural question it cannot
+> answer because a third of two strata is missing. That is a real
+> possibility and it is the reason this plan is kept rather than deleted.
+
+## The original plan follows
+
 
 Phase 3's last large layout feature, and the one the three-page corpus made
 look deferrable. Sequenced **after Task H** (the twelve crashing pages): a

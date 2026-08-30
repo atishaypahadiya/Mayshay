@@ -88,3 +88,40 @@ Package root is `src/mayshay/`. Imports look like:
 - Non-ASCII in test data is written as an escape (\u212a), never as a literal.
   Kelvin sign vs ASCII K, NBSP vs space, and combining marks all read
   identically in a terminal.
+
+## Process, from Phase 4 onward
+
+The verification discipline in this file earned its cost through layout --
+the float denominator, the flex column path, `getBoxModel`'s union box --
+because layout produces numbers whose wrongness is invisible. **Paint does
+not.** It rasterizes a box tree that already has positions, and a wrong
+result is visible by looking at the PNG.
+
+So from Phase 4:
+
+- **Normal TDD.** Write the test, write the code.
+- **No hazard entries unless something actually breaks.**
+  `docs/measurement-hazards.md` is closed to speculative entries; it stays
+  open to anything that genuinely bites.
+- **No shadow builds, no discriminating-power sweeps, no pre-registered
+  thresholds.** Those exist to make an invisible wrongness visible. Where
+  the output is an image, look at the image.
+- **No second derivation** of anything checkable by eye in the output.
+
+What stays, because it is cheap and it is what caught the last defect:
+
+- **Every stage emits its counters.** Unchanged.
+- **The corpus-wide smoke run**, and specifically the merge gate below.
+
+### The merge gate
+
+`tests/layout/test_corpus_lays_out.py`: every page in the current collection
+must lay out without raising. Phase 3 shipped green against three pages and
+the first 79-page run found 12 crashes across 7 of 9 strata, ten of them one
+assertion in flex code reviewed a week earlier -- and the minimal synthetic
+reproduction of the failing container *passes*, so no unit test would have
+found it. Paint gets the equivalent gate: every collected page rasterizes
+without raising.
+
+This checks termination, not correctness. That is the floor, and the floor
+is where the last defect was.
