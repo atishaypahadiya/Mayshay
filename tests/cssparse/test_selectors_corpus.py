@@ -83,6 +83,35 @@ def _style_bodies():
                     yield path.parent.name, text
 
 
+# At-rules whose block contains **style rules**, so a prelude inside one is a
+# selector. Everything else is skipped, and the distinction is not cosmetic:
+# `@keyframes` holds KEYFRAME selectors (`0%`, `from`, `50%`), `@page` holds
+# margin at-rules (`@top-left`), and `@font-face`/`@property`/`@counter-style`
+# hold only declarations. None of those is a selector.
+#
+# The three-page corpus had almost no `@keyframes`. The 79-page survey has
+# many, and feeding their `0%` preludes to `parse_selector_list` produced
+# **111 failures that looked exactly like a selector-parser gap** -- 1.05% of
+# all preludes, on real pages, with plausible error messages. They were
+# measurement defects: the sweep was asking the parser about a population
+# that did not belong to it. `docs/measurement-hazards.md` instance nineteen
+# is the same shape, and CLAUDE.md's rule is the general one -- a comparison
+# must distinguish wrong output from wrong input.
+CONDITIONAL_GROUP_RULES = frozenset({
+    "media", "supports", "layer", "container", "scope", "document",
+    "-moz-document",
+})
+
+
+def holds_style_rules(name: str) -> bool:
+    """Does this at-rule's block contain style rules (so: selectors)?"""
+    return name.lower().lstrip("-").removeprefix("webkit-").removeprefix(
+        "moz-"
+    ).removeprefix("o-").removeprefix("ms-") in CONDITIONAL_GROUP_RULES or (
+        name.lower() in CONDITIONAL_GROUP_RULES
+    )
+
+
 def _nested_preludes(block: list[CssToken]):
     """The preludes of the style rules directly inside an at-rule's block.
 
@@ -122,17 +151,49 @@ def _sweep(prefix=""):
     shifts every token's `pos`, which is how the position-independence test
     below reaches real selectors instead of hand-written ones.
     """
-    files, elements, preludes = set(), 0, []
+    files, elements, preludes, empty = set(), 0, [], 0
     for name, css in _style_bodies():
         files.add(name)
         elements += 1
         for rule in parse_stylesheet(prefix + css):
             if isinstance(rule, QualifiedRule):
-                preludes.append((name, rule.prelude))
-            elif isinstance(rule, AtRule) and rule.block is not None:
+                # A qualified rule with an EMPTY prelude is what the Syntax
+                # spec produces for `{ ... }` written with no selector at
+                # all. It is a style rule a browser drops as invalid, not a
+                # selector the parser failed on -- six of them ship on one
+                # corpus page. Counted, not fed to the selector parser.
+                if any(not isinstance(t, Whitespace) for t in rule.prelude):
+                    preludes.append((name, rule.prelude))
+                else:
+                    empty += 1
+            elif (
+                isinstance(rule, AtRule)
+                and rule.block is not None
+                and holds_style_rules(rule.name)
+            ):
                 for prelude in _nested_preludes(rule.block):
                     preludes.append((name, prelude))
-    return files, elements, preludes
+    return files, elements, preludes, empty
+
+
+def parsed_or_none(prelude):
+    """Parse, or None for a feature this engine deliberately declines.
+
+    `::part()` and `::view-transition-*()` are current CSS that `selectors.py`
+    refuses **by name** -- five preludes on the 79-page survey use them. A
+    sweep about hashing and position-independence has nothing to say about a
+    selector that was never built, and letting the refusal propagate would
+    turn "we decline this feature" into a red suite. The test that owns the
+    unsupported/invalid distinction is
+    `test_every_selector_in_the_corpus_parses`, and it is the only one that
+    should fail when that distinction changes.
+    """
+    try:
+        return parse_selector_list(prelude)
+    except SelectorParseError as error:
+        if "is not supported" in str(error):
+            return None
+        raise
 
 
 SWEEP = _sweep()
@@ -142,7 +203,7 @@ def test_the_corpus_sweep_is_not_silently_empty():
     """The failure mode this project keeps hitting: a loader that finds
     nothing and reports success.
     """
-    files, elements, preludes = SWEEP
+    files, elements, preludes, _empty = SWEEP
     assert CORPUS.is_dir()
     # Corpus files and files that carry CSS are counted separately: a page
     # with no <style> is normal (the Hacker News page links its
@@ -156,7 +217,7 @@ def test_the_corpus_sweep_is_not_silently_empty():
 
 def test_every_selector_in_the_corpus_parses():
     """No real-world rule may be lost to a parse error."""
-    _, _, preludes = SWEEP
+    _, _, preludes, _empty = SWEEP
     failures, selectors = [], 0
     for name, prelude in preludes:
         source = "".join(str(getattr(t, "value", "")) for t in prelude)
@@ -171,7 +232,20 @@ def test_every_selector_in_the_corpus_parses():
             # specificity runs over real input at all.
             assert all(n >= 0 for n in specificity(selector))
             selectors += 1
-    assert failures == []
+    # **Not `failures == []`.** Five preludes on the 79-page survey use
+    # `::part()` and `::view-transition-*()` -- real, current CSS this engine
+    # deliberately declines and says so by name. Declining a named feature is
+    # correct behaviour; failing to parse ordinary CSS is not, and the two
+    # must not share a bucket or the assertion stops meaning anything.
+    #
+    # This assertion is what a wider corpus is FOR: it read 123 failures at
+    # 1.05% of preludes when the survey landed, and 111 of those were
+    # `@keyframes` selectors the sweep should never have collected. See
+    # `holds_style_rules` above.
+    unsupported = [f for f in failures if "is not supported" in f]
+    assert failures == unsupported, "genuine selector parse failures:\n  " + (
+        "\n  ".join(f for f in failures if f not in unsupported)
+    )
     assert selectors >= MIN_SELECTORS
 
 
@@ -179,10 +253,13 @@ def test_corpus_selectors_are_hashable():
     """Task H keys rules by their rightmost compound. Every compound the
     corpus produces must survive being put in a dict.
     """
-    _, _, preludes = SWEEP
+    _, _, preludes, _empty = SWEEP
     index = {}
     for name, prelude in preludes:
-        for selector in parse_selector_list(prelude).selectors:
+        parsed = parsed_or_none(prelude)
+        if parsed is None:
+            continue
+        for selector in parsed.selectors:
             index.setdefault(selector.compounds[-1], []).append(name)
     assert index
 
@@ -198,12 +275,16 @@ def test_corpus_selectors_are_position_independent():
     argument tokens carry a `pos` of their own, which is exactly the
     interaction that made the first version of deviation 10 false.
     """
-    _, _, here = SWEEP
-    _, _, there = _sweep("\n\n")
+    _, _, here, _ = SWEEP
+    _, _, there, _ = _sweep("\n\n")
     assert len(here) == len(there) >= MIN_RULES
     pairs = 0
     for (name, a), (_, b) in zip(here, there):
-        first, second = parse_selector_list(a), parse_selector_list(b)
+        first, second = parsed_or_none(a), parsed_or_none(b)
+        if first is None or second is None:
+            # Both must decline, or the refusal itself is position-dependent.
+            assert first is second, name
+            continue
         assert first == second, name
         for x, y in zip(first.selectors, second.selectors):
             assert hash(x) == hash(y)
