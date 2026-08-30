@@ -1,0 +1,79 @@
+=== DENOMINATORS ===
+attempted 79, collected 79, laid out 67, crashed 12
+  news         6 laid out of 9 collected
+  docs         9 laid out of 10 collected
+  ecommerce    7 laid out of 10 collected
+  spa          7 laid out of 8 collected
+  gov          8 laid out of 10 collected
+  personal     9 laid out of 10 collected
+  forum        8 laid out of 8 collected
+  marketing    7 laid out of 8 collected
+  nonlatin     6 laid out of 6 collected
+
+=== SPA / near-empty DOM (a finding) ===
+pages with <50 DOM elements: 5 of 67
+   forum        32  community.mybb.com-bde76db
+   marketing     3  vercel.com-pricing-ffdc467
+   personal     22  drewdevault.com-2020-03-18-reckless-limitless-scope.html-5688de8
+   spa          32  app.diagrams.net-b829fab
+   spa          17  todomvc.com-examples-react-dist-abaa257
+median DOM elements by stratum:
+   news          1045
+   docs          5549
+   ecommerce      687
+   spa             52
+   gov            680
+   personal      1301
+   forum          818
+   marketing     1319
+   nonlatin      1468
+
+=== FLOAT / ABSOLUTE GATING, per stratum ===
+stratum      pages  median %   max %  >=10%
+news             6       1.7     9.0      0
+docs             9       0.1     1.8      0
+ecommerce        7       1.6     8.0      0
+spa              7       2.1    11.1      1
+gov              8       1.4     5.7      0
+personal         9       0.2     1.4      0
+forum            8       0.0     5.5      0
+marketing        7       1.2     3.5      0
+nonlatin         6       5.1     7.2      0
+ALL             67       0.7    11.1      1
+phase-3          3       0.0     0.3
+
+=== FLEX CENSUS, per stratum (aggregate last) ===
+counter                                   news    docs  ecomme     spa     gov  person   forum  market  nonlat     ALL     p3
+flex_containers_laid_out                   236     212     187      61     124      56     364     686     634    2560     29
+flex_containers_row                        196     210     146      49     108      29     303     547     619    2207     29
+flex_containers_column                      40       2      41      12      16      27      61     139      15     353      0
+flex_lines                                 253     212     190      61     125      56     381     690     697    2665     29
+flex_lines_wrapped                          17       0       3       0       1       0      17       4      63     105      0
+flex_items_placed                          372     284     445     117     211     153     536    1142    1301    4561     44
+flex_items_grown                            41       9       4       0      16       8       8      35      21     142      4
+flex_items_shrunk                            8       4       0       4      26       0      11      78      82     213      2
+flex_items_clamped_to_min_content            2       0       1       3       8       0       5      36      76     131      0
+flex_basis_definite                         66       4      10       1      30       2       0      40      86     239      0
+flex_items_aligned_baseline                  0       3       0       0       6       0       0      42       0      51      3
+flex_anonymous_items                        10       4     209      14      27       2      56     102     123     547      1
+flex_main_gap_applied                       51      28     177      25      10       2      64     291      17     665      3
+flex_order_ignored                           0       6       2       0       9       7       1       0       3      28      0
+flex_align_content_ignored                   0       0       0       0       0       0       0       0       0       0      0
+flex_direction_reverse_as_forward            0       0       0       0       1       0       0       0       0       1      0
+flex_wrap_reverse_as_wrap                    0       0       0       0       0       0       0       8       0       8      0
+flex_item_auto_margin_zeroed                 0       8       4       0       4       2       5       8       4      35      4
+flex_baseline_in_column_as_start             0       0       0       0       0       0       0       0       0       0      0
+flex_basis_content_keyword                   0       0       0       0       0       0       0       0       0       0      0
+flex_percentage_gap_as_zero                  0       0       0       0       0       0       0       0       0       0      0
+
+=== flex ELEMENTS (cascade level), per stratum ===
+   news           304 elements on 4 of 6 pages
+   docs           459 elements on 6 of 9 pages
+   ecommerce      590 elements on 6 of 7 pages
+   spa             92 elements on 3 of 7 pages
+   gov            537 elements on 8 of 8 pages
+   personal        60 elements on 8 of 9 pages
+   forum          393 elements on 3 of 8 pages
+   marketing     1431 elements on 5 of 7 pages
+   nonlatin      1939 elements on 6 of 6 pages
+   ALL           5805 elements on 49 of 67 pages
