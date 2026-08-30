@@ -1,4 +1,7 @@
-# Task G — the twelve pages that crash the layout
+# Task H — the twelve pages that crash the layout
+
+*(Task G is taken: "metrics and the layout report" in the Phase 3 plan,
+and it shipped. Letters here follow execution order.)*
 
 Its own task and its own diff. Not folded into float work: ten of the twelve
 are one assertion in code that shipped a week ago, in the exact path the

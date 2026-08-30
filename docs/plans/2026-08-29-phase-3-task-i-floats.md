@@ -1,7 +1,7 @@
-# Task H — floats, and everything that assumed they did not exist
+# Task I — floats, and everything that assumed they did not exist
 
 Phase 3's last large layout feature, and the one the three-page corpus made
-look deferrable. Sequenced **after Task G** (the twelve crashing pages): a
+look deferrable. Sequenced **after Task H** (the twelve crashing pages): a
 float diff landing on a corpus where 15% of pages do not lay out cannot be
 measured.
 
@@ -154,7 +154,7 @@ running them, not a reason to skip them.
 
 **The success measure is not a green suite.** It is:
 
-1. `67 -> 79` pages laying out is Task G's measure, and must already hold.
+1. `67 -> 79` pages laying out is Task H's measure, and must already hold.
 2. The gated share falls from a 6.5% pooled median toward zero, reported
    **per stratum**, with government and non-Latin — at 30.3% and 31.0% —
    the two that decide whether this worked.
@@ -171,7 +171,7 @@ running them, not a reason to skip them.
    commit, aggregate last.
 4. Discriminating power measured, keyed by walk index, with a no-injection
    control diffing to zero.
-5. `docs/synthetic-only-coverage.md` gains a Task H section, including which
+5. `docs/synthetic-only-coverage.md` gains a Task I section, including which
    rules the corpus still cannot discriminate — there will be some, and
    naming them is the house convention.
 6. Full suite green.
