@@ -798,6 +798,83 @@ The same move, applied to the same problem elsewhere in this repo:
 `pytest.raises(Exception)` is worthless -- it fails the suite, with the file
 and line, when one appears.
 
+### Instance twenty-four: a small sample is not just noisy, it is biased toward "done"
+
+Every Phase 3 scoping decision was made against three pages. The 79-page
+survey put a number on what that cost, and the number is not what "small
+sample" usually means.
+
+Share of a page's boxes that sit inside a float or absolutely-positioned
+subtree and are therefore never laid out:
+
+| population | median |
+|---|---:|
+| the three Phase 3 pages | **0.0%** |
+| the 79-page survey, pooled | 6.5% |
+| government stratum | 30.3% |
+| non-Latin stratum | 31.0% |
+
+The three pages sat at the **extreme low end of the distribution they were
+standing in for**. Not near the middle with wide error bars -- at the floor.
+And the direction matters more than the distance: floats were deferred out
+of Phase 3 partly because the corpus made them look like they gated almost
+nothing, and the corpus made them look that way because it contained no page
+that used them heavily.
+
+**A small sample does not merely add variance around the right answer. It
+can be systematically biased toward the conclusion that no further work is
+needed**, because the features a small corpus fails to exercise are exactly
+the features it reports as unexercised -- and "unexercised" reads as
+"unimportant" unless something forces the distinction. This document's
+existing framing (a feature with zero occurrences on three pages is an
+absence of evidence) was right and was not enough: the register said the
+corpus could not discriminate floats, and the *scoping decision* still used
+the corpus's silence as permission to defer.
+
+Worse, the misreading was double. Wikipedia's "172 of 201 flex boxes are
+behind a float or an absolute" was quoted for weeks as evidence that
+Wikipedia *over*-represented floats. It is a flex-specific ratio. As a share
+of the whole page it is 0.0%, so the one page thought to be exaggerating the
+problem was in fact hiding it.
+
+The generalisable move is not "collect more pages" -- it is: **when a small
+corpus reports that a deferred feature is unused, that is the corpus's
+weakest claim, not its strongest.** Treat a zero from an underpowered sample
+as a reason to widen before deciding, never as the decision.
+
+### Instance twenty-five: one counter, two readings, opposite phase decisions
+
+The float-versus-paint decision had a threshold written down before any
+number existed: below 3% of a median page's boxes gated, paint goes next;
+at or above 10%, floats are the remaining work.
+
+Two counters could answer it. `layout_float_skipped` increments once per
+**skipped subtree root**. `layout_boxes_deferred_subtree` increments once
+per **box inside** one.
+
+| metric | median page | mean | pages >= 10% | ruling |
+|---|---:|---:|---:|---|
+| skipped roots | 0.7% | 1.9% | 1 of 67 | paint goes next |
+| boxes deferred | **6.5%** | **22.8%** | **32 of 67** | floats are the work |
+
+Same corpus, same commit, same pre-registered rule, opposite phases. The
+first reading was computed, tabulated per stratum, and about to be applied.
+
+It was caught by reading the counter's increment site before applying the
+rule -- and it was *pre-registration that made that check happen*. The plan
+had committed to a specific sentence, "the share of element boxes that are
+inside a float or an absolutely-positioned subtree", and the tabulated
+number had to be checked against that sentence rather than against a
+plausible name. A rule invented after seeing the data would have accepted
+0.7% without a second thought, because 0.7% is a perfectly plausible number
+for something called "float skipped".
+
+So this is the unstated-denominator hazard (instance four) in its highest
+stakes form so far, and the countermeasure that worked was not vigilance
+about denominators in general. It was **having written down, in advance,
+which population the decision was about** -- precisely enough that two
+candidate counters could not both satisfy it.
+
 ### Writing a rule down does not install it
 
 Every instance in this document was caught by **measurement**:
@@ -822,6 +899,8 @@ Every instance in this document was caught by **measurement**:
 | 21 a substitution labelled `sub-1` that was not rank 1 | checking the ordering against the ranked list, not against its own labels |
 | 22 a loader that skipped the whole collection layer | a type guard, after `CORPUS / abs_path` silently discarded `CORPUS` |
 | 23 a scripted edit that changed nothing | making the postcondition part of the operation, not a thing to remember |
+| 24 three pages reporting floats gate nothing | widening the corpus, and finding the old sample at the floor of the distribution |
+| 25 a float share of 0.7% that was really 6.5% | reading the counter's increment site before applying a pre-registered rule |
 
 **None was caught by remembering the rule.** Not one. In every case the
 author knew the principle, had recently written or read it, and produced
