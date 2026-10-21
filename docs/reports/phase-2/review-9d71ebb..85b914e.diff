@@ -1,7 +1,7 @@
-# Review package: d61d038..7b42fcf
+# Review package: 9d71ebb..85b914e
 
 ## Commits
-7b42fcf htmlparse: fix parse-error recording gaps found in review
+85b914e htmlparse: fix parse-error recording gaps found in review
 
 ## Files changed
  src/mayshay/htmlparse/treebuilder.py  | 60 +++++++++++++++++++++++++++++------

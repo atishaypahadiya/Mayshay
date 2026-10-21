@@ -1,6 +1,6 @@
 # Task H review: selector matching and rule indexing
 
-Reviewed: `review-69c095f..a05a103.diff` (3 new files, 1495 insertions) against
+Reviewed: `review-e3ba0a0..931e741.diff` (3 new files, 1495 insertions) against
 `task-H-brief.md` and `task-H-report.md`.
 
 ---

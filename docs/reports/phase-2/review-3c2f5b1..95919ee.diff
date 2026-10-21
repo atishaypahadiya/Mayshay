@@ -1,7 +1,7 @@
-# Review package: f647da8..717f839
+# Review package: 3c2f5b1..95919ee
 
 ## Commits
-717f839 cssparse: fix bare :where specificity, make selectors hashable
+95919ee cssparse: fix bare :where specificity, make selectors hashable
 
 ## Files changed
  src/mayshay/cssparse/selectors.py       | 139 +++++++++++++++++----

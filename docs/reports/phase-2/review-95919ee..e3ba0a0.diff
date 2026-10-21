@@ -1,7 +1,7 @@
-# Review package: 717f839..69c095f
+# Review package: 95919ee..e3ba0a0
 
 ## Commits
-69c095f cssparse: make pseudo-class arguments position-independent
+e3ba0a0 cssparse: make pseudo-class arguments position-independent
 
 ## Files changed
  src/mayshay/cssparse/selectors.py       | 85 ++++++++++++++++++++++++++++-----

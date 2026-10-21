@@ -1,7 +1,7 @@
-# Review package: 534e656..2328f50
+# Review package: 93f2754..a99c742
 
 ## Commits
-2328f50 tests: adopt the 855-case DOCTYPE tokenizer corpus; fix quirks rationale
+a99c742 tests: adopt the 855-case DOCTYPE tokenizer corpus; fix quirks rationale
 
 ## Files changed
  src/mayshay/dom/node.py                    |   8 +-

@@ -343,7 +343,7 @@ deliberate departure from `parser.py`, where `pos` *does* participate: a
 `QualifiedRule`'s position is part of what a test asserts about it, whereas
 nothing will ever want two structurally identical selectors to be distinct.
 Documented as deviation 10, appended rather than inserted so no existing
-cross-reference renumbers (the failure mode of commit 1ff2448).
+cross-reference renumbers (the failure mode of commit 48be545).
 
 Two hazards documented in the same deviation: these are mutable objects
 carrying a value hash (`unsafe_hash` territory), so a structure used as a

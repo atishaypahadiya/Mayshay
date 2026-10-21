@@ -1,7 +1,7 @@
-# Review package: 2328f50..bdabfd2
+# Review package: a99c742..9d821e1
 
 ## Commits
-bdabfd2 dom: add cascade affordances - computed_style slot, class_list, element positions
+9d821e1 dom: add cascade affordances - computed_style slot, class_list, element positions
 
 ## Files changed
  src/mayshay/dom/__init__.py |  2 ++

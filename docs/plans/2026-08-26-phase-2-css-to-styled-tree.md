@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, pytest. No CSS libraries — see Global Constraints.
 
-**Spec:** This plan is its own spec. It derives from a review of the Phase 1 output at tag `phase-1` (commit `ddb3b3b`) and the scope agreed in conversation on 2026-08-26. Phase 1's plan and its Known Gaps section are at `docs/plans/2026-08-26-phase-1-html-to-dom.md`.
+**Spec:** This plan is its own spec. It derives from a review of the Phase 1 output at tag `phase-1` (commit `f252f96`) and the scope agreed in conversation on 2026-08-26. Phase 1's plan and its Known Gaps section are at `docs/plans/2026-08-26-phase-1-html-to-dom.md`.
 
 ## Global Constraints
 

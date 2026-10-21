@@ -1,7 +1,7 @@
 # Task G review: selectors and specificity
 
-Base `1ff2448` -> head `f647da8`. Read-only review; working tree untouched
-(`git status` empty at finish, HEAD still `f647da8`), `.venv` not modified
+Base `48be545` -> head `3c2f5b1`. Read-only review; working tree untouched
+(`git status` empty at finish, HEAD still `3c2f5b1`), `.venv` not modified
 (`__editable__.mayshay-0.1.0.pth` md5 `3717d729cbbfc50ae0f221f1d9b09cdd`,
 content `/Users/atishaypahadiya/projects/mayshay/src` — matches the report's
 recorded value). `/tmp/g_shadow` is gone, as the report claims.

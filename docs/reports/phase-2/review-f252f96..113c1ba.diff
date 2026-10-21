@@ -1,32 +1,32 @@
-# Review package: ddb3b3bcde4fa0c7444a9bf4867255f13aec81ba..HEAD
+# Review package: f252f969f8d4a7de30ecaabaa1540e7564605df7..HEAD
 
 ## Commits
-99d03ba scripts: stop error_report.py importing a test_*.py module
-0b55bde scripts: add error_report.py for whole-corpus parse-error agreement
-d9aa4ef cssparse: shorthand reset, table displays, border-width's two initials
-d8ed477 cssparse: cascade, inheritance and computed values
-39ba6ae cssparse: fix round 1 for task I review
-ec7eee9 cssparse: parse declaration values for nine properties (Task I)
-2b992c6 cssparse: fix round 1 for task H review
-a05a103 cssparse: right-to-left selector matching and rule indexing
-69c095f cssparse: make pseudo-class arguments position-independent
-717f839 cssparse: fix bare :where specificity, make selectors hashable
-f647da8 cssparse: selector parsing and specificity
-1ff2448 cssparse: fix stale deviation cross-references after renumbering
-208c112 cssparse: fix at-rule discrimination test, mislabeled deviation, EOF pos
-c24f2b4 cssparse: generic rule and declaration grammar
-39f772b cssparse: drop a spurious bad-url parse error, unprefix metrics
-81bc45f docs: add task K (committed parse-error agreement measurement) to phase 2 plan
-5f62e2b cssparse: hand-rolled CSS tokenizer; drop tinycss2
-bdabfd2 dom: add cascade affordances - computed_style slot, class_list, element positions
-2328f50 tests: adopt the 855-case DOCTYPE tokenizer corpus; fix quirks rationale
-534e656 htmlparse: capture DOCTYPE identifiers and classify document mode
-6b7a7c8 htmlparse: carry reprocess provenance as a dispatch parameter
-7b42fcf htmlparse: fix parse-error recording gaps found in review
-d61d038 htmlparse: record tree construction parse errors, split from tokenizer count
-b9e4a72 metrics: close header TOCTOU race, harden read(), assert full rows
-cd19f43 metrics: shared long-format writer for every pipeline stage
-15b5ce6 docs: add phase 2 css-to-styled-tree implementation plan
+113c1ba scripts: stop error_report.py importing a test_*.py module
+fa8bd23 scripts: add error_report.py for whole-corpus parse-error agreement
+28e067f cssparse: shorthand reset, table displays, border-width's two initials
+51b1301 cssparse: cascade, inheritance and computed values
+91e2bfc cssparse: fix round 1 for task I review
+fd15b3e cssparse: parse declaration values for nine properties (Task I)
+53d6cd4 cssparse: fix round 1 for task H review
+931e741 cssparse: right-to-left selector matching and rule indexing
+e3ba0a0 cssparse: make pseudo-class arguments position-independent
+95919ee cssparse: fix bare :where specificity, make selectors hashable
+3c2f5b1 cssparse: selector parsing and specificity
+48be545 cssparse: fix stale deviation cross-references after renumbering
+bce132e cssparse: fix at-rule discrimination test, mislabeled deviation, EOF pos
+be569df cssparse: generic rule and declaration grammar
+f3e3d9e cssparse: drop a spurious bad-url parse error, unprefix metrics
+64332a5 docs: add task K (committed parse-error agreement measurement) to phase 2 plan
+34d671f cssparse: hand-rolled CSS tokenizer; drop tinycss2
+9d821e1 dom: add cascade affordances - computed_style slot, class_list, element positions
+a99c742 tests: adopt the 855-case DOCTYPE tokenizer corpus; fix quirks rationale
+93f2754 htmlparse: capture DOCTYPE identifiers and classify document mode
+61b84d6 htmlparse: carry reprocess provenance as a dispatch parameter
+85b914e htmlparse: fix parse-error recording gaps found in review
+9d71ebb htmlparse: record tree construction parse errors, split from tokenizer count
+42a50f7 metrics: close header TOCTOU race, harden read(), assert full rows
+67a6c38 metrics: shared long-format writer for every pipeline stage
+1de1131 docs: add phase 2 css-to-styled-tree implementation plan
 
 ## Files changed
  CLAUDE.md                                          |   10 +-
@@ -115,7 +115,7 @@ index 0000000..4858f31
 +
 +**Tech Stack:** Python 3.13, pytest. No CSS libraries — see Global Constraints.
 +
-+**Spec:** This plan is its own spec. It derives from a review of the Phase 1 output at tag `phase-1` (commit `ddb3b3b`) and the scope agreed in conversation on 2026-08-26. Phase 1's plan and its Known Gaps section are at `docs/plans/2026-08-26-phase-1-html-to-dom.md`.
++**Spec:** This plan is its own spec. It derives from a review of the Phase 1 output at tag `phase-1` (commit `f252f96`) and the scope agreed in conversation on 2026-08-26. Phase 1's plan and its Known Gaps section are at `docs/plans/2026-08-26-phase-1-html-to-dom.md`.
 +
 +## Global Constraints
 +

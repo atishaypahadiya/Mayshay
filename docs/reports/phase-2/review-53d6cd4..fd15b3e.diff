@@ -1,7 +1,7 @@
-# Review package: 2b992c6..ec7eee9
+# Review package: 53d6cd4..fd15b3e
 
 ## Commits
-ec7eee9 cssparse: parse declaration values for nine properties (Task I)
+fd15b3e cssparse: parse declaration values for nine properties (Task I)
 
 ## Files changed
  src/mayshay/cssparse/values.py | 627 +++++++++++++++++++++++++++++++++++++++++

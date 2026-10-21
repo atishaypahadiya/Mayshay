@@ -1,7 +1,7 @@
-# Review package: bdabfd2..5f62e2b
+# Review package: 9d821e1..34d671f
 
 ## Commits
-5f62e2b cssparse: hand-rolled CSS tokenizer; drop tinycss2
+34d671f cssparse: hand-rolled CSS tokenizer; drop tinycss2
 
 ## Files changed
  CLAUDE.md                         |   3 +

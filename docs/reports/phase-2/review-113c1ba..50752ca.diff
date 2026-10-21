@@ -1,7 +1,7 @@
-# Review package: 99d03ba..fd56f43
+# Review package: 113c1ba..50752ca
 
 ## Commits
-fd56f43 review: apply the merge-blocking fix wave from the Phase 2 final review
+50752ca review: apply the merge-blocking fix wave from the Phase 2 final review
 
 ## Files changed
  .../plans/2026-08-26-phase-2-css-to-styled-tree.md |   6 +

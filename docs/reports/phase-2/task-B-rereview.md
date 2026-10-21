@@ -1,4 +1,4 @@
-# Task B — scoped re-review of fix round 1 (d61d038..7b42fcf)
+# Task B — scoped re-review of fix round 1 (9d71ebb..85b914e)
 
 Scope: the six open items and the fix diff only. All measurements below were
 re-derived independently with throwaway scripts in `/tmp` (read-only on the

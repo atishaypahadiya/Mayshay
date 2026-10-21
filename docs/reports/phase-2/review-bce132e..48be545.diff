@@ -1,7 +1,7 @@
-# Review package: 208c112..1ff2448
+# Review package: bce132e..48be545
 
 ## Commits
-1ff2448 cssparse: fix stale deviation cross-references after renumbering
+48be545 cssparse: fix stale deviation cross-references after renumbering
 
 ## Files changed
  src/mayshay/cssparse/parser.py | 14 +++++++++-----

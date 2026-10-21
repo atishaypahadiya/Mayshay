@@ -1,6 +1,6 @@
 # Task J review — cascade, inheritance, computed values
 
-**Diff:** `39ba6ae..d8ed477` (4 new files, 2073 insertions)
+**Diff:** `91e2bfc..51b1301` (4 new files, 2073 insertions)
 **Reviewer method:** full diff read in three passes; then targeted probes against the
 installed tree (read-only) and 7 independent bug injections through a `/tmp/jrev/shadow`
 `PYTHONPATH` shadow with a `__file__`-startswith guard. Shadow deleted; `git status`

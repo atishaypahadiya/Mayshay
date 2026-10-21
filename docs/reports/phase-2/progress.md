@@ -1,11 +1,11 @@
 # SDD ledger — plan: docs/plans/2026-08-26-phase-2-css-to-styled-tree.md
 
 Spec: the plan is self-declared as its own spec. It argues from the Phase 1
-output at tag `phase-1` (commit `ddb3b3b`) and from `CLAUDE.md`'s Rules
+output at tag `phase-1` (commit `f252f96`) and from `CLAUDE.md`'s Rules
 section, which is the project-wide authority.
 
-Branch: `phase-2-css-to-styled-tree`, created from `main` @ ddb3b3b.
-Plan committed at 15b5ce6.
+Branch: `phase-2-css-to-styled-tree`, created from `main` @ f252f96.
+Plan committed at 1de1131.
 Workspace: feature branch in place, NOT a worktree — same reasoning as Phase 1,
 and now with direct evidence: the venv's editable install pins `mayshay` to
 `/Users/atishaypahadiya/projects/mayshay/src`, and during Phase 1 a subagent
@@ -97,12 +97,12 @@ task ids only; the plan uses the letters the work was named by, so the briefs
 were extracted directly rather than renumbering the plan to suit the tool.
 
 Task A: dispatched (sonnet — one new module, complete code in the brief,
-  transcription plus testing). Base 15b5ce6. Dispatch carries: the venv
+  transcription plus testing). Base 1de1131. Dispatch carries: the venv
   warning; both design decisions as settled rather than open; the requirement
   that every test write to tmp_path, since a test touching the real
   data/metrics/stages.csv is the exact failure mode decision 2 exists to
   prevent.
-Task A: implementer DONE, commit cd19f43 (base 15b5ce6). 5060 passed, 55
+Task A: implementer DONE, commit 67a6c38 (base 1de1131). 5060 passed, 55
   xfailed (5051 + 9 new). Verified by me: `data/metrics/stages.csv` does NOT
   exist, so no test wrote outside tmp_path — the exact failure mode the
   drivers-call-the-writer decision exists to prevent; path gitignored via
@@ -135,7 +135,7 @@ Task A: fix round 1/5 dispatched. On the race I gave the exclusive-create
   analysis half is the actual harm, and the zero-length case keeps a narrow
   window open whatever shape the header write takes. Also folded in a plan
   correction: Task A Step 4 still says "Expected: 8 passed".
-Task A: fix round 1/5 → commit b9e4a72. 5063 passed, 55 xfailed (12 metrics
+Task A: fix round 1/5 → commit 42a50f7. 5063 passed, 55 xfailed (12 metrics
   tests, was 9). Race: exclusive-create (`open("x")`) adopted for the header,
   closing the file-absent TOCTOU; the narrower pre-existing-empty-file case is
   left open and documented, with `read()` hardened to discard any stray-header
@@ -146,7 +146,7 @@ Task A: fix round 1/5 → commit b9e4a72. 5063 passed, 55 xfailed (12 metrics
   which was the actual harm. Full row round-trips with correct `source` and a
   numeric `timestamp`; header still lands on a pre-existing empty file; no
   stages.csv; venv and git clean.
-Task A: scoped re-review dispatched (sonnet) over cd19f43..b9e4a72, directed at
+Task A: scoped re-review dispatched (sonnet) over 67a6c38..42a50f7, directed at
   three things I could not settle myself: whether the documentation scopes the
   race claim to exactly what the code guarantees (an overstated comment there
   is worse than the race, since it is what a future reader trusts); whether
@@ -154,7 +154,7 @@ Task A: scoped re-review dispatched (sonnet) over cd19f43..b9e4a72, directed at
   row, since `emit` does not validate the caller's run_id; and whether the new
   tests actually discriminate, or merely add one assertion per column — which
   would reproduce the original defect's shape at greater length.
-Task A: fix round 1/5 (3 addressed, 0 open; commits cd19f43..b9e4a72).
+Task A: fix round 1/5 (3 addressed, 0 open; commits 67a6c38..42a50f7).
   Re-reviewer confirmed the source/timestamp fix is a genuine whole-row dict
   comparison rather than one assertion per column — the original defect was the
   test SHAPE, and per-column assertions would have reproduced it at greater
@@ -171,10 +171,10 @@ Task A: minor (deferred): `read()`'s `run_id == "run_id"` heuristic
   literal string as run_id; `emit()` does not validate it and neither docstring
   mentions it. Low likelihood, undocumented — worth a one-line caveat at some
   later pass.
-Task A: complete (commits 15b5ce6..b9e4a72, review clean). 5063 passed,
+Task A: complete (commits 1de1131..42a50f7, review clean). 5063 passed,
   55 xfailed.
 
-Task B: implementer DONE, commit d61d038 (base b9e4a72). 5119 passed,
+Task B: implementer DONE, commit 9d71ebb (base 42a50f7). 5119 passed,
   59 xfailed (+8 unit, +48 corpus, +4 documented strict xfails); all 55
   pre-existing strict xfails still xfail. Conformance UNMOVED at 759/1592 and
   64/112, which this task required — it records errors, it must not alter tree
@@ -211,7 +211,7 @@ Task B: three disclosures routed to review rather than accepted on my say-so —
   Also routed: the diff touches tokenizer.py (+11 lines), which Task B's brief
   never asked for. In scope or not, an undisclosed tokenizer change inside a
   tree-builder task is worth knowing about.
-Task B: review dispatched (opus) over b9e4a72..d61d038.
+Task B: review dispatched (opus) over 42a50f7..9d71ebb.
 Task B: review returned spec ✅ (on everything the brief specified), quality
   needs fixes. 0 Critical, 3 Important, 4 Minor, 2 ⚠️.
   The reviewer validated rather than accepted: re-derived both corpus buckets
@@ -255,7 +255,7 @@ Task B: fix round 1/5 dispatched — the three Importants, the upgraded CSV
   returns to), and a measurement: whole-corpus agreement across all 57 files,
   which the reviewer estimated at 388/474 without measuring. tests1.dat alone
   is what let Important 2 hide, so the honest denominator matters.
-Task B: fix round 1/5 → commit 7b42fcf. All six items addressed. 5119 passed,
+Task B: fix round 1/5 → commit 85b914e. All six items addressed. 5119 passed,
   59 xfailed. Conformance UNMOVED at 759/1592, 64/112 — the in_body DOCTYPE
   guard did not shift it because that mode already ignored DOCTYPE tokens,
   only silently.
@@ -274,7 +274,7 @@ Task B: fix round 1/5 → commit 7b42fcf. All six items addressed. 5119 passed,
   head", the form element pointer, foreign content) rather than left as a
   number.
 
-Task B: scoped re-review dispatched (opus) over d61d038..7b42fcf. Directed
+Task B: scoped re-review dispatched (opus) over 9d71ebb..85b914e. Directed
   hardest at the implementer's own flagged concern, which I share: `<frameset>`
   needed two exemptions and that required new parser state,
   `_after_head_fallthrough` — a token-identity marker compared with `is`. THIS
@@ -320,7 +320,7 @@ leave it — I want the simplification, not a refactor for its own sake.
 — Cost if wrong: one round late in a task that is otherwise finished.
 
 Task B: fix round 2/5 dispatched (within the 5-round cap; no rule bent).
-Task B: fix round 2/5 → commit 6b7a7c8. Both items taken. 5119 passed,
+Task B: fix round 2/5 → commit 61b84d6. Both items taken. 5119 passed,
   59 xfailed; whole corpus still 404/474; conformance unmoved.
   Parameter shape adopted: `dispatch(token, from_mode=None)` at eight
   re-dispatch sites, read by `_frameset_in_body`. Instance state now has ZERO
@@ -374,13 +374,13 @@ directions — an implementer overstating the severity of a defect it fixed is
 as worth catching as a reviewer underrating one. It went the second way. Had I
 only asked "was the reviewer too lenient?", the overstatement would have stood.
 
-Task B: complete (commits b9e4a72..6b7a7c8, review clean). 5119 passed,
+Task B: complete (commits 42a50f7..61b84d6, review clean). 5119 passed,
   59 xfailed. Whole-corpus error agreement 404/474 (85%); tests1.dat 48/52.
   Conformance unmoved at 759/1592, 64/112 throughout — this task changed what
   the parser RECORDS, not what it builds, with one deliberate exception: the
   in_head DOCTYPE guard, which is a spec-correct tree improvement.
 
-Task C: implementer DONE, commit 534e656 (base 6b7a7c8). 5179 passed, 60
+Task C: implementer DONE, commit 93f2754 (base 61b84d6). 5179 passed, 60
   xfailed (+60 tests, +1 xfail, no existing ledger entry flipped).
   CONFORMANCE 759/1592 -> 780/1592, set difference +21 / -0 (18 doctype01,
   quirks01.dat:0, tests6.dat:4, tests6.dat:46). doctype01.dat 18/37 -> 36/37.
@@ -414,7 +414,7 @@ TWO ERRORS IN MY PLAN AND ONE FALSE CLAIM IN MY DISPATCH, all caught here:
       `is None`. Routed for a judgement on which we follow and whether any
       corpus case discriminates.
 
-Task C: review dispatched (opus) over 6b7a7c8..534e656. Also directed at the
+Task C: review dispatched (opus) over 61b84d6..93f2754. Also directed at the
   DocumentType serialization change — every conformance number flows through
   `serialize()`, so a wrong format moves the score for the wrong reason — and
   at verifying the +21 as a set difference rather than a total, since an
@@ -429,7 +429,7 @@ Task C: review returned spec ✅, quality APPROVED. 0 Critical, 0 Important,
   is equivalent to the spec's since the 4.01 strings are disjoint from every
   prefix in the 55-list.
   It validated +21 by running conformance_report.py against a `git archive`
-  extract of 6b7a7c8 in /tmp (repo untouched): 21 newly passing, 0 newly
+  extract of 61b84d6 in /tmp (repo untouched): 21 newly passing, 0 newly
   failing, exactly the reported ids — a set difference, not a total, so an
   equal-sized swap could not have produced it. Parse-error agreement
   re-measured on BOTH trees: 404/474 either side, disagreeing-id lists
@@ -466,7 +466,7 @@ task and defer all three Minors to the final review. Decided: do two now.
 Task C: fix round 1/5 dispatched (also folding in a one-line `Literal` for
   Document.mode and a docstring note that the iframe-srcdoc and
   cannot-change-mode gates are deliberately absent).
-Task C: fix round 1/5 → commit 2328f50. All three Minors done. Suite 5179 →
+Task C: fix round 1/5 → commit a99c742. All three Minors done. Suite 5179 →
   6024 passed, 60 → 72 xfailed. Conformance unmoved at 780/1592, 64/112 with a
   byte-identical failing set; parse-error agreement unmoved at 404/474, also
   byte-identical.
@@ -490,7 +490,7 @@ Task C: fix round 1/5 → commit 2328f50. All three Minors done. Suite 5179 →
   produced a better rationale than either of us had: the spec's note forbids
   "missing" from widening to "missing or empty", which is WHY those two clauses
   say "or the empty string" explicitly and why the code tests truthiness.
-Task C: scoped re-review dispatched (sonnet) over 534e656..2328f50, directed at
+Task C: scoped re-review dispatched (sonnet) over 93f2754..a99c742, directed at
   the count reconciliation (an inflated denominator would flatter the pass
   rate) and hardest at whether the selection rule can hide our own failures —
   this project was already bitten by an unsound selection premise in Task B,
@@ -506,14 +506,14 @@ Task C: re-review — all three ADDRESSED, no new breakage. The re-reviewer
   identical 855 today, so the expected-output rule cannot currently be hiding
   our own failures. The 6-case `<!d` hole confirmed exact; the 12 xfail keys
   all unique with 0 stale.
-Task C: complete (commits 6b7a7c8..2328f50, review clean). 6024 passed,
+Task C: complete (commits 61b84d6..a99c742, review clean). 6024 passed,
   72 xfailed. Conformance 780/1592 (up from 759 at task start), error
   agreement 404/474.
 
 Phase 2 cleanup block: A, B, C done. D (DOM cascade affordances) is the last
 before the CSS chain E-J begins.
 
-Task D: implementer DONE, commit bdabfd2 (base 2328f50). 6033 passed,
+Task D: implementer DONE, commit 9d821e1 (base a99c742). 6033 passed,
   72 xfailed. Conformance unmoved 780/1592, 64/112; error agreement unmoved
   404/474.
 Task D: review returned spec ✅, quality APPROVED. 0 Critical, 0 Important,
@@ -531,7 +531,7 @@ Task D: minor (deferred): `annotate_positions`'s docstring lacks the
   value — so this one goes to the final review rather than a fix round. I have
   ruled several Minors INTO fix rounds this phase; this is what the other side
   of that judgement looks like.
-Task D: complete (commits 2328f50..bdabfd2, review clean).
+Task D: complete (commits a99c742..9d821e1, review clean).
 
 Ruling (new Task K, taking the reviewer's scoping call but not its filing): The
 reviewer judged the missing whole-corpus parse-error script a standalone
@@ -550,7 +550,7 @@ no committed tool stops being checked the first time someone is in a hurry.
 Phase 2 cleanup block COMPLETE: A, B, C, D. Conformance 759 → 780 across it;
 suite 5051 → 6033 passed. The CSS chain E-J begins now.
 
-Task E: implementer DONE, commit 5f62e2b (base bdabfd2). 6076 passed,
+Task E: implementer DONE, commit 34d671f (base 9d821e1). 6076 passed,
   72 xfailed (+42 cssparse, +1 environment guard). Conformance unmoved.
   `tinycss2` gone from requirements.txt, absent from src/ except as docstring
   statements of the rule, and — better than asked — ENFORCED by
@@ -561,7 +561,7 @@ Task E: implementer DONE, commit 5f62e2b (base bdabfd2). 6076 passed,
   is about what `src/` imports, not what happens to be present.
   It also spotted an uncommitted `docs/plans/...` modification that was MINE
   (the Task K row) and left it alone rather than folding it into a cssparse
-  commit. Committed separately at 81bc45f.
+  commit. Committed separately at 64332a5.
 
 FOUR MORE ERRORS IN MY BRIEF, all caught and argued:
   1. `\000026 x` is `Ident("&x")`, not `"&"` — the six-digit escape consumes
@@ -576,7 +576,7 @@ FOUR MORE ERRORS IN MY BRIEF, all caught and argued:
      implementation produces `BadUrl` plus a recorded error, which is
      spec-correct. Verified.
 
-Task E: review dispatched (opus) over bdabfd2..5f62e2b. Two things routed
+Task E: review dispatched (opus) over 9d821e1..34d671f. Two things routed
   specifically: (a) `tokenizer.py:65` documents a place where a spec-correct
   implementation DISAGREES with tinycss2 — asked which is actually right, since
   a wrong call there is invisible today and becomes load-bearing the moment the
@@ -629,7 +629,7 @@ Task E: fix round 1/5 dispatched — the Important plus five cheap items bundled
   correct deviation 7's "the one place" count, increment `css_escapes` on the
   U+FFFD paths, and add the missing `isinstance(..., Dimension)` assertion my
   brief omitted.
-Task E: fix round 1/5 → commit 39f772b. All six items addressed. 6080 passed,
+Task E: fix round 1/5 → commit f3e3d9e. All six items addressed. 6080 passed,
   72 xfailed; conformance unmoved.
   On the Important, the implementer concluded it was a BUG, not an undocumented
   deviation, and removed the call. Its reading: §4.3.6's parenthetical
@@ -651,7 +651,7 @@ Task E: fix round 1/5 → commit 39f772b. All six items addressed. 6080 passed,
   since a generator body does not run until iteration and a guard inside would
   raise too late. Raises RuntimeError with a message saying what to do instead.
   Metric keys unprefixed: `parse_errors` now matches htmlparse exactly.
-Task E: scoped re-review dispatched (sonnet) over 81bc45f..39f772b (excluding
+Task E: scoped re-review dispatched (sonnet) over 64332a5..f3e3d9e (excluding
   my intervening docs commit). Directed at an independent reading of §4.3.6 —
   if the implementer is wrong we have just deleted a real error signal AND
   Task K's baseline would be built on the deletion — and at whether making
@@ -672,7 +672,7 @@ Task E: re-review — all six ADDRESSED, no Critical/Important new breakage.
   `_error` call is restored. Metric rename has no blast radius.
 Task E: minor (deferred): tokenizer.py:56's docstring still calls `tokenize()`
   "a generator", stale after the `tokenize()`/`_tokenize()` split. Cosmetic.
-Task E: complete (commits bdabfd2..39f772b, review clean). 6080 passed,
+Task E: complete (commits 9d821e1..f3e3d9e, review clean). 6080 passed,
   72 xfailed. The CSS tokenizer is in: 835 lines, all of §4.3 plus §3.3,
   46 tests, tinycss2 removed from requirements and the ban enforced by test.
 
@@ -681,7 +681,7 @@ The current spec has no <substring-match-token>/<column-token> family — that i
 2014-CR behaviour tinycss2 never updated — so the attribute-selector parser
 must join them itself.
 
-Task F: implementer DONE, commit c24f2b4 (base 39f772b). 6107 passed,
+Task F: implementer DONE, commit be569df (base f3e3d9e). 6107 passed,
   72 xfailed (+27 parser tests). Conformance unmoved. Env clean.
   Accounting note, not a discrepancy: its report says "6179 total" counting
   xfails; I count passes. 6107 + 72 = 6179. It also reports its sandbox
@@ -701,7 +701,7 @@ Task F: implementer DONE, commit c24f2b4 (base 39f772b). 6107 passed,
   (chose consume-and-discard). Both routed to review for a spec judgement —
   the flat list loses bracket structure, and Tasks G and I are the ones who
   would discover that mattered.
-Task F: review dispatched (sonnet) over 39f772b..c24f2b4, directed at those two
+Task F: review dispatched (sonnet) over f3e3d9e..be569df, directed at those two
   decisions, at whether the 17 new tests actually discriminate (a test added to
   close a discrimination gap that itself fails to discriminate is the worst
   outcome available), and at the recovery paths the tests may not reach — an
@@ -748,7 +748,7 @@ Task F: fix round 1/5 dispatched — the non-discriminating test (with an
   brace-stripped block (positions are a convention this project has been
   careful about), and `_strip_important`'s docstring underselling that it also
   does the spec's unconditional trailing-whitespace strip.
-Task F: fix round 1/5 → commit 208c112. All four items done. 6107 passed,
+Task F: fix round 1/5 → commit bce132e. All four items done. 6107 passed,
   72 xfailed (unchanged — the fix replaced a test's INPUT rather than adding
   tests). Conformance unmoved; env clean.
   The discrimination was CONFIRMED BY INJECTION, not assumed: a scratch shadow
@@ -763,7 +763,7 @@ Task F: fix round 1/5 → commit 208c112. All four items done. 6107 passed,
   is a better artifact than the assertion alone, because the next person to
   edit the input can see what it is for.
   Deviation 2 restated as "Note, not a further deviation".
-Task F: scoped re-review dispatched (sonnet) over c24f2b4..208c112. Asked for
+Task F: scoped re-review dispatched (sonnet) over be569df..bce132e. Asked for
   an INDEPENDENT reproduction of the injection — this is the second attempt at
   a discriminating test, the first looked correct and was not, and the whole
   finding is that assertion is not evidence here. Also asked whether the
@@ -782,7 +782,7 @@ Task F: re-review — items 1-3 ADDRESSED, item 4 NOT clean.
   Item 4 is NEW BREAKAGE FROM THE FIX DIFF ITSELF: the renumbering that
   correctly demoted deviation 2 to a note was not propagated to three inline
   cross-references. Verified by me, including that all three were correct at
-  c24f2b4 before this round: parser.py:230 "see deviation 2" now dangles (what
+  be569df before this round: parser.py:230 "see deviation 2" now dangles (what
   it describes is the Note under deviation 1); :388 "see deviation 3" should be
   2; :492 "see deviation 6" when the list no longer has six entries. :253's
   "see deviation 1" is still right.
@@ -798,7 +798,7 @@ Task F: fix round 2/5 dispatched (within cap). Asked it to grep for cross-
   references I did NOT name rather than fixing only the three, and to say so if
   a reference would be more robust as a phrase than a number — renumbering has
   now broken references once and will again.
-Task F: fix round 2/5 → commit 1ff2448. All three stale references fixed; grep
+Task F: fix round 2/5 → commit 48be545. All three stale references fixed; grep
   found exactly six "deviation" mentions and no fourth stale one. Each fixed
   reference now carries the NUMBER PLUS a short parenthetical description —
   answering my "phrase or number?" question with "both", so a future
@@ -806,7 +806,7 @@ Task F: fix round 2/5 → commit 1ff2448. All three stale references fixed; grep
   one. Re-reviewer confirmed by INSPECTION (each reference resolves to the
   entry its surrounding code actually discusses) rather than by grep, which is
   the check the original defect would have passed.
-Task F: complete (commits 39f772b..1ff2448, review clean). 6107 passed,
+Task F: complete (commits f3e3d9e..48be545, review clean). 6107 passed,
   72 xfailed. The CSS generic grammar is in: §5's rule and declaration
   algorithms with error recovery, 27 tests, three documented deviations.
 
@@ -814,7 +814,7 @@ Accounting note for the record: several agents report suite totals INCLUDING
 xfails (6179) where I count passes (6107). 6107 + 72 = 6179. Same reality; no
 discrepancy has ever been chased on this.
 
-Task G: implementer DONE, commit f647da8 (base 1ff2448). 6189 passed,
+Task G: implementer DONE, commit 3c2f5b1 (base 48be545). 6189 passed,
   72 xfailed (+82 selector tests: the brief's 7 verbatim, 65 added).
   Conformance unmoved; env clean.
   FIRST BRIEF OF THIS PHASE WITH NO ERRORS IN IT. The implementer checked all
@@ -843,7 +843,7 @@ Also routed: that `Compound`/`Complex` carry `pos` AND it participates in
 `__eq__`, so two structurally identical selectors from different source
 positions compare unequal — plausible but surprising, and Task H will be
 comparing selectors.
-Task G: review dispatched (opus) over 1ff2448..f647da8.
+Task G: review dispatched (opus) over 48be545..3c2f5b1.
 Task G: review returned spec ✅ compliant, quality "approved with fixes".
   0 Critical, 3 Important, 6 Minor, 2 ⚠️.
 
@@ -882,7 +882,7 @@ Task G: fix round 1/5 dispatched. Also asked it to decide explicitly whether
   `pos` belongs in `__eq__` — it currently does, so structurally identical
   selectors from different positions compare unequal, and Task H is about to
   compare and key on these.
-Task G: fix round 1/5 → commit 717f839. All six items addressed. 6222 passed,
+Task G: fix round 1/5 → commit 95919ee. All six items addressed. 6222 passed,
   72 xfailed (+18 selector, +15 corpus tests). Conformance unmoved; env clean.
   `pos` EXCLUDED from `__eq__` via `field(compare=False)`, with `__hash__`
   defined in each class body. The implementer's reasoning, which I endorse and
@@ -904,7 +904,7 @@ Task G: fix round 1/5 → commit 717f839. All six items addressed. 6222 passed,
   (`test_tree_corpus_is_not_empty`) applied without being asked.
   It also accepted the adjacency correction plainly: "my report had claimed
   rejecting `[a~/**/=v]` was spec-correct, and it is not."
-Task G: scoped re-review dispatched (sonnet) over f647da8..717f839, directed at
+Task G: scoped re-review dispatched (sonnet) over 3c2f5b1..95919ee, directed at
   the blast radius of the `pos`/`__hash__` change (equal objects must not hash
   apart; simples and compounds must not disagree about whether pos counts), at
   whether every deviation cross-reference still resolves after appending
@@ -939,7 +939,7 @@ Task G: fix round 2/5 dispatched (within cap). Offered three approaches —
   the code does not provide; and add tests that actually reach the case,
   including a dict-insertion assertion, because the existing tests pass against
   the bug and so are not evidence.
-Task G: fix round 2/5 → commit 69c095f. 6250 passed, 72 xfailed (+28).
+Task G: fix round 2/5 → commit e3ba0a0. 6250 passed, 72 xfailed (+28).
   Conformance unmoved; env clean.
   Took option 2 (`PseudoClassSelector` with explicit `__eq__`/`__hash__` via a
   `_token_key` built from `dataclasses.fields` minus `pos`), and reframed my
@@ -966,7 +966,7 @@ Task G: fix round 2/5 → commit 69c095f. 6250 passed, 72 xfailed (+28).
   OVERcorrect is a step this project had not taken before.
   Verified by me: all five forms pos-independent, dict len 1 (was 2),
   `:nth-child(1)` vs `(2)` differ in both equality and hash.
-Task G: round-2 scoped re-review dispatched (sonnet) over 717f839..69c095f.
+Task G: round-2 scoped re-review dispatched (sonnet) over 95919ee..e3ba0a0.
 Task G: round-2 re-review — ADDRESSED, no new breakage. `_token_key` verified
   general across ALL 25 token types (the report said fifteen — stale count,
   cosmetic), including Function/LParen/RParen which do appear in raw arguments,
@@ -979,13 +979,13 @@ Task G: round-2 re-review — ADDRESSED, no new breakage. `_token_key` verified
   token-level guarantee and its stale collision caveat is gone.
 Task G: minor (deferred): the report's "fifteen token types" is a stale count;
   there are 25. Cosmetic, in a gitignored report.
-Task G: complete (commits 1ff2448..69c095f, review clean). 6250 passed,
+Task G: complete (commits 48be545..e3ba0a0, review clean). 6250 passed,
   72 xfailed. Selectors and specificity are in: 768 lines, ~118 tests, a
   committed corpus sweep over 193 real rules, and ten documented deviations.
 
 Phase 2 status: A B C D E F G done. H, I, J remain, plus K.
 
-Task H: implementer DONE, commit a05a103 (base 69c095f). 6340 passed,
+Task H: implementer DONE, commit 931e741 (base e3ba0a0). 6340 passed,
   72 xfailed (+90: 86 unit, 4 corpus). Conformance unmoved; env clean.
   RuleIndex catch-all: keyless rightmost compounds (`*`, `[hidden]`, `:hover`,
   `:is(.a,.b)`) go to a `_catch_all` bucket seeded FIRST in every
@@ -1021,7 +1021,7 @@ both-directions technique adopted and scaled up without being asked.
 Honest disclosure worth recording: the corpus test CANNOT guard the catch-all
 bucket — not one of the corpus's 279 selectors lands in it — and that limit is
 written into the test file's docstring rather than left implicit.
-Task H: review dispatched (opus) over 69c095f..a05a103. Asked for the ~46-attr
+Task H: review dispatched (opus) over e3ba0a0..931e741. Asked for the ~46-attr
   list to be checked against the spec for completeness AND false members (same
   risk class as the quirks table: a missing entry silently mismatches on real
   pages), for the An+B grammar to be checked against §9.2, and — given the
@@ -1057,7 +1057,7 @@ Task H: fix round 1/5 dispatched — the `break` test, an undisclosed fifth An+B
   (pointed: this is the one task whose purpose is avoiding per-element work),
   and pinning more of the 46-entry list including one NON-member so the test
   discriminates membership rather than just confirming the mechanism fires.
-Task H: fix round 1/5 → commit 2b992c6. 6366 passed, 72 xfailed (one test
+Task H: fix round 1/5 → commit 53d6cd4. 6366 passed, 72 xfailed (one test
   deleted, 27 added). Conformance unmoved; env clean.
   TWO DELIBERATE DIVERGENCES FROM MY INSTRUCTIONS, both better than what I
   asked for:
@@ -1086,7 +1086,7 @@ Task H: fix round 1/5 → commit 2b992c6. 6366 passed, 72 xfailed (one test
   is the pattern being internalised rather than merely obeyed.
   Verified by me: `+-n`/`+-n+2` never match, `2n + 1` correct, and the 46-list
   discriminates in both directions.
-Task H: scoped re-review dispatched (sonnet) over a05a103..2b992c6. Asked it to
+Task H: scoped re-review dispatched (sonnet) over 931e741..53d6cd4. Asked it to
   verify the SUBSUMPTION claim directly — deleting a test because another
   covers it is exactly the reasoning that leaves a gap when wrong — and to
   check the bug-versus-choice distinction holds for ALL FIVE leniencies, since
@@ -1121,14 +1121,14 @@ Task H: minor (DEFERRED, deliberately): `matching.py:83-84` claims `2n+1`,
   pattern for the final review rather than fixing it here — I have ruled
   Minors into fix rounds liberally this phase and the discipline is worth
   exercising in the other direction on an otherwise-approved task.
-Task H: complete (commits 69c095f..2b992c6, review clean). 6366 passed,
+Task H: complete (commits e3ba0a0..53d6cd4, review clean). 6366 passed,
   72 xfailed. Matching is in: 709 lines, ~113 tests, a rule index with a
   catch-all bucket, HTML's 46-attribute case-insensitivity list verified exact,
   and an An+B micro-grammar that never appeared in my brief.
 
 Phase 2 status: A B C D E F G H done. I, J remain, plus K.
 
-Task I: implementer DONE, commit ec7eee9 (base 2b992c6). 6391 passed,
+Task I: implementer DONE, commit fd15b3e (base 53d6cd4). 6391 passed,
   72 xfailed (+25). Conformance unmoved; env clean.
   THE CRITICAL REQUIREMENT IS MET: `50%` → `Percent(50)`, `auto` → the `AUTO`
   singleton checked by identity, both returned untouched. Verified by me. This
@@ -1153,7 +1153,7 @@ TWO MORE NON-DISCRIMINATING TESTS IN MY BRIEF, both proven by injection:
   brief. Inferred list-of-1-4 for margin/padding, dict-of-3 for border — two
   different shapes for two shorthand families, routed to review for a judgement
   on whether that will cause trouble when a third shorthand arrives.
-Task I: review dispatched (sonnet) over 2b992c6..ec7eee9. Directed at the
+Task I: review dispatched (sonnet) over 53d6cd4..fd15b3e. Directed at the
   COLOUR KEYWORD TABLE as the headline — same risk class as the quirks table
   and the 46-attribute list, one of which was wrong — asking for the spec count
   versus implemented and spot-checks beyond the famous names. Also asked
@@ -1201,7 +1201,7 @@ Task I: fix round 1/5 dispatched — the full ~148-colour table with a
   `test_display_keywords`, and direct tests for padding-percent,
   font-size-percent and currentcolor — all three "correct by inspection", which
   is precisely what the last four vacuous tests also were.
-Task I: fix round 1/5 → commit 39ba6ae. 6395 passed, 72 xfailed. Conformance
+Task I: fix round 1/5 → commit 91e2bfc. 6395 passed, 72 xfailed. Conformance
   unmoved; env clean.
   COLOUR TABLE: full 148 entries transcribed (147 CSS3 + rebeccapurple),
   replacing 22. Verified by me: exactly 148, and every previously-dropping name
@@ -1216,7 +1216,7 @@ Task I: fix round 1/5 → commit 39ba6ae. 6395 passed, 72 xfailed. Conformance
   Both fixes carry docstrings explaining WHY they changed and citing the defect
   they replaced, so the next reader sees the reasoning rather than just the
   result.
-Task I: scoped re-review dispatched (sonnet) over ec7eee9..39ba6ae. Directed at
+Task I: scoped re-review dispatched (sonnet) over fd15b3e..91e2bfc. Directed at
   the one thing sampling cannot settle: I checked 8 entries and the implementer
   checked 10, leaving ~130 unverified, and a transcribed table can have the
   right LENGTH and wrong CONTENTS — a single transposed hex digit is invisible
@@ -1243,7 +1243,7 @@ Task I: minor (deferred): `expand_shorthand("margin"/"padding", parsed)` now
   raises a bare KeyError rather than a descriptive ValueError if called
   directly with a partial dict. Unreachable via `parse_declaration_value` and
   no internal caller triggers it. Deferred, consistent with the Task H call.
-Task I: complete (commits 2b992c6..39ba6ae, review clean). 6395 passed,
+Task I: complete (commits 53d6cd4..91e2bfc, review clean). 6395 passed,
   72 xfailed. Property values are in: 627 lines, the full 148-colour table
   verified against two oracles, shorthand expansion with a uniform shape, and
   the computed-vs-used guarantee holding across every percentage/auto-legal
@@ -1251,7 +1251,7 @@ Task I: complete (commits 2b992c6..39ba6ae, review clean). 6395 passed,
 
 Phase 2 status: A B C D E F G H I done. J remains (the payload), plus K.
 
-Task J: implementer DONE, commit d8ed477 (base 39ba6ae). 6468 passed,
+Task J: implementer DONE, commit 51b1301 (base 91e2bfc). 6468 passed,
   72 xfailed (+73). Conformance unmoved; env clean.
   THE DEFINING ASYMMETRY IS SOLVED STRUCTURALLY, not carefully:
   `_compute_font_size(…, parent_font_px=…)` has NO own-font-size parameter and
@@ -1280,7 +1280,7 @@ Task J: implementer DONE, commit d8ed477 (base 39ba6ae). 6468 passed,
   That is at least ten such tests I have written across this plan.
   Injection: 65 bugs, 65 caught, including over-corrections — up from Task H's
   35 and the largest set in the project.
-Task J: review dispatched (opus) over 39ba6ae..d8ed477. Directed hardest at
+Task J: review dispatched (opus) over 91e2bfc..51b1301. Directed hardest at
   whether the `em` separation is AIRTIGHT — any path, including inherited
   values, border-width, or a shorthand's expanded longhands, where a length
   could resolve against the wrong base or resolve twice — since that is the
@@ -1330,7 +1330,7 @@ Task J: fix round 1/5 dispatched — the three Importants plus three Minors with
   correctness implications (`_computed_value` unwrapping ANY Keyword with no
   allow-list; a test asserting only private rank constants; `root_font_px`
   updating on any orphan element). Four cosmetic Minors explicitly deferred.
-Task J: fix round 1/5 → commit d9aa4ef. All six addressed. 6483 passed,
+Task J: fix round 1/5 → commit 28e067f. All six addressed. 6483 passed,
   72 xfailed (+15). Conformance unmoved; env clean.
   SHORTHAND RESET DONE WITH THE RIGHT SEMANTICS: it participates in the cascade
   at the shorthand's OWN rank, specificity and source order rather than blindly
@@ -1355,7 +1355,7 @@ Task J: fix round 1/5 → commit d9aa4ef. All six addressed. 6483 passed,
   replaced and then caught; one is documented as SEMANTICALLY DEAD rather than
   counted as coverage. Reporting survivors and refusing to pad the count is the
   behaviour this whole review discipline is trying to produce.
-Task J: scoped re-review dispatched (sonnet) over d8ed477..d9aa4ef. Directed at
+Task J: scoped re-review dispatched (sonnet) over 51b1301..28e067f. Directed at
   the shorthand reset's rank in orderings I did NOT test — `!important`
   shorthand vs normal longhand and the reverse, inline `style=` vs author, UA
   vs author, and same-specificity ordering — since getting the simple case
@@ -1380,7 +1380,7 @@ Task J: minor (deferred): the `!important` shorthand-reset axis is CORRECT but
   UNCOVERED by the suite — verified once by a reviewer, not pinned by a test.
   Behaviour that is right by inspection and untested is exactly what this
   project has repeatedly found to rot; flagging for the final review.
-Task J: complete (commits 39ba6ae..d9aa4ef, review clean). 6483 passed,
+Task J: complete (commits 91e2bfc..28e067f, review clean). 6483 passed,
   72 xfailed. The cascade is in: 878 lines, a UA stylesheet, 88 cascade tests,
   85 injections across two rounds, and computed styles on every node of a real
   page.
@@ -1395,7 +1395,7 @@ project's plan-is-the-spec discipline, recorded here rather than glossed —
 proportionate for a ~100-line script mirroring one that already exists, but
 worth knowing if K's scope is ever disputed.
 
-Task K: implementer DONE, commit 0b55bde (base d9aa4ef). Suite unchanged at
+Task K: implementer DONE, commit fa8bd23 (base 28e067f). Suite unchanged at
   6483 passed, 72 xfailed; conformance unmoved; env clean.
   `scripts/error_report.py` reproduces 404/474 EXACTLY, with the two divergence
   counts kept separate as Task B required: 49 emitting a code the corpus does
@@ -1414,7 +1414,7 @@ Task K: implementer DONE, commit 0b55bde (base d9aa4ef). Suite unchanged at
   This closes a gap open since Task B: three tasks reproduced 404/474 in
   throwaway /tmp scripts, and Phase 1 hit the identical situation, which is why
   scripts/conformance_report.py exists at all.
-Task K: review dispatched (sonnet) over d9aa4ef..0b55bde. Flagged one design
+Task K: review dispatched (sonnet) over 28e067f..fa8bd23. Flagged one design
   point I noticed myself: `scripts/` now imports from `tests/`
   (error_report.py:45), which avoids duplication but inverts the usual
   dependency direction and couples a script to a test module's import side
@@ -1449,7 +1449,7 @@ Task K: fix round 1/5 dispatched — move `curated_codes`/`_strip_position` into
   a pytest-free `tests/support/parse_errors.py` imported by both, keeping the
   single-definition property while dropping the coupling; add the missing
   `--files` flag; document the crash-handling convention.
-Task K: fix round 1/5 → commit 99d03ba. Suite unchanged at 6483 passed.
+Task K: fix round 1/5 → commit 113c1ba. Suite unchanged at 6483 passed.
   `curated_codes`/`strip_position` moved into a pytest-free
   `tests/support/parse_errors.py`; script still reports 404/474 (49 extra,
   27 missing); `--diff` re-verified by a FRESH injection (392/474, exit 1,
@@ -1476,11 +1476,11 @@ Task K: re-review — all three ADDRESSED. Sole definitions of `curated_codes`
   drift this task existed to prevent. Module imports with pytest poisoned.
   `--files` matches conformance_report.py in argument shape, defaults and
   unpack semantics (`--files tests1.dat` → 48/52).
-Task K: complete (commits d9aa4ef..99d03ba, review clean).
+Task K: complete (commits 28e067f..113c1ba, review clean).
 
 ALL ELEVEN TASKS COMPLETE. Final whole-branch review next.
 
-FINAL WHOLE-BRANCH REVIEW (opus) over ddb3b3b..99d03ba, 26 commits.
+FINAL WHOLE-BRANCH REVIEW (opus) over f252f96..113c1ba, 26 commits.
 Verdict: MERGE WITH FIXES. 0 Critical, 4 Important, 13 Minor.
 Validated under execution: the rule index's superset contract held clean over
 363,000 real element×rule pairs; the two-em-paths design and computed-vs-used
@@ -1511,7 +1511,7 @@ check, not the sentence" — became a standing requirement in the fix wave:
 execute every deviation claim you touch; label anything unexecuted as
 unverified.
 
-Final fix wave → commit fd56f43. 6499 passed (+16); ALL FOUR BASELINES
+Final fix wave → commit 50752ca. 6499 passed (+16); ALL FOUR BASELINES
 UNCHANGED. Verified by me: border/BORDER/BoRdEr all reset to 3px;
 declarations_applied 13 across color/width/font-size; ASCII `blocK` accepted
 while `blocK` REJECTED.
@@ -1537,5 +1537,5 @@ typed an ASCII "K" rather than U+212A, and read the correct acceptance of
 accepted, Kelvin rejected, fix correct. Eight instances of this family on this
 branch now, one of them mine, one inside the fix for the family.
 
-Final fix wave re-review dispatched (opus) over 99d03ba..fd56f43 — the last
+Final fix wave re-review dispatched (opus) over 113c1ba..50752ca — the last
 gate.

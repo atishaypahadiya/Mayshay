@@ -1,4 +1,4 @@
-# Task F fix round re-review (c24f2b4..208c112)
+# Task F fix round re-review (be569df..bce132e)
 
 ### Finding Verdicts
 
@@ -45,7 +45,7 @@ propagated to its own inline cross-references, leaving three stale/dangling
   deviations remain — this points past the end of the list.
 
 Confirmed pre-fix these three numbers were correct (`git show
-c24f2b4:src/mayshay/cssparse/parser.py` had matching deviation 2/3/6 content
+be569df:src/mayshay/cssparse/parser.py` had matching deviation 2/3/6 content
 at the old line numbers); the fix diff touched the numbered list but missed
 these three call sites. This is exactly the failure mode item 4 (deviation
 list accuracy) was scoped to check — the list itself now reads correctly top

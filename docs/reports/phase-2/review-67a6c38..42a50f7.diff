@@ -1,7 +1,7 @@
-# Review package: cd19f43..b9e4a72
+# Review package: 67a6c38..42a50f7
 
 ## Commits
-b9e4a72 metrics: close header TOCTOU race, harden read(), assert full rows
+42a50f7 metrics: close header TOCTOU race, harden read(), assert full rows
 
 ## Files changed
  .../plans/2026-08-26-phase-2-css-to-styled-tree.md |  2 +-

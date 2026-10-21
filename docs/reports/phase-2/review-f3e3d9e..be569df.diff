@@ -1,7 +1,7 @@
-# Review package: 39f772b..c24f2b4
+# Review package: f3e3d9e..be569df
 
 ## Commits
-c24f2b4 cssparse: generic rule and declaration grammar
+be569df cssparse: generic rule and declaration grammar
 
 ## Files changed
  src/mayshay/cssparse/__init__.py |  19 +-

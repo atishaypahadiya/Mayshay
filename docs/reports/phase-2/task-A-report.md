@@ -37,7 +37,7 @@
 
 - **Step 6** — Committed `src/mayshay/metrics.py`, `tests/test_metrics.py`,
   and `CLAUDE.md` together.
-  Commit: `cd19f4369696e6e33db05d48f9cd97247dd207f8`
+  Commit: `67a6c38922fbfeca04441d97a90f817ccadd3103`
   Message: `metrics: shared long-format writer for every pipeline stage`
 
 ## Exact test commands and full output
@@ -140,7 +140,7 @@ were created).
 
 Coordinator review approved spec and quality, and raised three Important
 findings plus one plan-doc correction. All four addressed in commit
-`b9e4a72829f98a65329a26440b1aeeaf5aa1329a`.
+`42a50f7a8e8e7bb5021896bcba73763564c12591`.
 
 **Important 1 — no test asserted `source`'s value.** Added
 `test_row_matches_expected_dict_exactly`, which does a full-row round-trip:
@@ -217,5 +217,5 @@ $ .venv/bin/pytest
 - `git status --porcelain` was clean immediately before this commit (only
   the three intended files were modified) and clean again after it.
 
-Commit: `b9e4a72829f98a65329a26440b1aeeaf5aa1329a`
+Commit: `42a50f7a8e8e7bb5021896bcba73763564c12591`
 Message: `metrics: close header TOCTOU race, harden read(), assert full rows`

@@ -1,7 +1,7 @@
-# Review package: ec7eee9..39ba6ae
+# Review package: fd15b3e..91e2bfc
 
 ## Commits
-39ba6ae cssparse: fix round 1 for task I review
+91e2bfc cssparse: fix round 1 for task I review
 
 ## Files changed
  src/mayshay/cssparse/values.py | 227 +++++++++++++++++++++++++++++------------

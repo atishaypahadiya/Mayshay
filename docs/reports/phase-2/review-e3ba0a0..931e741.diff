@@ -1,7 +1,7 @@
-# Review package: 69c095f..a05a103
+# Review package: e3ba0a0..931e741
 
 ## Commits
-a05a103 cssparse: right-to-left selector matching and rule indexing
+931e741 cssparse: right-to-left selector matching and rule indexing
 
 ## Files changed
  src/mayshay/cssparse/matching.py       | 709 +++++++++++++++++++++++++++++++++

@@ -234,7 +234,7 @@ attention.
 
 ## Fix round (post-review)
 
-Commit `208c112`. Four items from the review, all addressed:
+Commit `bce132e`. Four items from the review, all addressed:
 
 1. **Non-discriminating test.** `test_unknown_at_rule_is_fully_consumed_not_
    skipped` was named for the "any semicolon ends the at-rule" bug but its
@@ -298,7 +298,7 @@ $ cat .venv/lib/python3.13/site-packages/__editable__.mayshay-0.1.0.pth
 
 ## Fix round 2 (post-re-review)
 
-Commit `1ff2448`. The prior fix round's renumbering (deviation 2 removed,
+Commit `48be545`. The prior fix round's renumbering (deviation 2 removed,
 3-6 shifted to 2-5) was not propagated to inline cross-references. Grepped
 the whole file for every mention of "deviation" and checked each resolved
 to the entry it names:

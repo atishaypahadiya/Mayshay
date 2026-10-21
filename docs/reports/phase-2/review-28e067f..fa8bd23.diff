@@ -1,7 +1,7 @@
-# Review package: d9aa4ef..0b55bde
+# Review package: 28e067f..fa8bd23
 
 ## Commits
-0b55bde scripts: add error_report.py for whole-corpus parse-error agreement
+fa8bd23 scripts: add error_report.py for whole-corpus parse-error agreement
 
 ## Files changed
  scripts/error_report.py              | 137 +++++++++++++++++++++++++++++++++++

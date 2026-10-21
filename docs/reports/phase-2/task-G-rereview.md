@@ -1,4 +1,4 @@
-# Task G fix round re-review (f647da8..717f839)
+# Task G fix round re-review (3c2f5b1..95919ee)
 
 ### Finding Verdicts
 
@@ -85,7 +85,7 @@ Every `deviation N` reference resolves and none renumbered: 1, 2, 3, 7, 8, 9
 all still point to unchanged entries; 10 is appended after 9, not inserted.
 `grep -n "deviation [0-9]"` across `selectors.py` + both test files shows no
 reference to a number that shifted. Confirmed no renumbering repeat of
-commit 1ff2448's defect.
+commit 48be545's defect.
 
 ### Empty-corpus guard (item 3)
 

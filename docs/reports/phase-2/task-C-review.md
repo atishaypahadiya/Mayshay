@@ -1,6 +1,6 @@
 # Task C review: DOCTYPE identifiers and quirks mode
 
-Reviewed diff `6b7a7c8..534e656` against `task-C-brief.md` and `task-C-report.md`.
+Reviewed diff `61b84d6..93f2754` against `task-C-brief.md` and `task-C-report.md`.
 
 ## Spec Compliance
 
@@ -78,12 +78,12 @@ Confirmed against real fixtures rather than the report:
 
 ### Conformance +21 — genuine, verified as a set
 
-Extracted the base commit with `git archive 6b7a7c8` into `/tmp/baseC` (repo left
+Extracted the base commit with `git archive 61b84d6` into `/tmp/baseC` (repo left
 untouched; corpus symlinked read-only) and ran `scripts/conformance_report.py` on
 both trees:
 
 ```
-base 6b7a7c8 : all files 759/1592   head 534e656 : all files 780/1592
+base 61b84d6 : all files 759/1592   head 93f2754 : all files 780/1592
 --diff       : newly passing (21), newly failing (0)
 ```
 
@@ -202,7 +202,7 @@ spec it cites and unclaimed free test coverage.
 
 ## Environment
 
-`git status` clean, `HEAD` at `534e656`,
+`git status` clean, `HEAD` at `93f2754`,
 `.venv/…/__editable__.mayshay-0.1.0.pth` intact
 (`/Users/atishaypahadiya/projects/mayshay/src`). Nothing under `.venv/` touched;
 all experiments ran from `/tmp` (`/tmp/baseC` is a `git archive` extract of the

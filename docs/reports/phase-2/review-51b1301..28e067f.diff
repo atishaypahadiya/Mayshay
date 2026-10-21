@@ -1,7 +1,7 @@
-# Review package: d8ed477..d9aa4ef
+# Review package: 51b1301..28e067f
 
 ## Commits
-d9aa4ef cssparse: shorthand reset, table displays, border-width's two initials
+28e067f cssparse: shorthand reset, table displays, border-width's two initials
 
 ## Files changed
  src/mayshay/cssparse/cascade.py | 191 ++++++++++++++++++++++++---

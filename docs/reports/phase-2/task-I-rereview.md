@@ -1,6 +1,6 @@
 # Task I re-review (fix round 1): scoped
 
-Base ec7eee9 -> head 39ba6ae. Diff: src/mayshay/cssparse/values.py,
+Base fd15b3e -> head 91e2bfc. Diff: src/mayshay/cssparse/values.py,
 tests/cssparse/test_values.py.
 
 ## Finding Verdicts

@@ -45,7 +45,7 @@ from `mayshay.dom.node` and `__all__`.
 **Step 4 — full run.** See exact commands and output below.
 
 **Step 5 — commit.** `git add src/mayshay/dom/ tests/dom/` then the exact
-message from the brief. Commit `bdabfd2` on `phase-2-css-to-styled-tree`.
+message from the brief. Commit `9d821e1` on `phase-2-css-to-styled-tree`.
 
 ---
 

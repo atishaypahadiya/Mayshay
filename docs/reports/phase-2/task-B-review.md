@@ -1,6 +1,6 @@
 # Task B review — parse-error honesty in the tree builder
 
-Base `b9e4a72` → head `d61d038`. Read-only review; working tree untouched
+Base `42a50f7` → head `9d71ebb`. Read-only review; working tree untouched
 (`git status --porcelain` empty), `.venv/.../__editable__.mayshay-0.1.0.pth`
 still reads `/Users/atishaypahadiya/projects/mayshay/src`. Nothing under
 `.venv/` was written.

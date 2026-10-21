@@ -1,7 +1,7 @@
-# Review package: c24f2b4..208c112
+# Review package: be569df..bce132e
 
 ## Commits
-208c112 cssparse: fix at-rule discrimination test, mislabeled deviation, EOF pos
+bce132e cssparse: fix at-rule discrimination test, mislabeled deviation, EOF pos
 
 ## Files changed
  src/mayshay/cssparse/parser.py | 65 +++++++++++++++++++++++++++++++-----------

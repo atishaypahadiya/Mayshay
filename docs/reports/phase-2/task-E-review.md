@@ -1,8 +1,8 @@
 # Task E review — CSS tokenizer (css-syntax-3 §4)
 
-Diff reviewed: `review-bdabfd2..5f62e2b.diff` (1411 lines, read in full, one pass).
-Repo state at review time: `git status` clean, HEAD `81bc45f` (a later docs-only
-commit by another agent, on top of the reviewed `5f62e2b`), `.pth` reads
+Diff reviewed: `review-9d821e1..34d671f.diff` (1411 lines, read in full, one pass).
+Repo state at review time: `git status` clean, HEAD `64332a5` (a later docs-only
+commit by another agent, on top of the reviewed `34d671f`), `.pth` reads
 `/Users/atishaypahadiya/projects/mayshay/src`. Nothing under `.venv/` was
 modified; the two files I read there (`tinycss2/tokenizer.py`) were read-only.
 

@@ -146,7 +146,7 @@ Reverification after the move:
   pre-edit backup, reran to confirm `404/474` again.
 - `.venv/bin/pytest` (no `-q`): **6483 passed, 72 xfailed, 0 failed**.
 - `scripts/conformance_report.py`: `780/1592`, `tests1.dat: 64/112` — unmoved.
-- `git status`: clean after commit `99d03ba` (added
+- `git status`: clean after commit `113c1ba` (added
   `tests/support/parse_errors.py`, modified `scripts/error_report.py` and
   `tests/htmlparse/test_parse_errors.py`).
 - venv `.pth` (`.venv/lib/python3.13/site-packages/__editable__.mayshay-0.1.0.pth`):

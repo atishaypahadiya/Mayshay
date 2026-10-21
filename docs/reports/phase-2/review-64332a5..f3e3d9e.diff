@@ -1,7 +1,7 @@
-# Review package: 81bc45f..39f772b
+# Review package: 64332a5..f3e3d9e
 
 ## Commits
-39f772b cssparse: drop a spurious bad-url parse error, unprefix metrics
+f3e3d9e cssparse: drop a spurious bad-url parse error, unprefix metrics
 
 ## Files changed
  src/mayshay/cssparse/tokenizer.py | 81 +++++++++++++++++++++++++---------

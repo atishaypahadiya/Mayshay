@@ -1,4 +1,4 @@
-# Task C fix-round re-review (534e656..2328f50)
+# Task C fix-round re-review (93f2754..a99c742)
 
 **Minor 1 — adopt ~850 DOCTYPE corpus cases as strict xfail** — ADDRESSED.
 `tests/htmlparse/test_html5lib_tokenizer.py:210-331` adds the section,

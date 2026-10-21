@@ -1,6 +1,6 @@
 # Task H report: selector matching and rule indexing
 
-**Commit:** `a05a103` — *cssparse: right-to-left selector matching and rule indexing*
+**Commit:** `931e741` — *cssparse: right-to-left selector matching and rule indexing*
 **Branch:** `phase-2-css-to-styled-tree`
 **Files:** `src/mayshay/cssparse/matching.py` (new, 640 lines),
 `tests/cssparse/test_matching.py` (new, 86 tests),
@@ -355,7 +355,7 @@ target fails as loudly as one that never reaches it.
 
 # Fix round 1
 
-**Commit:** `2b992c6` — *cssparse: fix round 1 for task H review*
+**Commit:** `53d6cd4` — *cssparse: fix round 1 for task H review*
 **Tests:** `6366 passed, 72 xfailed, 0 failed` (was 6340; net +26 — one test
 deleted, 27 added). **Conformance unmoved:** `780/1592`, `64/112`.
 

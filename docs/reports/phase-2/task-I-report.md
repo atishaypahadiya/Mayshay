@@ -66,7 +66,7 @@ tests1.dat: 64/112
 ```
 
 `git status`: clean except the two new files, now committed at
-`ec7eee9`. `.venv/lib/python3.13/site-packages/__editable__.mayshay-0.1.0.pth`
+`fd15b3e`. `.venv/lib/python3.13/site-packages/__editable__.mayshay-0.1.0.pth`
 still reads `/Users/atishaypahadiya/projects/mayshay/src`, and
 `python -c "import mayshay; print(mayshay.__file__)"` resolves inside this
 checkout.

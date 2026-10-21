@@ -1,7 +1,7 @@
-# Review package: 1ff2448..f647da8
+# Review package: 48be545..3c2f5b1
 
 ## Commits
-f647da8 cssparse: selector parsing and specificity
+3c2f5b1 cssparse: selector parsing and specificity
 
 ## Files changed
  src/mayshay/cssparse/__init__.py  |  34 +-

@@ -1,6 +1,6 @@
 # Task E report: CSS tokenizer (css-syntax-3 §4)
 
-Status: **done**. Branch `phase-2-css-to-styled-tree`, commit `5f62e2b`.
+Status: **done**. Branch `phase-2-css-to-styled-tree`, commit `34d671f`.
 
 ---
 
@@ -356,7 +356,7 @@ gitignored: the test skips cleanly on a checkout without it, which is the same
 # Fix round 1 of 5
 
 Six items from review, all in `src/mayshay/cssparse/tokenizer.py` and its test
-file. Commit `39f772b`.
+file. Commit `f3e3d9e`.
 
 ## 1. The spurious parse error on the bad-url path — dropped
 

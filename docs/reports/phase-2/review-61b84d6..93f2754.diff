@@ -1,7 +1,7 @@
-# Review package: 6b7a7c8..534e656
+# Review package: 61b84d6..93f2754
 
 ## Commits
-534e656 htmlparse: capture DOCTYPE identifiers and classify document mode
+93f2754 htmlparse: capture DOCTYPE identifiers and classify document mode
 
 ## Files changed
  src/mayshay/dom/node.py                    |  37 ++-

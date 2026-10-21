@@ -1,4 +1,4 @@
-# Phase 2 — scoped re-review of the final fix wave (`99d03ba..fd56f43`)
+# Phase 2 — scoped re-review of the final fix wave (`113c1ba..50752ca`)
 
 Read-only on the checkout. Every claim below was executed. Shadow copy at
 `/tmp/shadow` (`__file__` confirmed `/tmp/shadow/mayshay/cssparse/cascade.py`),
@@ -121,7 +121,7 @@ Spot-checked four further executed claims, all reproduced exactly:
   by `inspect`.
 - **`style_document` was never in `cssparse/__init__.py`.**
   `git log --all -S"style_document" -- src/mayshay/cssparse/__init__.py` returns
-  one commit, `fd56f43` — this one.
+  one commit, `50752ca` — this one.
 
 The discipline was applied, not merely reported.
 
@@ -179,7 +179,7 @@ not precise about which number it is.
   `_text.py` refactor.
 - The working tree has an **uncommitted** modification to `CLAUDE.md` adding two
   process rules (execute-every-factual-claim; write non-ASCII test data as
-  escapes). Not mine — I made no edits. It is not in `fd56f43` and not in the fix
+  escapes). Not mine — I made no edits. It is not in `50752ca` and not in the fix
   diff, so the report's "`git status` clean apart from the ten files of this
   change" is inaccurate by one file, and this content does not reach `main`
   unless it is committed. The first added bullet is also indented one level too

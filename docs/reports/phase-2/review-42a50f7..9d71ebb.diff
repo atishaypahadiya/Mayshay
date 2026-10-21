@@ -1,7 +1,7 @@
-# Review package: b9e4a72..d61d038
+# Review package: 42a50f7..9d71ebb
 
 ## Commits
-d61d038 htmlparse: record tree construction parse errors, split from tokenizer count
+9d71ebb htmlparse: record tree construction parse errors, split from tokenizer count
 
 ## Files changed
  src/mayshay/htmlparse/tokenizer.py   |  11 ++-

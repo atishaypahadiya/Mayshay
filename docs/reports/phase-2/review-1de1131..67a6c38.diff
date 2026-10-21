@@ -1,7 +1,7 @@
-# Review package: 15b5ce6..cd19f43
+# Review package: 1de1131..67a6c38
 
 ## Commits
-cd19f43 metrics: shared long-format writer for every pipeline stage
+67a6c38 metrics: shared long-format writer for every pipeline stage
 
 ## Files changed
  CLAUDE.md              |   7 +++-
