@@ -54,6 +54,16 @@ producing a believable error distribution.
 **Caught by** computing the same advances from a second source
 (`fontTools` reading `hmtx` directly) and finding they disagreed.
 
+**The cause, found later** (7 Nov 2026, Pillow 12.3 and 13.0). The font
+was DejaVu Sans, before Liberation Sans was vendored (`docs/fonts.md`).
+Pillow uses Raqm layout when libraqm is installed and basic layout
+otherwise, and `getlength`'s own docstring says the result "is a whole
+number if using basic layout". Asking for basic layout and getting the
+same `89.0` is what happens when libraqm is absent and basic is already
+the default; that is the likely reading, not a re-run on that machine. With
+Raqm the same call gives `89.75`: fractional, and still not the font's
+`89.6953`. Reading `hmtx` stays the right call either way.
+
 ### 3. `DOM.getBoxModel` returning a union box for wrapping inlines
 
 For an inline `<span>` spanning three lines, CDP's `getBoxModel` returns
