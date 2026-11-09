@@ -1,0 +1,32 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # The html5lib-tests submodule is pinned to 9329e64 on purpose (see .gitmodules); a plain recursive checkout
+      # takes the pinned commit and never advances it.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # requirements.txt is a local pip freeze (Jupyter and an editable path); these are what src/ and tests/ import.
+      - name: Install
+        run: pip install pytest fonttools pillow requests beautifulsoup4 && pip install -e .
+      # The two corpus sweeps read data/corpus/, which is gitignored (scripts/collect.py fetches it). Their
+      # "not silently empty" guards would fail on an empty checkout, so they run locally, not here.
+      - name: Tests
+        run: >
+          python -m pytest
+          --ignore=tests/cssparse/test_matching_corpus.py
+          --ignore=tests/cssparse/test_selectors_corpus.py
